@@ -20,6 +20,8 @@ struct AnalysisRequest {
     double threshold_db = 40.0; // drop terms more than this far below dominant
     bool global_ref = false; // false => rank within each s-coefficient
                              // true => rank against whole polynomial (uses f0)
+    bool prune = true;       // false => keep every symbolic term (exact)
+    bool use_parallel = true; // express R1*R2/(R1+R2) as R1||R2
 };
 
 struct Solved {

@@ -45,12 +45,16 @@ struct Pruned {
     std::vector<RootInfo> poles, zeros;
     std::string text;      // H(s) factored low-entropy form
     std::string text_poly; // H(s) expanded (pruned) polynomial form
+    std::string latex;     // H(s) in LaTeX (from the factored form)
+    bool exact = false;    // true when pruning was disabled
 };
 
 struct PruneOptions {
     double f0_hz = 1e3;
     double threshold_db = 40.0;
     bool global_ref = false; // true => rank against the whole polynomial at f0
+    bool prune = true;       // false => keep every symbolic term (exact)
+    bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
 };
 
 // The low-entropy engine:

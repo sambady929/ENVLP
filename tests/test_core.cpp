@@ -4,8 +4,10 @@
 
 #include "core/Eng.h"
 #include "core/Engine.h"
+#include "core/LowEntropy.h"
 #include "core/MNA.h"
 #include "core/Netlist.h"
+#include "core/Par.h"
 #include "core/Print.h"
 #include "core/Prune.h"
 #include "core/Solver.h"
@@ -425,6 +427,123 @@ static void test_size_offset_db() {
 }
 
 // ---------------------------------------------------------------------------
+// Low-entropy engine: parallel forms, magnitude pruning, factoring.
+// ---------------------------------------------------------------------------
+static Circuit cs_amp(double cl, bool cgd_on) {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_on["Cgd"] = cgd_on;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    m.param_text["Cgd"] = "20f";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "CL", {"out", "0"},
+                           cl > 0 ? "1p" : ""));
+    c.comps.push_back(comp(Kind::GND, "GND1", {"0"}));
+    return c;
+}
+
+static void test_parallel_form() {
+    // V -> R1 -> out, with R2 to ground: Rout = R1||R2, no Cgd here.
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1n"));
+    c = ground(c);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    AnalysisResult r = analyze(c, req);
+    // the pole is (R1||R2)*C1
+    CHECK(!r.pruned.poles.empty());
+    if (!r.pruned.poles.empty())
+        CHECK(r.pruned.poles[0].label.find("||") != std::string::npos);
+    CHECK(r.pruned.text.find("||") != std::string::npos);
+}
+
+static void test_magnitude_pruning() {
+    // CL dominates Cgd: at a low f0 the Cgd-driven terms are negligible and
+    // must be dropped, leaving a single dominant pole.
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_on["Cgd"] = true;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    m.param_text["Cgd"] = "20f"; // tiny
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "CL", {"out", "0"}, "1u")); // huge
+    c.comps.push_back(comp(Kind::GND, "GND1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.f0_hz = 1e3;
+    req.threshold_db = 40.0;
+    AnalysisResult r = analyze(c, req);
+    // the Cgd time-constant term in the denominator is ~154 dB below the CL
+    // term and must be dropped, leaving a single dominant pole
+    bool dropped_cgd_den = false;
+    for (const auto& d : r.pruned.dropped)
+        if (d.location.find("denominator") == 0 &&
+            d.term.find("Cgd_M1") != std::string::npos)
+            dropped_cgd_den = true;
+    CHECK(dropped_cgd_den);
+    CHECK(r.pruned.text.find("CL") != std::string::npos);
+    CHECK(r.pruned.den_factors.size() == 1);
+
+    // exact mode keeps every term
+    req.prune = false;
+    AnalysisResult re = analyze(c, req);
+    CHECK(re.pruned.dropped.empty());
+    CHECK(re.pruned.exact);
+}
+
+static void test_parallel_collapse() {
+    // gm*R1*R2/(R1+R2) style: the parallel pair must survive in the text.
+    ParamTable pt;
+    GiNaC::ex s = pt.get("s");
+    GiNaC::ex R1 = pt.get("R1"), R2 = pt.get("R2");
+    pt.set("R1", 1e3, UnitClass::Ohm);
+    pt.set("R2", 1e3, UnitClass::Ohm);
+    GiNaC::ex e = to_parallel((R1 * R2) / (R1 + R2));
+    CHECK(is_parallel(e));
+    LowEntropyOptions o;
+    o.prune = false;
+    LowEntropy le = low_entropy(R1 * R2 / (R1 + R2), GiNaC::ex(1), pt, o);
+    CHECK(le.text.find("||") != std::string::npos);
+    (void)s;
+}
+
+static void test_latex_output() {
+    Circuit c = cs_amp(1e-12, true);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    AnalysisResult r = analyze(c, req);
+    CHECK(!r.pruned.latex.empty());
+    CHECK(r.pruned.latex.find("H(s)") != std::string::npos);
+    CHECK(r.pruned.latex.find("\\frac") != std::string::npos);
+    CHECK(r.pruned.latex.find("\\parallel") != std::string::npos);
+}
+
+static void test_report_has_latex_and_factors() {
+    Circuit c = cs_amp(1e-12, true);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.f0_hz = 1e5;
+    AnalysisResult r = analyze(c, req);
+    CHECK(r.report.find("LaTeX") != std::string::npos);
+    CHECK(r.report.find("Low-entropy") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
     std::vector<Test> tests = {
@@ -441,6 +560,11 @@ int main(int argc, char** argv) {
         {"bjt_rb_node", test_bjt_rb_node},
         {"errors", test_errors},
         {"size_offset_db", test_size_offset_db},
+        {"parallel_form", test_parallel_form},
+        {"magnitude_pruning", test_magnitude_pruning},
+        {"parallel_collapse", test_parallel_collapse},
+        {"latex_output", test_latex_output},
+        {"report_latex", test_report_has_latex_and_factors},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";

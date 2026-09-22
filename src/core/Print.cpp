@@ -206,11 +206,13 @@ std::string pretty_in_s(const ex& e, const ex& s) {
             std::string cs = p(c, 2);
             neg = !cs.empty() && cs[0] == '-';
             if (neg) cs.erase(0, 1);
+            // the power belongs to s, not to the coefficient:
+            //   k=1 -> "s*R1*C1",  k=2 -> "s^2*R1*C1"
+            std::string spow = (k == 1) ? "s" : ("s" + sup(k));
             if (cs == "1")
-                body = "s";
+                body = spow;
             else
-                body = "s\xC2\xB7" + cs; // s*R1*C1
-            if (k > 1) body += sup(k);
+                body = spow + "\xC2\xB7" + cs;
         }
         if (body.empty()) continue;
         if (first) {

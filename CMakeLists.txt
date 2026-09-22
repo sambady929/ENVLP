@@ -71,9 +71,11 @@ endif()
 add_library(symcore STATIC
   src/core/Eng.cpp
   src/core/Netlist.cpp
+  src/core/Par.cpp
   src/core/MNA.cpp
   src/core/Solver.cpp
   src/core/Prune.cpp
+  src/core/LowEntropy.cpp
   src/core/Print.cpp
   src/core/Engine.cpp
 )
