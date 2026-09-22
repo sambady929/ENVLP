@@ -39,6 +39,8 @@ struct AnalysisSpec {
     bool prune = true;
     bool use_parallel = true;
     bool gm_ro_assume = true; // assume gm*ro >> 1 when idealizing
+    bool approx_factor = true; // numeric factoring when exact factoring fails
+    bool normalize = true; // normalize denominator DC term to 1 (TFs only)
 
     // DC model selection for MOSFETs.
     enum class MosDc { SquareLaw, GmOverId } mos_dc = MosDc::SquareLaw;
