@@ -298,17 +298,6 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         Pt s = snap(p);
         Component c;
         c.kind = place_kind_;
-        if (place_kind_ == Kind::K) {
-            // coupling: attach to the two nearest inductors
-            std::vector<std::string> ls;
-            for (const auto& cc : doc_->circuit.comps)
-                if (cc.kind == Kind::L) ls.push_back(cc.ref);
-            if (ls.size() < 2) {
-                if (on_status) on_status("Need two inductors to couple");
-                return;
-            }
-            c.links = {ls[0], ls[1]};
-        }
         std::string ref = doc_->add(c, s.first, s.second);
         auto pl = doc_->placements.find(ref);
         if (pl != doc_->placements.end()) {

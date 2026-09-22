@@ -35,13 +35,17 @@ std::vector<Pt> pin_offsets(Kind k) {
         // out+ , out- , ctrl+ , ctrl-
         return {{40, -10}, {40, 10}, {-40, -10}, {-40, 10}};
     case Kind::NMOS:
+        // D , G , S  (D top, S bottom)
+        return {{0, -40}, {-40, 0}, {0, 40}};
     case Kind::PMOS:
-        // D , G , S  (no body pin)
-        return {{0, -40}, {-40, 0}, {0, 40}};
+        // flipped vertically: S (with the arrow) on top, D on the bottom
+        return {{0, 40}, {-40, 0}, {0, -40}};
     case Kind::NPN:
-    case Kind::PNP:
-        // C , B , E
+        // C , B , E  (C top, E bottom)
         return {{0, -40}, {-40, 0}, {0, 40}};
+    case Kind::PNP:
+        // flipped vertically: E (with the arrow) on top, C on the bottom
+        return {{0, 40}, {-40, 0}, {0, -40}};
     case Kind::GND:
     case Kind::VDD:
         return {{0, 0}};
@@ -54,7 +58,7 @@ std::vector<Pt> pin_offsets(Kind k) {
         return {{-40, -12}, {-40, 12}, {40, 0}};
     case Kind::FDOPAMP:
         // in+ , in- , out+ , out-
-        return {{-40, -12}, {-40, 12}, {40, -12}, {40, 12}};
+        return {{-40, -14}, {-40, 14}, {34, -14}, {34, 14}};
     case Kind::K:
         return {};
     }
@@ -313,24 +317,23 @@ void draw_mosfet(Ctx& t, Kind k) {
 void draw_bjt(Ctx& t, Kind k) {
     const bool npn = (k == Kind::NPN);
     t.w(kWire);
-    t.line(-40, 0, -22, 0);
+    t.line(-40, 0, -16.87, 0);
     t.w(kBody);
-    t.line(-22, -16, -22, 16); // base bar
+    t.line(-16.87, -13.35, -16.87, 13.34); // base bar
     t.w(kWire);
-    // emitter is the lower diagonal for NPN, the upper one for PNP
-    Pt baseTop{-22, -7.5}, atTop{0, -19};
-    Pt baseBot{-22, 7.5}, atBot{0, 19};
-    Pt eLead0 = npn ? baseBot : baseTop;
-    Pt eLead1 = npn ? atBot : atTop;
-    Pt cLead0 = npn ? baseTop : baseBot;
-    Pt cLead1 = npn ? atTop : atBot;
-    t.polyline({eLead0, eLead1, {0, 40}});   // emitter to the bottom pin
-    t.polyline({cLead0, cLead1, {0, -40}});  // collector to the top pin
-    // emitter arrow sits on the emitter segment
-    if (npn)
-        t.arrow(-14, 13, -4, 17.75, 9);
-    else
-        t.arrow(-8, -15.2, -18, -10.4, 9);
+    if (npn) {
+        // sym1 geometry: collector diagonal to the top, emitter diagonal to
+        // the bottom, filled emitter arrow pointing down-right
+        t.polyline({{-16.87, -6.4}, {0, -13.38}, {0, -40}});
+        t.polyline({{-16.87, 6.4}, {0, 13.38}, {0, 40}});
+        t.fillpoly({{-6.64, 6.79}, {-9.95, 13.38}, {0, 13.38}});
+    } else {
+        // PNP (upside down): emitter diagonal up-right with the arrow at the
+        // base end pointing back toward the base
+        t.polyline({{-8.58, -9.69}, {0, -13.38}, {0, -40}});
+        t.polyline({{-16.87, 6.4}, {0, 13.38}, {0, 40}});
+        t.fillpoly({{-10.23, -12.99}, {-6.92, -6.4}, {-16.87, -6.4}});
+    }
 }
 
 // --- amplifiers / blocks ---------------------------------------------------
@@ -339,9 +342,9 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.line(-40, -12, -30, -12);
     t.line(-40, 12, -30, 12);
     if (fully_diff) {
-        // two fully horizontal output leads, leaving the slanted edges
-        t.line(-2.3, -14, 40, -14);
-        t.line(-2.3, 14, 40, 14);
+        // two slightly shorter, fully horizontal output leads
+        t.line(4.64, -14, 32, -14);
+        t.line(4.64, 14, 32, 14);
     } else {
         t.line(21.96, 0, 40, 0);
     }
@@ -349,14 +352,14 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.polyline({{-30, -30}, {-30, 30}, {21.96, 0}}, true);
     t.w(kWire);
     if (fully_diff) {
-        // input + / - (inverting input is below the non-inverting one)
+        // input + / - (inverting input is the lower one)
         t.line(-24, -12, -18, -12);
         t.line(-21, -15, -21, -9);
         t.line(-24, 12, -18, 12);
-        // output marks: + on the top (non-inverting) lead, - on the bottom
-        t.line(28, -18, 34, -18);
-        t.line(31, -21, 31, -15);
-        t.line(28, 14, 34, 14);
+        // output marks: - on the top output, + on the bottom output
+        t.line(-6, -14, 0, -14);
+        t.line(-4, -17, -4, -11);   // plus on the lower output
+        t.line(-6, 14, 0, 14);      // minus on the upper output
     } else {
         t.line(-27, -12, -21, -12);
         t.line(-24, -15, -24, -9);
@@ -381,14 +384,14 @@ void draw_ratio(Ctx& t, const std::string& mark) {
     t.text(mark, 0, 0, true);
 }
 
-// standalone mutual-coupling marker: two dots with a curve between them
+// standalone mutual-coupling marker: drawn simply as a "K"
 void draw_coupling(Ctx& t) {
-    t.w(kWire);
-    t.arc(-12, 0, 13, -0.9, 0.9);        // right dot
-    t.arc(12, 0, 13, M_PI - 0.9, M_PI + 0.9); // left dot
     t.w(kBody);
-    t.circle(-12, 0, 2.3);
-    t.circle(12, 0, 2.3);
+    t.line(-11, -13, -11, 13);
+    t.line(-11, 4, 2, -13);
+    t.line(-2, -5, 8, 7);
+    t.line(8, 7, 9, 13);
+    t.line(8, 7, 13, 3);
 }
 
 void draw_transformer(Ctx& t) {
@@ -474,7 +477,7 @@ void label_anchor(Kind k, double& lx, double& ly) {
     case Kind::AMP:
     case Kind::NULLOR: lx = 10; ly = -34; break;
     case Kind::T: lx = -34; ly = -34; break;
-    case Kind::K: lx = 18; ly = -32; break;
+    case Kind::K: lx = 16; ly = -4; break;
     case Kind::IS:
     case Kind::SBLK: lx = 24; ly = -24; break;
     default: break;

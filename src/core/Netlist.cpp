@@ -202,7 +202,7 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     static const std::vector<ParamDef> none;
 
     static const std::vector<ParamDef> coupling = {
-        {"M", "1u", false, true, "H", "mutual inductance (Lp=Ls=1H reference)"},
+        {"K", "0.9", false, true, "", "coupling coefficient"},
     };
 
     static const std::vector<ParamDef> nmos = {
@@ -248,9 +248,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 }
 
 UnitClass param_unit_class(Kind k, const std::string& p) {
+    (void)k;
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
     if (p == "ro" || p == "rpi" || p == "rb" || p == "rd") return UnitClass::Ohm;
-    if (p == "M") return UnitClass::Henry;
     if (p == "Cgs" || p == "Cgd" || p == "Cdb" || p == "Csb" || p == "Cpi" ||
         p == "Cmu" || p == "Cd")
         return UnitClass::Farad;
