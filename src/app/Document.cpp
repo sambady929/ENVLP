@@ -256,6 +256,7 @@ std::string Document::serialize() const {
     for (const auto& l : labels)
         o << "netlabel " << l.pt.first << "," << l.pt.second << " "
           << quote(l.name) << "\n";
+    if (!analysis_cards.empty()) o << analysis_cards;
     return o.str();
 }
 
@@ -264,6 +265,7 @@ bool Document::deserialize(const std::string& data, std::string& err) {
     placements.clear();
     wires.clear();
     labels.clear();
+    analysis_cards.clear();
     req = syms::AnalysisRequest{};
 
     std::istringstream in(data);
@@ -347,6 +349,9 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 return fail("bad netlabel point");
             l.name = name;
             labels.push_back(l);
+        } else if (kw == "card") {
+            // analysis card line: keep it verbatim in analysis_cards
+            analysis_cards += line + "\n";
         } else {
             return fail("unknown keyword " + kw);
         }

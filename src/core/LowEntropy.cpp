@@ -668,9 +668,11 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // 4b. gm*ro >> 1 idealization, then pull common factors out of the
     //     numerator/denominator so the printed form is as compact as possible
     //     (e.g. x*a + x*b -> x*(a+b)).
-    if (opts.prune) {
+    if (opts.prune && opts.gm_ro_assume) {
         n = gm_ro_idealize(n, params);
         d = gm_ro_idealize(d, params);
+    }
+    if (opts.prune) {
         ex nf = factor_common_impl(n);
         ex df = factor_common_impl(d);
         if (!nf.is_zero()) n = nf;

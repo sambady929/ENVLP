@@ -1,11 +1,13 @@
 #include "MainFrame.h"
 
+#include "AnalysisPanel.h"
 #include "BodePanel.h"
 #include "LuaConsole.h"
 #include "PalettePanel.h"
 #include "PropertiesPanel.h"
 #include "ResultsPanel.h"
 #include "SchematicCanvas.h"
+#include "core/Analysis.h"
 
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
@@ -110,6 +112,9 @@ void MainFrame::build_layout() {
     props_ = new PropertiesPanel(this);
     root->Add(props_, 0, wxEXPAND | wxALL, 4);
 
+    analysis_ = new AnalysisPanel(this);
+    root->Add(analysis_, 0, wxEXPAND | wxALL, 4);
+
     SetSizer(root);
 
     // ---- plumbing ----
@@ -137,6 +142,17 @@ void MainFrame::build_layout() {
         canvas_->set_selection(s);
         selection_changed(s);
     };
+
+    // ---- analysis cards ----
+    analysis_->refresh(&doc_);
+    analysis_->on_changed = [this] {
+        doc_.analysis_cards = analysis_->serialize();
+        doc_.dirty = true;
+        update_title();
+    };
+    analysis_->on_run_all = [this](int) { run_card(-1); };
+    analysis_->on_run_one = [this](int i) { run_card(i); };
+    analysis_->on_results = [this] { bottom_->SetSelection(0); };
 
     canvas_->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
         if (handle_shortcut(e)) return;
@@ -337,6 +353,10 @@ void MainFrame::open_path(const wxString& p) {
     canvas_->set_selection("");
     canvas_->Refresh();
     props_->refresh(&doc_, "");
+    if (analysis_) {
+        analysis_->deserialize(doc_.analysis_cards);
+        analysis_->refresh(&doc_);
+    }
     update_title();
     SetStatusText("Loaded " + p, 0);
 }
@@ -411,7 +431,10 @@ void MainFrame::on_delete(wxCommandEvent&) { canvas_->delete_selection(); }
 // ---------------------------------------------------------------------------
 void MainFrame::on_run(wxCommandEvent&) { run_analysis(); }
 
-void MainFrame::run_analysis() {
+void MainFrame::run_analysis() { run_card(-1); }
+
+// Run one analysis card (index >= 0) or every enabled card (index < 0).
+void MainFrame::run_card(int index) {
     std::string err;
     syms::Circuit c = doc_.resolved(err);
     if (!err.empty()) {
@@ -419,19 +442,84 @@ void MainFrame::run_analysis() {
                      wxICON_ERROR, this);
         return;
     }
+
+    auto& cards = analysis_->cards();
+    if (cards.empty()) {
+        // no cards configured: fall back to one transfer-function run
+        AnalysisCard def;
+        def.input_ref = doc_.req.input_ref;
+        def.output = doc_.req.output;
+        def.f0_hz = doc_.req.f0_hz;
+        def.threshold_db = doc_.req.threshold_db;
+        def.global_ref = doc_.req.global_ref;
+        def.prune = doc_.req.prune;
+        def.use_parallel = doc_.req.use_parallel;
+        cards.push_back(def);
+        analysis_->refresh(&doc_);
+    }
+
+    std::string report;
+    std::string latex;
+    std::unique_ptr<syms::AnalysisResult> keep;
+
+    auto run_one = [&](int i) {
+        const AnalysisCard& card = cards[i];
+        syms::AnalysisSpec sp;
+        sp.kind = card.kind;
+        sp.input_ref = card.input_ref.empty() ? doc_.req.input_ref
+                                              : card.input_ref;
+        sp.output = card.output.empty() ? doc_.req.output : card.output;
+        sp.probe_ref = card.probe_ref;
+        sp.f0_hz = card.f0_hz;
+        sp.threshold_db = card.threshold_db;
+        sp.global_ref = card.global_ref;
+        sp.prune = card.prune;
+        sp.use_parallel = card.use_parallel;
+        sp.gm_ro_assume = card.gm_ro;
+
+        syms::CardResult cr = syms::run_analysis(c, sp);
+        report += "==================================================\n";
+        report += cr.title + "\n";
+        report += "==================================================\n";
+        report += cr.report;
+        report += "\n";
+        if (!cr.latex.empty()) latex = cr.latex;
+        if (cr.has_transfer) {
+            keep = std::make_unique<syms::AnalysisResult>(cr.transfer);
+        }
+        return cr;
+    };
+
     try {
-        auto res = std::make_unique<syms::AnalysisResult>(
-            syms::analyze(c, doc_.req));
-        result_ = std::move(res);
-        results_->set_text(result_->report);
-        bode_->set_result(result_.get());
-        lua_->set_result(result_.get());
-        bottom_->SetSelection(0);
-        SetStatusText("Analysis OK -- see Results / Bode / Lua tabs.", 0);
+        if (index >= 0) {
+            if (index >= int(cards.size())) return;
+            run_one(index);
+        } else {
+            int n = 0;
+            for (int i = 0; i < int(cards.size()); ++i) {
+                if (!cards[i].enabled) continue;
+                run_one(i);
+                ++n;
+            }
+            if (n == 0 && !cards.empty()) {
+                wxMessageBox("No analysis step is enabled.", "Nothing to run",
+                             wxICON_INFORMATION, this);
+                return;
+            }
+        }
     } catch (const std::exception& e) {
         wxMessageBox(wxString::FromUTF8(e.what()), "Analysis failed",
                      wxICON_ERROR, this);
+        return;
     }
+
+    results_->set_text(report);
+    results_->set_latex(latex);
+    result_ = std::move(keep);
+    bode_->set_result(result_.get());
+    lua_->set_result(result_.get());
+    bottom_->SetSelection(0);
+    SetStatusText("Analysis OK -- see Results / Bode.", 0);
 }
 
 // ---------------------------------------------------------------------------

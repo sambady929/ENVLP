@@ -17,6 +17,7 @@ Pruned prune_low_entropy(const ex& num, const ex& den, ParamTable& params,
     lo.threshold_db = opts.threshold_db;
     lo.global_ref = opts.global_ref;
     lo.use_parallel = opts.use_parallel;
+    lo.gm_ro_assume = opts.gm_ro_assume;
 
     LowEntropy le = low_entropy(num, den, params, lo);
 

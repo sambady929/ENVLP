@@ -22,8 +22,7 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.threshold_db = req.threshold_db;
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
-    r.opts.use_parallel = req.use_parallel;
-    r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
+    r.opts.use_parallel = req.use_parallel;    r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
     r.report = format_report(r);
     return r;
 }

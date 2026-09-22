@@ -60,6 +60,7 @@ struct LowEntropyOptions {
     double threshold_db = 40.0;
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
+    bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product
 };
 
 // The low-entropy engine. This is the heart of SymCirc: it turns a raw

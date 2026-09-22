@@ -22,6 +22,7 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     o.global_ref = s.global_ref;
     o.prune = s.prune;
     o.use_parallel = s.use_parallel;
+    o.gm_ro_assume = s.gm_ro_assume;
     return o;
 }
 
@@ -35,6 +36,7 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     r.global_ref = s.global_ref;
     r.prune = s.prune;
     r.use_parallel = s.use_parallel;
+    r.gm_ro_assume = s.gm_ro_assume;
     return r;
 }
 

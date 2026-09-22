@@ -287,8 +287,8 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     SetSizer(sizer, true);
 
-    // ---------------- analysis settings (always shown) ----------------
-    add_header("Analysis");
+    // ---------------- analysis defaults (cards panel has the per-card UI) --
+    add_header("Analysis defaults");
     if (doc_) {
         wxArrayString srcs;
         for (const auto& c : doc_->circuit.comps)
@@ -343,6 +343,17 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             if (on_edited) on_edited();
         });
         sizer->Add(glob, 0, wxALL, 4);
+
+        auto* prune = new wxCheckBox(
+            this, wxID_ANY, "Prune negligible terms (low entropy)");
+        prune->SetValue(doc_->req.prune);
+        prune->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) {
+            if (rebuilding_) return;
+            doc_->req.prune = e.IsChecked();
+            doc_->dirty = true;
+            if (on_edited) on_edited();
+        });
+        sizer->Add(prune, 0, wxALL, 4);
     }
 
     // ---------------- selection-specific rows ----------------

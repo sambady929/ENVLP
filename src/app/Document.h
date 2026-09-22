@@ -44,6 +44,10 @@ public:
     std::string path;  // "" = never saved
     bool dirty = false;
 
+    // Analysis cards are owned by the UI; the document stores them verbatim
+    // so a .scx round-trips the configured analysis steps.
+    std::string analysis_cards;
+
     // Adds the component and gives it a free reference/placement.
     std::string add(const syms::Component& c, double x, double y);
     void remove(const std::string& ref);

@@ -105,6 +105,7 @@ add_executable(SymCirc WIN32
   src/app/SchematicCanvas.cpp
   src/app/PalettePanel.cpp
   src/app/PropertiesPanel.cpp
+  src/app/AnalysisPanel.cpp
   src/app/ResultsPanel.cpp
   src/app/BodePanel.cpp
   src/app/LuaConsole.cpp

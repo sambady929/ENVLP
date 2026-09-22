@@ -15,6 +15,7 @@ class PropertiesPanel;
 class ResultsPanel;
 class BodePanel;
 class LuaConsole;
+class AnalysisPanel;
 
 class MainFrame : public wxFrame {
 public:
@@ -32,6 +33,7 @@ private:
     ResultsPanel* results_ = nullptr;
     BodePanel* bode_ = nullptr;
     LuaConsole* lua_ = nullptr;
+    AnalysisPanel* analysis_ = nullptr;
     wxNotebook* bottom_ = nullptr;
 
     void build_menu();
@@ -59,6 +61,7 @@ private:
     // analysis
     void on_run(wxCommandEvent&);
     void run_analysis();
+    void run_card(int index); // -1 = all enabled cards
 
     // keyboard placement map / instance menu
     bool handle_shortcut(wxKeyEvent& e);
