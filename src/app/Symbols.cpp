@@ -306,12 +306,13 @@ void draw_mosfet(Ctx& t, Kind k) {
     t.w(kBody);
     t.line(-31.33, -14, -31.33, 14);
     t.line(-20.67, -16, -20.67, 16);
-    // source arrow on the source tap: NMOS points into the channel (left),
-    // PMOS points out of it (right)
+    // source arrow: for the NMOS the source is at the bottom and the arrow
+    // points into the channel (right); the PMOS is upside down, so its source
+    // is at the top and the arrow points out of the channel (left)
     if (n)
         t.arrow(-6, 16, -19, 16, 8);
     else
-        t.arrow(-19, 16, -6, 16, 8);
+        t.arrow(-6, -16, -19, -16, 8);
 }
 
 void draw_bjt(Ctx& t, Kind k) {
@@ -342,9 +343,10 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.line(-40, -12, -30, -12);
     t.line(-40, 12, -30, 12);
     if (fully_diff) {
-        // two slightly shorter, fully horizontal output leads
-        t.line(4.64, -14, 32, -14);
-        t.line(4.64, 14, 32, 14);
+        // short horizontal output leads that start where the slanted edges
+        // meet the output pin heights
+        t.line(-2.3, -14, 22, -14);
+        t.line(-2.3, 14, 22, 14);
     } else {
         t.line(21.96, 0, 40, 0);
     }
@@ -356,10 +358,10 @@ void draw_opamp(Ctx& t, bool fully_diff) {
         t.line(-24, -12, -18, -12);
         t.line(-21, -15, -21, -9);
         t.line(-24, 12, -18, 12);
-        // output marks: - on the top output, + on the bottom output
-        t.line(-6, -14, 0, -14);
-        t.line(-4, -17, -4, -11);   // plus on the lower output
-        t.line(-6, 14, 0, 14);      // minus on the upper output
+        // output marks moved further left: - on the top output, + below
+        t.line(-14, -14, -9, -14);
+        t.line(-12, -17, -12, -11); // plus on the lower output
+        t.line(-14, 14, -9, 14);    // minus on the upper output
     } else {
         t.line(-27, -12, -21, -12);
         t.line(-24, -15, -24, -9);
@@ -384,31 +386,32 @@ void draw_ratio(Ctx& t, const std::string& mark) {
     t.text(mark, 0, 0, true);
 }
 
-// standalone mutual-coupling marker: drawn simply as a "K"
+// standalone mutual-coupling marker: a literal letter K
 void draw_coupling(Ctx& t) {
-    t.w(kBody);
-    t.line(-11, -13, -11, 13);
-    t.line(-11, 4, 2, -13);
-    t.line(-2, -5, 8, 7);
-    t.line(8, 7, 9, 13);
-    t.line(8, 7, 13, 3);
+    wxFont f = t.dc.GetFont();
+    f.SetPointSize(std::max(10, f.GetPointSize() + 6));
+    f.SetWeight(wxFONTWEIGHT_BOLD);
+    f.SetStyle(wxFONTSTYLE_NORMAL);
+    t.dc.SetFont(f);
+    t.dc.SetTextForeground(t.col);
+    t.text("K", 0, 0, true);
 }
 
 void draw_transformer(Ctx& t) {
     t.w(kWire);
-    // primary (left) and secondary (right) windings
-    t.line(-40, -20, -40, -16);
-    t.line(-40, 16, -40, 20);
+    // leads from the pins to the windings
+    t.polyline({{-40, -20}, {-22, -20}, {-22, -16}});
+    t.polyline({{-40, 20}, {-22, 20}, {-22, 16}});
     for (int i = 0; i < 4; ++i)
-        t.arc(-40, -12 + i * 8, 4, M_PI / 2, 3 * M_PI / 2);
-    t.line(40, -20, 40, -16);
-    t.line(40, 16, 40, 20);
+        t.arc(-22, -12 + i * 8, 4, M_PI / 2, 3 * M_PI / 2);
+    t.polyline({{40, -20}, {22, -20}, {22, -16}});
+    t.polyline({{40, 20}, {22, 20}, {22, 16}});
     for (int i = 0; i < 4; ++i)
-        t.arc(40, -12 + i * 8, 4, -M_PI / 2, M_PI / 2);
-    // core
+        t.arc(22, -12 + i * 8, 4, -M_PI / 2, M_PI / 2);
+    // core, close to the windings
     t.w(kBody);
-    t.line(-5, -16, -5, 16);
-    t.line(5, -16, 5, 16);
+    t.line(-3, -16, -3, 16);
+    t.line(3, -16, 3, 16);
 }
 
 void draw_nullor(Ctx& t) {

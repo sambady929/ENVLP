@@ -15,6 +15,8 @@ wxBEGIN_EVENT_TABLE(SchematicCanvas, wxScrolledWindow)
     EVT_LEFT_UP(SchematicCanvas::on_left_up)
     EVT_MOTION(SchematicCanvas::on_motion)
     EVT_RIGHT_DOWN(SchematicCanvas::on_right_down)
+    EVT_RIGHT_UP(SchematicCanvas::on_right_up)
+    EVT_MOUSEWHEEL(SchematicCanvas::on_mousewheel)
     EVT_LEAVE_WINDOW(SchematicCanvas::on_leave)
 wxEND_EVENT_TABLE()
 
@@ -34,6 +36,25 @@ double seg_dist(Pt p, Pt a, Pt b) {
     t = std::max(0.0, std::min(1.0, t));
     return std::hypot(wx - t * vx, wy - t * vy);
 }
+
+// Manhattan route between two points on the grid. Horizontal-first when the
+// horizontal movement dominates, vertical-first otherwise. Returns the points
+// in between (start and end excluded).
+std::vector<Pt> ortho_route(Pt a, Pt b) {
+    std::vector<Pt> mid;
+    if (a == b) return mid;
+    if (std::fabs(b.first - a.first) < 1e-9 ||
+        std::fabs(b.second - a.second) < 1e-9)
+        return mid; // already axis aligned
+    if (std::fabs(b.first - a.first) >= std::fabs(b.second - a.second)) {
+        Pt corner{b.first, a.second};
+        mid.push_back(corner);
+    } else {
+        Pt corner{a.first, b.second};
+        mid.push_back(corner);
+    }
+    return mid;
+}
 } // namespace
 
 SchematicCanvas::SchematicCanvas(wxWindow* parent, Document* doc)
@@ -42,7 +63,7 @@ SchematicCanvas::SchematicCanvas(wxWindow* parent, Document* doc)
       doc_(doc) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     SetBackgroundColour(*wxWHITE);
-    SetVirtualSize(2400, 1600);
+    SetVirtualSize(int(2400 * zoom_), int(1600 * zoom_));
     SetScrollRate(20, 20);
 }
 
@@ -117,7 +138,15 @@ void SchematicCanvas::notify_sel() {
 Pt SchematicCanvas::to_doc(const wxPoint& p) const {
     int x = 0, y = 0;
     CalcUnscrolledPosition(p.x, p.y, &x, &y);
-    return {double(x), double(y)};
+    return {double(x) / zoom_, double(y) / zoom_};
+}
+
+Pt SchematicCanvas::to_view(Pt p) const {
+    int vx, vy;
+    GetViewStart(&vx, &vy);
+    int sx, sy;
+    GetScrollPixelsPerUnit(&sx, &sy);
+    return {p.first * zoom_ - vx * sx, p.second * zoom_ - vy * sy};
 }
 
 Pt SchematicCanvas::snap(Pt p) const {
@@ -126,6 +155,7 @@ Pt SchematicCanvas::snap(Pt p) const {
 }
 
 std::string SchematicCanvas::hit_component(Pt p) const {
+    Pt v = to_view(p);
     // topmost last drawn wins -> iterate in reverse
     for (auto it = doc_->circuit.comps.rbegin();
          it != doc_->circuit.comps.rend(); ++it) {
@@ -133,8 +163,9 @@ std::string SchematicCanvas::hit_component(Pt p) const {
         if (pl == doc_->placements.end()) continue;
         double x0, y0, x1, y1;
         symbol_bbox(*it, pl->second, x0, y0, x1, y1);
-        if (p.first >= x0 && p.first <= x1 && p.second >= y0 &&
-            p.second <= y1)
+        Pt a = to_view({x0, y0}), b = to_view({x1, y1});
+        if (v.first >= a.first && v.first <= b.first && v.second >= a.second &&
+            v.second <= b.second)
             return it->ref;
     }
     return "";
@@ -145,19 +176,22 @@ int SchematicCanvas::hit_pin(const std::string& ref, Pt p) const {
     if (!c) return -1;
     auto pl = doc_->placements.find(ref);
     if (pl == doc_->placements.end()) return -1;
+    Pt v = to_view(p);
     int n = int(pin_offsets(c->kind).size());
     for (int i = 0; i < n; ++i)
-        if (dist(pin_world(*c, pl->second, i), p) <= kSnapR) return i;
+        if (dist(to_view(pin_world(*c, pl->second, i)), v) <= kSnapR * zoom_)
+            return i;
     return -1;
 }
 
 int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
+    Pt v = to_view(p);
     for (const auto& c : doc_->circuit.comps) {
         auto pl = doc_->placements.find(c.ref);
         if (pl == doc_->placements.end()) continue;
         int n = int(pin_offsets(c.kind).size());
         for (int i = 0; i < n; ++i)
-            if (dist(pin_world(c, pl->second, i), p) <= kSnapR) {
+            if (dist(to_view(pin_world(c, pl->second, i)), v) <= kSnapR * zoom_) {
                 ref = c.ref;
                 return i;
             }
@@ -167,10 +201,12 @@ int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
 }
 
 bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
+    Pt v = to_view(p);
     for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
         const auto& w = doc_->wires[i];
         for (size_t k = 1; k < w.pts.size(); ++k)
-            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= 5.0) {
+            if (seg_dist(v, to_view(w.pts[k - 1]), to_view(w.pts[k])) <=
+                5.0 * zoom_) {
                 idx = i;
                 return true;
             }
@@ -179,8 +215,9 @@ bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
 }
 
 bool SchematicCanvas::hit_label(Pt p, int& idx) const {
+    Pt v = to_view(p);
     for (int i = int(doc_->labels.size()) - 1; i >= 0; --i)
-        if (dist(doc_->labels[i].pt, p) <= 12.0) {
+        if (dist(to_view(doc_->labels[i].pt), v) <= 12.0 * zoom_) {
             idx = i;
             return true;
         }
@@ -195,18 +232,23 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     dc.SetBackground(wxBrush(*wxWHITE));
     dc.Clear();
     DoPrepareDC(dc);
+    dc.SetUserScale(zoom_, zoom_);
 
-    // grid: faint dots on white
+    // grid: faint dots on white (denser as we zoom in)
     dc.SetPen(wxPen(wxColour(226, 226, 226)));
     wxPoint tl;
     CalcUnscrolledPosition(0, 0, &tl.x, &tl.y);
     wxSize cs = GetClientSize();
     wxPoint br;
     CalcUnscrolledPosition(cs.x, cs.y, &br.x, &br.y);
-    for (double x = std::floor(tl.x / kGrid) * kGrid; x < br.x + kGrid;
-         x += kGrid)
-        for (double y = std::floor(tl.y / kGrid) * kGrid; y < br.y + kGrid;
-             y += kGrid)
+    double x0 = tl.x / zoom_, y0 = tl.y / zoom_;
+    double x1 = br.x / zoom_, y1 = br.y / zoom_;
+    double step = kGrid;
+    if (zoom_ <= 1.0) step = 5 * kGrid;   // fewer dots when zoomed out
+    else if (zoom_ >= 3.0) step = 2.5 * kGrid / 2.5; // = kGrid
+    for (double x = std::floor(x0 / step) * step; x < x1 + step; x += step)
+        for (double y = std::floor(y0 / step) * step; y < y1 + step;
+             y += step)
             dc.DrawPoint(wxPoint(int(x), int(y)));
 
     // wires (black)
@@ -220,7 +262,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                         wxPoint(int(w.pts[k].first), int(w.pts[k].second)));
     }
 
-    // wire in progress
+    // wire in progress: orthogonal, with a live rubber-band segment
     if (wiring_ && !wire_draft_.empty()) {
         dc.SetPen(wxPen(wxColour(0, 120, 200), 2, wxPENSTYLE_SHORT_DASH));
         for (size_t k = 1; k < wire_draft_.size(); ++k)
@@ -228,9 +270,16 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                 wxPoint(int(wire_draft_[k - 1].first), int(wire_draft_[k - 1].second)),
                 wxPoint(int(wire_draft_[k].first), int(wire_draft_[k].second)));
         if (has_mouse_) {
-            Pt m = to_doc(mouse_);
             Pt last = wire_draft_.back();
-            dc.DrawLine(wxPoint(int(last.first), int(last.second)),
+            Pt m = snap(to_doc(mouse_));
+            auto mids = ortho_route(last, m);
+            Pt prev = last;
+            for (const auto& q : mids) {
+                dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
+                            wxPoint(int(q.first), int(q.second)));
+                prev = q;
+            }
+            dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
                         wxPoint(int(m.first), int(m.second)));
         }
     }
@@ -264,7 +313,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
             const Component* c = doc_->circuit.find(ref);
             auto pl = doc_->placements.find(ref);
             if (c && pl != doc_->placements.end()) {
-                Pt w = pin_world(*c, pl->second, i);
+                Pt w = to_view(pin_world(*c, pl->second, i));
                 dc.SetPen(wxPen(wxColour(0, 120, 200), 2));
                 dc.SetBrush(*wxTRANSPARENT_BRUSH);
                 dc.DrawCircle(wxPoint(int(w.first), int(w.second)), 6);
@@ -333,7 +382,11 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             wiring_ = true;
             wire_draft_.clear();
             wire_draft_.push_back(target);
+        } else if (target == wire_draft_.back()) {
+            // same point: ignore
         } else {
+            auto mids = ortho_route(wire_draft_.back(), target);
+            for (const auto& q : mids) wire_draft_.push_back(q);
             wire_draft_.push_back(target);
             if (pin >= 0 && wire_draft_.size() >= 2) {
                 Wire w;
@@ -386,6 +439,23 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     has_mouse_ = true;
     Pt p = to_doc(mouse_);
 
+    // right-button drag pans the view
+    if (panning_ && e.RightIsDown()) {
+        int vx, vy;
+        GetViewStart(&vx, &vy); // scroll units
+        int sx, sy;
+        GetScrollPixelsPerUnit(&sx, &sy);
+        if (!sx) sx = 1;
+        if (!sy) sy = 1;
+        double dx = double(mouse_.x - pan_last_.x) / (sx * zoom_);
+        double dy = double(mouse_.y - pan_last_.y) / (sy * zoom_);
+        SetScrollPos(wxHORIZONTAL, vx - int(std::lround(dx)), true);
+        SetScrollPos(wxVERTICAL, vy - int(std::lround(dy)), true);
+        pan_last_ = mouse_;
+        Refresh();
+        return;
+    }
+
     if (dragging_ && !sel_.empty() && sel_[0] != '#') {
         auto pl = doc_->placements.find(sel_);
         if (pl != doc_->placements.end()) {
@@ -397,8 +467,7 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     }
 
     std::string nh;
-    if (tool_ == Tool::Wire && wiring_) nh = "wire";
-    else if (tool_ == Tool::Delete) {
+    if (tool_ == Tool::Wire && wiring_) nh = "wire";    else if (tool_ == Tool::Delete) {
         int wi, li;
         if (!hit_component(p).empty()) nh = "del-comp";
         else if (hit_wire(p, wi)) nh = "del-wire";
@@ -428,23 +497,60 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
 
 void SchematicCanvas::on_right_down(wxMouseEvent& e) {
     (void)e;
-    if (wiring_) {
-        if (wire_draft_.size() >= 2) {
-            Wire w;
-            w.pts = wire_draft_;
-            doc_->wires.push_back(w);
-            notify_doc();
+    // press-and-hold starts panning; a plain click (no drag) is handled in
+    // on_right_up and simply returns to Select mode
+    panning_ = true;
+    pan_last_ = e.GetPosition();
+    mouse_ = e.GetPosition();
+    has_mouse_ = true;
+    CaptureMouse();
+}
+
+void SchematicCanvas::on_right_up(wxMouseEvent& e) {
+    if (panning_) {
+        bool moved = std::abs(e.GetPosition().x - pan_last_.x) > 3 ||
+                     std::abs(e.GetPosition().y - pan_last_.y) > 3;
+        panning_ = false;
+        if (HasCapture()) ReleaseMouse();
+        // a click without a drag cancels the current tool (Select), like the
+        // old behaviour, but a drag was a pan and must not cancel anything
+        if (!moved && !wiring_ && tool_ != Tool::Place) {
+            set_tool(Tool::Select);
+            if (on_status) on_status("");
         }
-        wiring_ = false;
-        wire_draft_.clear();
-        Refresh();
-        return;
     }
-    set_tool(Tool::Select);
-    if (on_status) on_status("");
+}
+
+void SchematicCanvas::on_mousewheel(wxMouseEvent& e) {
+    const double kMinZoom = 0.35, kMaxZoom = 6.0;
+    mouse_ = e.GetPosition();
+    has_mouse_ = true;
+    double old = zoom_;
+    double factor = e.GetWheelRotation() > 0 ? 1.1 : 1.0 / 1.1;
+    double nz = std::max(kMinZoom, std::min(kMaxZoom, old * factor));
+    if (std::fabs(nz - old) < 1e-9) return;
+
+    // keep the point under the cursor stationary
+    int vx, vy;
+    GetViewStart(&vx, &vy);
+    int sx, sy;
+    GetScrollPixelsPerUnit(&sx, &sy);
+    if (!sx) sx = 1;
+    if (!sy) sy = 1;
+    double docx = (vx * sx + mouse_.x) / old;
+    double docy = (vy * sy + mouse_.y) / old;
+    zoom_ = nz;
+    SetVirtualSize(int(2400 * zoom_), int(1600 * zoom_));
+    double nx = docx * nz - mouse_.x;
+    double ny = docy * nz - mouse_.y;
+    SetScrollPos(wxHORIZONTAL, int(std::lround(nx / sx)), true);
+    SetScrollPos(wxVERTICAL, int(std::lround(ny / sy)), true);
+    Refresh();
 }
 
 void SchematicCanvas::on_leave(wxMouseEvent&) {
+    if (panning_ && HasCapture()) ReleaseMouse();
+    panning_ = false;
     if (tool_ == Tool::Place) Refresh();
 }
 

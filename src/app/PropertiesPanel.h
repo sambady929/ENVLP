@@ -24,6 +24,7 @@ public:
     void refresh(Document* doc, const std::string& selection);
 
     std::function<void()> on_edited; // any field changed
+    std::function<void(const std::string&)> on_selection_changed;
 
 private:
     Document* doc_ = nullptr;
@@ -40,6 +41,9 @@ private:
                        const std::string& default_text);
     void add_mantissa_exp(syms::Component* comp, const std::string& name,
                           bool parasitic, const wxString& default_text);
+    // value dropdowns (mantissa + exponent) writing to value_text
+    void add_value_selector(syms::Component* comp, bool with_unit);
+    bool rename_component(const std::string& old_ref, const wxString& new_ref);
 
     void on_analysis_changed(wxCommandEvent& e);
     wxDECLARE_EVENT_TABLE();

@@ -125,6 +125,10 @@ void MainFrame::build_layout() {
         canvas_->Refresh();
         SetStatusText("Settings changed -- press F5 to (re)analyze.", 0);
     };
+    props_->on_selection_changed = [this](const std::string& s) {
+        canvas_->set_selection(s);
+        selection_changed(s);
+    };
 
     canvas_->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
         if (handle_shortcut(e)) return;

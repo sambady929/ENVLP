@@ -61,8 +61,14 @@ private:
     bool has_mouse_ = false; // mouse_ has seen at least one event
     std::string hover_;
 
+    // view
+    double zoom_ = 1.0;
+    bool panning_ = false;
+    wxPoint pan_last_;
+
     // geometry helpers
     Pt to_doc(const wxPoint& p) const;
+    Pt to_view(Pt p) const; // document -> client (for hit testing)
     std::string hit_component(Pt p) const;
     int hit_pin(const std::string& ref, Pt p) const; // -1 if none
     int hit_any_pin(Pt p, std::string& ref) const;
@@ -78,6 +84,8 @@ private:
     void on_left_up(wxMouseEvent& e);
     void on_motion(wxMouseEvent& e);
     void on_right_down(wxMouseEvent& e);
+    void on_right_up(wxMouseEvent& e);
+    void on_mousewheel(wxMouseEvent& e);
     void on_leave(wxMouseEvent& e);
 
     wxDECLARE_EVENT_TABLE();

@@ -199,6 +199,84 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
     add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text));
 }
 
+// Value dropdowns for passives: pick a mantissa (1, 3.3, 10, 33, ...) and an
+// exponent (multiples of 3) -> value_text = "<mant><SIPrefix>".
+void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) {
+    auto* sizer = GetSizer();
+    double v = 1.0;
+    if (!syms::eng::parse_value(comp->value_text, v) || !(v > 0.0)) v = 1.0;
+    double mant = 1.0;
+    int exp = 0;
+    decompose(v, mant, exp);
+
+    sizer->Add(new wxStaticText(this, wxID_ANY, "Value"), 0,
+               wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+    auto* sub = new wxBoxSizer(wxHORIZONTAL);
+    auto* man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
+                               wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
+    auto* ex = new wxComboBox(this, wxID_ANY, wxString::Format("%d", exp),
+                              wxDefaultPosition, wxSize(60, -1), kExponents,
+                              wxCB_DROPDOWN);
+    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    sub->Add(new wxStaticText(this, wxID_ANY, "e"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    if (with_unit) {
+        std::string unit = syms::kind_display(comp->kind);
+        sub->Add(new wxStaticText(this, wxID_ANY, wxString::FromUTF8(unit)), 0,
+                 wxALIGN_CENTER_VERTICAL);
+    }
+    sizer->Add(sub, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
+
+    auto commit = [this, comp, man, ex] {
+        double m = 1.0;
+        if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
+        long e = 0;
+        ex->GetValue().ToLong(&e);
+        comp->value_text = fmt_value(m, int(e)).ToStdString();
+        doc_->dirty = true;
+        if (on_edited) on_edited();
+    };
+    man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    man->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    ex->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+}
+
+// Change a component's reference and rename every keyed map (placements) and
+// any inductor-coupling links that refer to it.
+bool PropertiesPanel::rename_component(const std::string& old_ref,
+                                       const wxString& new_ref) {
+    std::string nr = new_ref.ToStdString();
+    if (nr == old_ref) return true;
+    if (nr.empty()) return false;
+    if (doc_->circuit.find(nr)) return false; // duplicate
+    syms::Component* comp = nullptr;
+    for (auto& cc : doc_->circuit.comps)
+        if (cc.ref == old_ref) comp = &cc;
+    if (!comp) return false;
+    comp->ref = nr;
+    auto pl = doc_->placements.find(old_ref);
+    if (pl != doc_->placements.end()) {
+        Placement p = pl->second;
+        doc_->placements.erase(pl);
+        doc_->placements[nr] = p;
+    }
+    for (auto& cc : doc_->circuit.comps)
+        for (auto& lk : cc.links)
+            if (lk == old_ref) lk = nr;
+    doc_->dirty = true;
+    return true;
+}
+
 void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
     rebuilding_ = true;
     doc_ = doc;
@@ -306,13 +384,35 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             add_header(wxString::FromUTF8(syms::kind_display(c->kind) + "  " +
                                           c->ref));
 
-            add_text("Value", wxString::FromUTF8(c->value_text),
-                     [comp](const wxString& v) {
-                         comp->value_text = v.ToStdString();
-                     });
+            // editable instance name
+            {
+                auto* sizer = GetSizer();
+                sizer->Add(new wxStaticText(this, wxID_ANY, "Name"), 0,
+                           wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+                auto* nm = new wxTextCtrl(this, wxID_ANY,
+                                          wxString::FromUTF8(c->ref));
+                sizer->Add(nm, 1, wxEXPAND | wxRIGHT, 6);
+                nm->Bind(wxEVT_TEXT, [this, old = c->ref, nm](wxCommandEvent&) {
+                    if (rebuilding_) return;
+                    std::string want = nm->GetValue().ToStdString();
+                    if (want == old || want.empty()) return;
+                    std::string key = old;
+                    if (rename_component(key, nm->GetValue())) {
+                        sel_ = want;
+                        doc_->dirty = true;
+                        if (on_selection_changed) on_selection_changed(want);
+                    }
+                });
+            }
 
-            add_spin("Size (dB)", c->size_db, -200, 200,
-                     [comp](int v) { comp->size_db = v; });
+            // value selector for passives and ideal sources
+            if (c->kind == Kind::R || c->kind == Kind::C ||
+                c->kind == Kind::L || c->kind == Kind::V ||
+                c->kind == Kind::I || c->kind == Kind::D ||
+                c->kind == Kind::OPAMP || c->kind == Kind::FDOPAMP ||
+                c->kind == Kind::AMP || c->kind == Kind::E ||
+                c->kind == Kind::G)
+                add_value_selector(comp, true);
 
             // device model parameters: checkbox (parasitic) + mantissa/exponent
             for (const auto& pd : syms::param_defs(c->kind))
@@ -354,7 +454,7 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
 
                 auto* info = new wxStaticText(
                     this, wxID_ANY,
-                    "K value above is the coupling coefficient.\n"
+                    "Coupling coefficient K (value above).\n"
                     "Pick the two inductors this marker couples.");
                 info->SetForegroundColour(wxColour(115, 115, 120));
                 sizer->Add(info, 0, wxALL, 6);

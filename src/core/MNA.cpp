@@ -422,8 +422,19 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
         case Kind::K: {
             const Component* la = circ.find(c.links[0]);
             const Component* lb = circ.find(c.links[1]);
-            if (la && lb && la->kind == Kind::L && lb->kind == Kind::L) {
-                ex m = reg_param(sys.params, c, "M");
+            if (la && lb && la->kind == Kind::L && lb->kind == Kind::L &&
+                c.links[0] != c.links[1]) {
+                // coupling coefficient k (plain symbol) times the geometric
+                // mean of the two inductances gives the mutual inductance
+                ex k_val = reg_param(sys.params, c, "K");
+                // make sure both inductors' symbols exist even if the L case
+                // has not run yet (component order is arbitrary)
+                reg_param(sys.params, *la, "L");
+                reg_param(sys.params, *lb, "L");
+                ex l1 = sys.params.get(param_symbol(*la, "L"));
+                ex l2 = sys.params.get(param_symbol(*lb, "L"));
+                sys.params.set(c.ref, c.estimate(), UnitClass::Plain);
+                ex m = k_val * GiNaC::sqrt((l1 * l2).expand());
                 int aa = sys.node_idx.count(la->nodes[0])
                              ? sys.node_idx.at(la->nodes[0])
                              : -1;
