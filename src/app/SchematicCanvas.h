@@ -12,6 +12,15 @@ namespace symcirc {
 // Tools available on the canvas (mirrors the palette).
 enum class Tool { Select, Wire, Delete, Place };
 
+// What the selection currently points at.
+struct Selection {
+    enum Type { None, Component, Wire, WireSegment, Label } type = None;
+    std::string ref; // Component ref
+    int wire = -1;   // Wire index
+    int seg = -1;    // segment within a wire (WireSegment)
+    int label = -1;  // Label index
+};
+
 class SchematicCanvas : public wxScrolledWindow {
 public:
     SchematicCanvas(wxWindow* parent, Document* doc);
@@ -23,16 +32,19 @@ public:
     // Enter placement mode for a specific kind (keyboard shortcuts / menu).
     void begin_place(syms::Kind k, int rot = 0);
 
-    // Selection is a component ref ("" = none). Wire/label selection uses
-    // negative sentinels: "#wireN", "#labelN".
+    // Selection. The canonical string form keeps the older sentinels
+    // ("", ref, "#wireN", "#wireN:segM", "#labelN") so the rest of the UI
+    // keeps working; structured access is via selection_info().
     const std::string& selection() const { return sel_; }
     void set_selection(const std::string& s);
+    Selection selection_info() const;
 
     // Notify the outside world that the document changed (dirty flag set
     // by the caller's edit path) or selection changed.
     std::function<void()> on_document_changed;
     std::function<void(const std::string&)> on_selection_changed;
     std::function<void(const std::string&)> on_status; // hover hint
+    std::function<void()> on_push_undo; // called before any mutating op
 
     // Transform the pending ghost (Place) or the selected component.
     void rotate_ghost(int delta);      // Space = +90
@@ -42,11 +54,13 @@ public:
     void flip_selection_h();
     void flip_selection_v();
     void delete_selection();  // Delete
+    void cancel_current();    // Escape
     bool handle_key(wxKeyEvent& e);
 
 private:
     Document* doc_;
     Tool tool_ = Tool::Select;
+    bool placing_ = false; // a ghost is following the cursor
     syms::Kind place_kind_ = syms::Kind::R;
     int place_rot_ = 0;
     bool place_flip_h_ = false, place_flip_v_ = false;
@@ -65,6 +79,7 @@ private:
     double zoom_ = 1.0;
     bool panning_ = false;
     wxPoint pan_last_;
+    int pan_total_ = 0;
 
     // geometry helpers
     Pt to_doc(const wxPoint& p) const;
@@ -72,7 +87,8 @@ private:
     std::string hit_component(Pt p) const;
     int hit_pin(const std::string& ref, Pt p) const; // -1 if none
     int hit_any_pin(Pt p, std::string& ref) const;
-    bool hit_wire(Pt p, int& idx) const;
+    bool hit_wire(Pt p, int& idx) const;                 // whole wire
+    bool hit_wire_segment(Pt p, int& idx, int& seg) const;
     bool hit_label(Pt p, int& idx) const;
     Pt snap(Pt p) const;
 

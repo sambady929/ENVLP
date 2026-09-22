@@ -50,6 +50,11 @@ private:
     // editing
     void on_rotate(wxCommandEvent&);
     void on_delete(wxCommandEvent&);
+    void on_undo(wxCommandEvent&);
+    void on_redo(wxCommandEvent&);
+    void on_undo_cmd();
+    void on_redo_cmd();
+    void after_undo_redo();
 
     // analysis
     void on_run(wxCommandEvent&);

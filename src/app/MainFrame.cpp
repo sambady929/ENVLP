@@ -20,6 +20,8 @@ enum {
     ID_RUN,
     ID_ROTATE,
     ID_DELETE,
+    ID_UNDO,
+    ID_REDO,
     ID_ABOUT_APP,
     ID_INSTANCE,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
@@ -33,6 +35,8 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_RUN, MainFrame::on_run)
     EVT_MENU(ID_ROTATE, MainFrame::on_rotate)
     EVT_MENU(ID_DELETE, MainFrame::on_delete)
+    EVT_MENU(ID_UNDO, MainFrame::on_undo)
+    EVT_MENU(ID_REDO, MainFrame::on_redo)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
 wxEND_EVENT_TABLE()
 
@@ -61,6 +65,9 @@ void MainFrame::build_menu() {
     file->Append(wxID_EXIT, "E&xit\tAlt+F4");
 
     auto* edit = new wxMenu;
+    edit->Append(ID_UNDO, "&Undo\tCtrl+Z", "Undo the last edit");
+    edit->Append(ID_REDO, "&Redo\tCtrl+Y", "Redo the last undone edit");
+    edit->AppendSeparator();
     edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection90 deg");
     edit->Append(ID_DELETE, "&Delete\tDel", "Delete the selection");
 
@@ -120,6 +127,7 @@ void MainFrame::build_layout() {
     canvas_->on_status = [this](const std::string& s) {
         SetStatusText(wxString::FromUTF8(s), 0);
     };
+    canvas_->on_push_undo = [this] { doc_.push_undo(); };
 
     props_->on_edited = [this] {
         canvas_->Refresh();
@@ -146,6 +154,10 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     const bool shift = e.ShiftDown();
     const bool ctrl = e.ControlDown();
     const bool alt = e.AltDown();
+
+    // undo / redo
+    if (ctrl && !alt && code == 'Z') { on_undo_cmd(); return true; }
+    if (ctrl && !alt && code == 'Y') { on_redo_cmd(); return true; }
 
     // Space: rotate / flip the ghost (or the selection)
     if (code == WXK_SPACE) {
@@ -185,7 +197,7 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
         SetStatusText("Wire: click a start pin, route, click the end pin.", 0);
         return true;
     case 'M': {
-        // M toggles between NMOS and PMOS while already placing a MOSFET
+        // M again while placing a MOSFET toggles NMOS <-> PMOS
         syms::Kind cur = canvas_->tool() == Tool::Place
                              ? canvas_->place_kind()
                              : syms::Kind::NMOS;
@@ -361,6 +373,38 @@ bool MainFrame::do_save_as() {
 void MainFrame::on_save_as(wxCommandEvent&) { do_save_as(); }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+void MainFrame::on_undo(wxCommandEvent&) { on_undo_cmd(); }
+void MainFrame::on_redo(wxCommandEvent&) { on_redo_cmd(); }
+
+void MainFrame::on_undo_cmd() {
+    if (!doc_.can_undo()) {
+        SetStatusText("Nothing to undo.", 0);
+        return;
+    }
+    doc_.undo();
+    after_undo_redo();
+    SetStatusText("Undo.", 0);
+}
+
+void MainFrame::on_redo_cmd() {
+    if (!doc_.can_redo()) {
+        SetStatusText("Nothing to redo.", 0);
+        return;
+    }
+    doc_.redo();
+    after_undo_redo();
+    SetStatusText("Redo.", 0);
+}
+
+void MainFrame::after_undo_redo() {
+    // the selection may point at something that no longer exists
+    canvas_->set_selection("");
+    canvas_->Refresh();
+    props_->refresh(&doc_, "");
+    update_title();
+}
+
 void MainFrame::on_rotate(wxCommandEvent&) { canvas_->rotate_selection(); }
 void MainFrame::on_delete(wxCommandEvent&) { canvas_->delete_selection(); }
 

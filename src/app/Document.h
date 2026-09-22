@@ -58,6 +58,20 @@ public:
 
     std::string serialize() const;
     bool deserialize(const std::string& data, std::string& err);
+
+    // Undo / redo: whole-document snapshots of the serialized form, so every
+    // kind of edit (components, wires, labels, placements) is covered.
+    // Call push_undo() *before* mutating.
+    void push_undo();
+    bool undo();
+    bool redo();
+    bool can_undo() const { return !undo_.empty(); }
+    bool can_redo() const { return !redo_.empty(); }
+    int undo_depth() const { return int(undo_.size()); }
+    int redo_depth() const { return int(redo_.size()); }
+
+private:
+    std::vector<std::string> undo_, redo_;
 };
 
 } // namespace symcirc

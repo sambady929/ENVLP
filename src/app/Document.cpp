@@ -386,6 +386,43 @@ bool Document::load(const std::string& p, std::string& err) {
     if (!deserialize(ss.str(), err)) return false;
     path = p;
     dirty = false;
+    undo_.clear();
+    redo_.clear();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// undo / redo
+// ---------------------------------------------------------------------------
+namespace {
+constexpr size_t kMaxUndo = 100;
+} // namespace
+
+void Document::push_undo() {
+    undo_.push_back(serialize());
+    if (undo_.size() > kMaxUndo) undo_.erase(undo_.begin());
+    redo_.clear();
+}
+
+bool Document::undo() {
+    if (undo_.empty()) return false;
+    redo_.push_back(serialize());
+    std::string snap = undo_.back();
+    undo_.pop_back();
+    std::string err;
+    if (!deserialize(snap, err)) return false;
+    dirty = true;
+    return true;
+}
+
+bool Document::redo() {
+    if (redo_.empty()) return false;
+    undo_.push_back(serialize());
+    std::string snap = redo_.back();
+    redo_.pop_back();
+    std::string err;
+    if (!deserialize(snap, err)) return false;
+    dirty = true;
     return true;
 }
 

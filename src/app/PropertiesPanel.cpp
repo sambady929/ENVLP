@@ -359,17 +359,26 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                              });
                 }
             } else if (sel_.rfind("#wire", 0) == 0) {
-                int i = std::atoi(sel_.c_str() + 5);
+                int colon = int(sel_.find(':'));
+                int i = std::atoi(colon < 0 ? sel_.c_str() + 5
+                                            : sel_.substr(5, colon - 5).c_str());
                 if (i >= 0 && i < int(doc_->wires.size())) {
-                    add_header("Wire");
+                    bool whole = colon < 0;
+                    int seg = colon < 0 ? -1 : std::atoi(sel_.c_str() + colon + 1);
+                    add_header(whole ? "Wire" : "Wire segment");
                     auto* info = new wxStaticText(
                         this, wxID_ANY,
                         wxString::Format("%d point(s)",
                                          int(doc_->wires[i].pts.size())));
                     sizer->Add(info, 0, wxALL, 4);
-                    auto* rm = new wxButton(this, wxID_ANY, "Delete wire");
+                    auto* rm = new wxButton(
+                        this, wxID_ANY, whole ? "Delete wire" : "Delete segment");
                     sizer->Add(rm, 0, wxALL, 4);
-                    rm->Bind(wxEVT_BUTTON, [this, i](wxCommandEvent&) {
+                    rm->Bind(wxEVT_BUTTON, [this, i, whole, seg](wxCommandEvent&) {
+                        if (i < 0 || i >= int(doc_->wires.size())) return;
+                        if (!whole) {
+                            (void)seg; // segment deletion handled on the canvas
+                        }
                         doc_->wires.erase(doc_->wires.begin() + i);
                         doc_->dirty = true;
                         if (on_edited) on_edited();

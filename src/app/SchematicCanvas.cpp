@@ -72,6 +72,7 @@ void SchematicCanvas::set_tool(Tool t, Kind k) {
     place_kind_ = k;
     place_rot_ = 0;
     place_flip_h_ = place_flip_v_ = false;
+    placing_ = (t == Tool::Place);
     wiring_ = false;
     wire_draft_.clear();
     Refresh();
@@ -79,14 +80,24 @@ void SchematicCanvas::set_tool(Tool t, Kind k) {
 
 void SchematicCanvas::begin_place(Kind k, int rot) {
     tool_ = Tool::Place;
+    placing_ = true;
     place_kind_ = k;
     place_rot_ = rot;
     place_flip_h_ = place_flip_v_ = false;
     Refresh();
 }
 
+// Leave placement mode / abort a wire. Called by Escape.
+void SchematicCanvas::cancel_current() {
+    placing_ = false;
+    wiring_ = false;
+    wire_draft_.clear();
+    tool_ = Tool::Select;
+    Refresh();
+}
+
 void SchematicCanvas::rotate_ghost(int delta) {
-    if (tool_ == Tool::Place) {
+    if (placing_) {
         place_rot_ = ((place_rot_ + delta) % 360 + 360) % 360;
         Refresh();
         return;
@@ -94,6 +105,7 @@ void SchematicCanvas::rotate_ghost(int delta) {
     if (!sel_.empty() && sel_[0] != '#') {
         auto pl = doc_->placements.find(sel_);
         if (pl != doc_->placements.end()) {
+            if (on_push_undo) on_push_undo();
             pl->second.rot = ((pl->second.rot + delta) % 360 + 360) % 360;
             notify_doc();
         }
@@ -101,7 +113,7 @@ void SchematicCanvas::rotate_ghost(int delta) {
 }
 
 void SchematicCanvas::flip_ghost(bool horizontal) {
-    if (tool_ == Tool::Place) {
+    if (placing_) {
         if (horizontal) place_flip_h_ = !place_flip_h_;
         else place_flip_v_ = !place_flip_v_;
         Refresh();
@@ -110,6 +122,7 @@ void SchematicCanvas::flip_ghost(bool horizontal) {
     if (!sel_.empty() && sel_[0] != '#') {
         auto pl = doc_->placements.find(sel_);
         if (pl != doc_->placements.end()) {
+            if (on_push_undo) on_push_undo();
             if (horizontal) pl->second.flip_h = !pl->second.flip_h;
             else pl->second.flip_v = !pl->second.flip_v;
             notify_doc();
@@ -214,6 +227,46 @@ bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
     return false;
 }
 
+bool SchematicCanvas::hit_wire_segment(Pt p, int& idx, int& seg) const {
+    Pt v = to_view(p);
+    for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
+        const auto& w = doc_->wires[i];
+        for (size_t k = 1; k < w.pts.size(); ++k)
+            if (seg_dist(v, to_view(w.pts[k - 1]), to_view(w.pts[k])) <=
+                6.0 * zoom_) {
+                idx = i;
+                seg = int(k) - 1;
+                return true;
+            }
+    }
+    return false;
+}
+
+Selection SchematicCanvas::selection_info() const {
+    Selection s;
+    if (sel_.empty()) return s;
+    if (sel_[0] != '#') {
+        s.type = Selection::Component;
+        s.ref = sel_;
+        return s;
+    }
+    if (sel_.rfind("#wire", 0) == 0) {
+        int colon = int(sel_.find(':'));
+        std::string nums = colon < 0 ? sel_.substr(5)
+                                     : sel_.substr(5, colon - 5);
+        s.type = colon < 0 ? Selection::Wire : Selection::WireSegment;
+        s.wire = std::atoi(nums.c_str());
+        if (colon >= 0) s.seg = std::atoi(sel_.c_str() + colon + 1);
+        return s;
+    }
+    if (sel_.rfind("#label", 0) == 0) {
+        s.type = Selection::Label;
+        s.label = std::atoi(sel_.c_str() + 6);
+        return s;
+    }
+    return s;
+}
+
 bool SchematicCanvas::hit_label(Pt p, int& idx) const {
     Pt v = to_view(p);
     for (int i = int(doc_->labels.size()) - 1; i >= 0; --i)
@@ -251,15 +304,21 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
              y += step)
             dc.DrawPoint(wxPoint(int(x), int(y)));
 
-    // wires (black)
+    // wires (black); the selected segment is highlighted on its own
+    Selection si = selection_info();
     for (size_t i = 0; i < doc_->wires.size(); ++i) {
         const auto& w = doc_->wires[i];
-        bool is_sel = sel_ == "#wire" + std::to_string(i);
-        dc.SetPen(wxPen(is_sel ? wxColour(0, 92, 200) : wxColour(0, 0, 0),
-                        is_sel ? 3 : 2));
-        for (size_t k = 1; k < w.pts.size(); ++k)
+        bool whole = si.type == Selection::Wire && si.wire == int(i);
+        for (size_t k = 1; k < w.pts.size(); ++k) {
+            bool seg_sel = si.type == Selection::WireSegment &&
+                           si.wire == int(i) && si.seg == int(k) - 1;
+            dc.SetPen(wxPen(seg_sel ? wxColour(0, 92, 200)
+                                    : whole ? wxColour(0, 92, 200)
+                                            : wxColour(0, 0, 0),
+                            seg_sel ? 3 : whole ? 3 : 2));
             dc.DrawLine(wxPoint(int(w.pts[k - 1].first), int(w.pts[k - 1].second)),
                         wxPoint(int(w.pts[k].first), int(w.pts[k].second)));
+        }
     }
 
     // wire in progress: orthogonal, with a live rubber-band segment
@@ -322,7 +381,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     }
 
     // ghost of component being placed
-    if (tool_ == Tool::Place && has_mouse_) {
+    if (placing_ && has_mouse_) {
         Pt m = snap(to_doc(mouse_));
         Component tmp;
         tmp.ref = "";
@@ -347,6 +406,7 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         Pt s = snap(p);
         Component c;
         c.kind = place_kind_;
+        if (on_push_undo) on_push_undo();
         std::string ref = doc_->add(c, s.first, s.second);
         auto pl = doc_->placements.find(ref);
         if (pl != doc_->placements.end()) {
@@ -356,17 +416,23 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         }
         notify_doc();
         set_selection(ref);
+        // one component per key press: drop back to Select so the next click
+        // does not place again (and Escape is not needed)
+        placing_ = false;
+        tool_ = Tool::Select;
         break;
-    }
-    case Tool::Delete: {
+    }    case Tool::Delete: {
         int wi, li;
         std::string ref = hit_component(p);
         if (!ref.empty()) {
+            if (on_push_undo) on_push_undo();
             doc_->remove(ref);
             set_selection("");
         } else if (hit_wire(p, wi)) {
+            if (on_push_undo) on_push_undo();
             doc_->wires.erase(doc_->wires.begin() + wi);
         } else if (hit_label(p, li)) {
+            if (on_push_undo) on_push_undo();
             doc_->labels.erase(doc_->labels.begin() + li);
         }
         notify_doc();
@@ -389,6 +455,7 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             for (const auto& q : mids) wire_draft_.push_back(q);
             wire_draft_.push_back(target);
             if (pin >= 0 && wire_draft_.size() >= 2) {
+                if (on_push_undo) on_push_undo();
                 Wire w;
                 w.pts = wire_draft_;
                 doc_->wires.push_back(w);
@@ -412,9 +479,10 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             }
             return;
         }
-        int wi, li;
-        if (hit_wire(p, wi)) {
-            set_selection("#wire" + std::to_string(wi));
+        int wi, li, sg;
+        if (hit_wire_segment(p, wi, sg)) {
+            set_selection("#wire" + std::to_string(wi) + ":" +
+                          std::to_string(sg));
             return;
         }
         if (hit_label(p, li)) {
@@ -439,18 +507,25 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     has_mouse_ = true;
     Pt p = to_doc(mouse_);
 
-    // right-button drag pans the view
+    // right-button drag pans the view (scroll positions are in pixels here,
+    // so no zoom/scroll-unit conversion is needed)
     if (panning_ && e.RightIsDown()) {
-        int vx, vy;
-        GetViewStart(&vx, &vy); // scroll units
+        int pan_x, pan_y;
+        int x = 0, y = 0;
+        CalcUnscrolledPosition(0, 0, &x, &y);
+        (void)x;
+        (void)y;
+        // pan_x/pan_y from GetViewStart are in scroll units
         int sx, sy;
         GetScrollPixelsPerUnit(&sx, &sy);
         if (!sx) sx = 1;
         if (!sy) sy = 1;
-        double dx = double(mouse_.x - pan_last_.x) / (sx * zoom_);
-        double dy = double(mouse_.y - pan_last_.y) / (sy * zoom_);
-        SetScrollPos(wxHORIZONTAL, vx - int(std::lround(dx)), true);
-        SetScrollPos(wxVERTICAL, vy - int(std::lround(dy)), true);
+        int vx, vy;
+        GetViewStart(&vx, &vy);
+        int dx = mouse_.x - pan_last_.x; // pixels
+        int dy = mouse_.y - pan_last_.y;
+        pan_total_ += std::abs(dx) + std::abs(dy);
+        Scroll((vx * sx - dx) / sx, (vy * sy - dy) / sy);
         pan_last_ = mouse_;
         Refresh();
         return;
@@ -500,6 +575,7 @@ void SchematicCanvas::on_right_down(wxMouseEvent& e) {
     // press-and-hold starts panning; a plain click (no drag) is handled in
     // on_right_up and simply returns to Select mode
     panning_ = true;
+    pan_total_ = 0;
     pan_last_ = e.GetPosition();
     mouse_ = e.GetPosition();
     has_mouse_ = true;
@@ -507,14 +583,12 @@ void SchematicCanvas::on_right_down(wxMouseEvent& e) {
 }
 
 void SchematicCanvas::on_right_up(wxMouseEvent& e) {
+    (void)e;
     if (panning_) {
-        bool moved = std::abs(e.GetPosition().x - pan_last_.x) > 3 ||
-                     std::abs(e.GetPosition().y - pan_last_.y) > 3;
         panning_ = false;
         if (HasCapture()) ReleaseMouse();
-        // a click without a drag cancels the current tool (Select), like the
-        // old behaviour, but a drag was a pan and must not cancel anything
-        if (!moved && !wiring_ && tool_ != Tool::Place) {
+        // a click without a real drag cancels the current tool
+        if (pan_total_ <= 3 && !wiring_ && !placing_) {
             set_tool(Tool::Select);
             if (on_status) on_status("");
         }
@@ -561,20 +635,56 @@ void SchematicCanvas::flip_selection_v() { flip_ghost(false); }
 
 void SchematicCanvas::delete_selection() {
     if (sel_.empty()) return;
-    if (sel_[0] == '#') {
-        if (sel_.rfind("#wire", 0) == 0) {
-            int i = std::atoi(sel_.c_str() + 5);
-            if (i >= 0 && i < int(doc_->wires.size()))
-                doc_->wires.erase(doc_->wires.begin() + i);
-        } else if (sel_.rfind("#label", 0) == 0) {
-            int i = std::atoi(sel_.c_str() + 6);
-            if (i >= 0 && i < int(doc_->labels.size()))
-                doc_->labels.erase(doc_->labels.begin() + i);
+    Selection si = selection_info();
+    if (si.type == Selection::Wire) {
+        if (si.wire >= 0 && si.wire < int(doc_->wires.size())) {
+            if (on_push_undo) on_push_undo();
+            doc_->wires.erase(doc_->wires.begin() + si.wire);
         }
         set_selection("");
         notify_doc();
         return;
     }
+    if (si.type == Selection::WireSegment) {
+        if (si.wire >= 0 && si.wire < int(doc_->wires.size()) && si.seg >= 0) {
+            auto& w = doc_->wires[si.wire];
+            if (si.seg + 1 < int(w.pts.size())) {
+                if (on_push_undo) on_push_undo();
+                // dropping one segment splits the polyline in two
+                std::vector<Pt> left(w.pts.begin(), w.pts.begin() + si.seg + 1);
+                std::vector<Pt> right(w.pts.begin() + si.seg + 1, w.pts.end());
+                doc_->wires.erase(doc_->wires.begin() + si.wire);
+                size_t at = si.wire;
+                if (left.size() >= 2) {
+                    Wire lw;
+                    lw.pts = left;
+                    doc_->wires.insert(doc_->wires.begin() + at, lw);
+                    ++at;
+                }
+                if (right.size() >= 2) {
+                    Wire rw;
+                    rw.pts = right;
+                    doc_->wires.insert(doc_->wires.begin() + at, rw);
+                }
+                set_selection("");
+                notify_doc();
+                return;
+            }
+        }
+        set_selection("");
+        return;
+    }
+    if (si.type == Selection::Label) {
+        if (si.label >= 0 && si.label < int(doc_->labels.size())) {
+            if (on_push_undo) on_push_undo();
+            doc_->labels.erase(doc_->labels.begin() + si.label);
+        }
+        set_selection("");
+        notify_doc();
+        return;
+    }
+    // component
+    if (on_push_undo) on_push_undo();
     std::string ref = sel_;
     doc_->remove(ref);
     set_selection("");
@@ -588,11 +698,8 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
         delete_selection();
         return true;
     case WXK_ESCAPE:
-        if (wiring_ || tool_ == Tool::Place) {
-            wiring_ = false;
-            wire_draft_.clear();
-            set_tool(Tool::Select);
-            Refresh();
+        if (wiring_ || placing_) {
+            cancel_current();
             return true;
         }
         set_selection("");
