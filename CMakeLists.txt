@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.21)
+# RC is required: the GUI embeds a manifest (Common-Controls 6.0) without
+# which the wxWidgets DLLs fail to load on Windows.
 project(SymCirc VERSION 0.1.0 LANGUAGES CXX)
+
+if(WIN32)
+  enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -88,6 +94,7 @@ target_link_libraries(symscript PUBLIC symcore ${SYM_LUA_TARGET})
 # SymCirc: wxWidgets GUI application
 # ---------------------------------------------------------------------------
 add_executable(SymCirc WIN32
+  src/app/SymCirc.rc
   src/app/App.cpp
   src/app/MainFrame.cpp
   src/app/Document.cpp
