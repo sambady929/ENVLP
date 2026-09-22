@@ -44,7 +44,7 @@ std::vector<Pt> pin_offsets(Kind k) {
         return {{0, 0}};
     case Kind::T:
         // p+ , p- , s+ , s-
-        return {{0, -30}, {0, 30}, {0, -30}, {0, 30}};
+        return {{-40, -20}, {-40, 20}, {40, -20}, {40, 20}};
     case Kind::NULLOR:
     case Kind::OPAMP:
         // in+ , in- , out
@@ -85,16 +85,26 @@ Pt pin_world(const syms::Component& c, const Placement& pl, int pin_index) {
 // ---------------------------------------------------------------------------
 namespace {
 
-const wxColour kInk(0, 0, 0);          // components: black
-const wxColour kSel(0, 92, 200);       // selection highlight
-const wxColour kRefInk(0, 70, 150);    // reference designator
-const wxColour kValInk(90, 90, 90);    // value text
+const wxColour kInk(0, 0, 0);        // components: black
+const wxColour kSel(0, 92, 200);     // selection highlight
+const wxColour kRefInk(0, 70, 150);  // reference designator
+const wxColour kValInk(80, 80, 80);  // value text
+
+// Stroke weights, in px: thin = leads, thick = device bars / plates / bodies.
+constexpr double kWire = 2.0;
+constexpr double kBody = 3.0;
 
 struct Ctx {
     wxDC& dc;
     double ox, oy;
     int rot;
     bool flip_h = false, flip_v = false;
+    wxColour col;
+
+    // set the pen width for the next strokes
+    void w(double width) const {
+        dc.SetPen(wxPen(col, std::max(1, int(std::lround(width)))));
+    }
 
     wxPoint P(double x, double y) const {
         Pt r = rotate_pt({flip_h ? -x : x, flip_v ? -y : y}, rot);
@@ -112,11 +122,23 @@ struct Ctx {
             line(pts.back().first, pts.back().second, pts.front().first,
                  pts.front().second);
     }
+    void fillpoly(const std::vector<Pt>& pts) const {
+        std::vector<wxPoint> wp;
+        wp.reserve(pts.size());
+        for (const auto& p : pts) wp.push_back(P(p.first, p.second));
+        dc.SetBrush(wxBrush(col));
+        dc.DrawPolygon(int(wp.size()), wp.data());
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+    }
+    // filled rectangle between two corners (axis-aligned in symbol space)
+    void fillrect(double x0, double y0, double x1, double y1) const {
+        fillpoly({{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}});
+    }
     void circle(double cx, double cy, double r) const {
         dc.DrawCircle(P(cx, cy), int(std::lround(r)));
     }
     void arc(double cx, double cy, double r, double a0, double a1,
-             int steps = 16) const {
+             int steps = 18) const {
         std::vector<Pt> pts;
         for (int i = 0; i <= steps; ++i) {
             double th = a0 + (a1 - a0) * i / steps;
@@ -124,7 +146,7 @@ struct Ctx {
         }
         polyline(pts);
     }
-    // solid triangular arrowhead with tip at (tx,ty) coming from (fx,fy)
+    // solid triangular arrowhead, tip at (tx,ty), coming from (fx,fy)
     void arrow(double fx, double fy, double tx, double ty, double size) const {
         double dx = tx - fx, dy = ty - fy;
         double len = std::hypot(dx, dy);
@@ -132,15 +154,11 @@ struct Ctx {
         dx /= len;
         dy /= len;
         double px = -dy, py = dx;
-        dc.SetBrush(wxBrush(dc.GetPen().GetColour()));
-        Pt a{tx, ty};
-        Pt b{tx - dx * size + px * size * 0.5,
-             ty - dy * size + py * size * 0.5};
-        Pt c{tx - dx * size - px * size * 0.5,
-             ty - dy * size - py * size * 0.5};
-        dc.DrawPolygon(3, new wxPoint[3]{P(a.first, a.second), P(b.first, b.second),
-                                         P(c.first, c.second)});
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        fillpoly({{tx, ty},
+                  {tx - dx * size + px * size * 0.5,
+                   ty - dy * size + py * size * 0.5},
+                  {tx - dx * size - px * size * 0.5,
+                   ty - dy * size - py * size * 0.5}});
     }
     void text(const std::string& s, double x, double y, bool centered) const {
         wxPoint p = P(x, y);
@@ -155,194 +173,204 @@ struct Ctx {
 };
 
 // --- passives --------------------------------------------------------------
-void draw_resistor(const Ctx& t) {
-    t.line(-30, 0, -14, 0);
-    t.line(14, 0, 30, 0);
-    t.polyline({{-14, 0}, {-11, -7}, {-5, 7}, {1, -7}, {7, 7}, {11, -7},
-                {14, 0}});
+void draw_resistor(Ctx& t) {
+    t.w(kWire);
+    t.line(-30, 0, -13, 0);
+    t.line(13, 0, 30, 0);
+    t.polyline({{-13, 0},   {-10.8, -8}, {-6.5, 8}, {-2.2, -8},
+                {2.2, 8},   {6.5, -8},   {10.8, 8}, {13, 0}});
 }
 
-void draw_capacitor(const Ctx& t) {
+void draw_capacitor(Ctx& t) {
+    t.w(kWire);
     t.line(-30, 0, -5, 0);
     t.line(5, 0, 30, 0);
-    t.line(-5, -12, -5, 12);
-    t.line(5, -12, 5, 12);
+    t.w(kBody);
+    t.line(-5, -13, -5, 13);
+    t.line(5, -13, 5, 13);
 }
 
-void draw_inductor(const Ctx& t) {
-    t.line(-30, 0, -18, 0);
-    t.line(18, 0, 30, 0);
-    for (int i = 0; i < 3; ++i)
-        t.arc(-12 + i * 12, 0, 6, 0, M_PI); // humps on top
+void draw_inductor(Ctx& t) {
+    t.w(kWire);
+    t.line(-30, 0, -16, 0);
+    t.line(16, 0, 30, 0);
+    // four upward humps
+    for (int i = 0; i < 4; ++i) t.arc(-12 + i * 8, 0, 4, M_PI, 2 * M_PI);
 }
 
-void draw_diode(const Ctx& t) {
-    t.line(-30, 0, -8, 0);
-    t.line(8, 0, 30, 0);
-    // filled triangle A -> K, cathode bar
-    t.dc.SetBrush(wxBrush(kInk));
-    wxPoint tri[3] = {t.P(-8, -8), t.P(-8, 8), t.P(8, 0)};
-    t.dc.DrawPolygon(3, tri);
-    t.dc.SetBrush(*wxTRANSPARENT_BRUSH);
-    t.line(8, -8, 8, 8);
+void draw_diode(Ctx& t) {
+    t.w(kWire);
+    t.line(-30, 0, -10, 0);
+    t.line(9, 0, 30, 0);
+    // anode triangle (outline) and cathode bar
+    t.polyline({{-10, -10}, {-10, 10}, {9, 0}}, true);
+    t.w(kBody);
+    t.line(9, -10, 9, 10);
 }
 
 // --- sources ---------------------------------------------------------------
-void draw_vsource(const Ctx& t) {
+void draw_vsource(Ctx& t) {
+    t.w(kWire);
+    t.line(-30, 0, -15, 0);
+    t.line(15, 0, 30, 0);
+    t.w(kWire);
+    t.circle(0, 0, 15);
+    // polarity marks to the left of the circle (+ upper, - lower)
+    t.line(-25, -8, -17, -8);
+    t.line(-21, -12, -21, -4);
+    t.line(-25, 8, -17, 8);
+}
+
+void draw_isource(Ctx& t) {
+    t.w(kWire);
     t.line(-30, 0, -15, 0);
     t.line(15, 0, 30, 0);
     t.circle(0, 0, 15);
-    t.text("+", -15, -7, true);
-    t.text("\u2212", 15, -7, true);
+    // arrow toward the head pin (left)
+    t.line(7, 0, 1, 0);
+    t.arrow(1, 0, -8, 0, 7);
 }
 
-void draw_isource(const Ctx& t) {
-    t.line(-30, 0, -15, 0);
-    t.line(15, 0, 30, 0);
-    t.circle(0, 0, 15);
-    // current flows toward the head (left pin)
-    t.arrow(7, 0, -7, 0, 7);
+void draw_vdd(Ctx& t) {
+    t.w(kWire);
+    t.line(0, 0, 0, -11);
+    t.fillrect(-13, -15, 13, -11);
 }
 
-void draw_vdd(const Ctx& t) {
-    t.line(0, 0, 0, -10);
-    t.line(-12, -10, 12, -10);
-    t.line(-8, -16, 8, -16);
-    t.line(-4, -22, 4, -22);
-}
-
-void draw_gnd(const Ctx& t) {
-    t.line(0, 0, 0, 10);
-    t.line(-14, 10, 14, 10);
-    t.line(-9, 16, 9, 16);
-    t.line(-4, 22, 4, 22);
+void draw_gnd(Ctx& t) {
+    t.w(kWire);
+    t.line(0, 0, 0, 8);
+    t.w(kBody);
+    t.line(-12, 8, 12, 8);
+    t.line(-7.5, 15, 7.5, 15);
+    t.line(-4, 21, 4, 21);
 }
 
 // --- controlled sources ----------------------------------------------------
-void draw_vcvs(const Ctx& t, Kind k) {
-    t.polyline({{-30, -20}, {30, -20}, {30, 20}, {-30, 20}}, true);
-    t.line(40, -10, 30, -10);
-    t.line(40, 10, 30, 10);
-    t.line(-40, -10, -30, -10);
-    t.line(-40, 10, -30, 10);
-    t.text("+", 36, -22, true);
-    t.text("\u2212", 36, 2, true);
-    t.text("+", -36, -22, true);
-    t.text("\u2212", -36, 2, true);
-    if (k == Kind::E) {
-        // diamond-ish voltage-source mark inside
-        t.polyline({{-6, 0}, {0, -8}, {6, 0}, {0, 8}}, true);
-    } else {
-        // current-source mark inside
-        t.circle(0, 0, 7);
-        t.arrow(6, 0, -6, 0, 6);
-    }
+void draw_vcvs(Ctx& t, Kind k) {
+    t.w(kWire);
+    t.line(40, -10, 26, -10);
+    t.line(40, 10, 26, 10);
+    t.line(-40, -10, -26, -10);
+    t.line(-40, 10, -26, 10);
+    t.w(kBody);
+    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // polarity marks
+    t.w(kWire);
+    t.line(-23, -10, -17, -10);
+    t.line(-20, -13, -20, -7);
+    t.line(-23, 10, -17, 10);
+    t.line(17, -10, 23, -10);
+    t.line(20, -13, 20, -7);
+    t.line(17, 10, 23, 10);
+    t.text(k == Kind::E ? "E" : "G", 0, 0, true);
 }
 
 // --- transistors -----------------------------------------------------------
-void draw_mosfet(const Ctx& t, Kind k) {
+void draw_mosfet(Ctx& t, Kind k) {
     const bool n = (k == Kind::NMOS);
-    // gate lead to the left, gate bar
+    // gate lead and gate bar (thick, filled)
+    t.w(kWire);
     t.line(-40, 0, -16, 0);
-    t.line(-16, -18, -16, 18);
-    // channel: three segments (source, gate region, drain) with bulk tap
-    t.line(-8, -20, -8, -8);
-    t.line(-8, -6, -8, 6);
-    t.line(-8, 8, -8, 20);
-    // drain (top) and source (bottom) verticals
-    t.line(-8, -20, 0, -20);
-    t.line(0, -40, 0, -20);
-    t.line(-8, 20, 0, 20);
-    t.line(0, 40, 0, 20);
-    // bulk connection to source/bulk
-    t.line(-8, 0, 14, 0);
-    t.line(14, 0, 14, 10);
-    t.line(0, 20, 14, 10);
+    t.fillrect(-16, -18, -13, 18);
+    // channel bar (thick, filled)
+    t.fillrect(-8, -22, -5, 22);
+    // drain / source taps
+    t.w(kWire);
+    t.polyline({{-5, -18}, {0, -18}, {0, -40}});
+    t.polyline({{-5, 18}, {0, 18}, {0, 40}});
+    // bulk tap from mid-channel out to the B pin, with the polarity arrow
+    t.line(-5, 0, 12, 0);
+    t.line(12, 0, 40, 0);
     if (n)
-        t.arrow(2, 12, -4, 9, 7);   // arrow points into the channel
+        t.arrow(9, 0, -2, 0, 9); // into the channel
     else
-        t.arrow(-4, 9, 2, 12, 7);   // arrow points out
-    // bulk pin
-    t.line(14, 0, 40, 0);
+        t.arrow(-2, 0, 9, 0, 9); // out of the channel
 }
 
-void draw_bjt(const Ctx& t, Kind k) {
-    t.line(-40, 0, -12, 0);
-    t.line(-12, -18, -12, 18);
-    t.line(-12, -6, 6, -30);
-    t.line(0, -40, 6, -30);
-    t.line(-12, 6, 6, 30);
-    t.line(0, 40, 6, 30);
-    if (k == Kind::NPN)
-        t.arrow(-8, 17, 2, 27, 8); // emitter arrow points out
+void draw_bjt(Ctx& t, Kind k) {
+    const bool npn = (k == Kind::NPN);
+    t.w(kWire);
+    t.line(-40, 0, -22, 0);
+    t.w(kBody);
+    t.line(-22, -16, -22, 16); // base bar
+    t.w(kWire);
+    t.polyline({{-22, -7.5}, {0, -19}, {0, -40}}); // collector
+    t.polyline({{-22, 7.5}, {0, 19}, {0, 40}});    // emitter
+    // emitter arrow sits on the emitter segment
+    if (npn)
+        t.arrow(-14, 13, -4, 17.75, 9); // outward (away from base)
     else
-        t.arrow(2, 27, -8, 17, 8); // PNP points in
+        t.arrow(-8, 15, -18, 10.4, 9);  // inward (toward base)
 }
 
 // --- amplifiers / blocks ---------------------------------------------------
-void draw_opamp(const Ctx& t, bool fully_diff) {
-    t.polyline({{-24, -24}, {-24, 24}, {28, 0}}, true);
-    // inputs
-    t.line(-40, -12, -24, -12);
-    t.line(-40, 12, -24, 12);
-    t.text("+", -22, -12, true);
-    t.text("\u2212", -22, 12, true);
-    // outputs
+void draw_opamp(Ctx& t, bool fully_diff, bool nullor) {
+    t.w(kWire);
+    t.line(-40, -12, -30, -12);
+    t.line(-40, 12, -30, 12);
     if (fully_diff) {
-        t.line(28, 0, 40, -12);
-        t.line(28, 0, 40, 12);
+        t.line(24, 0, 40, -12);
+        t.line(24, 0, 40, 12);
     } else {
-        t.line(28, 0, 40, 0);
+        t.line(24, 0, 40, 0);
     }
+    t.w(kBody);
+    t.polyline({{-30, -30}, {-30, 30}, {24, 0}}, true);
+    t.w(kWire);
+    if (fully_diff) {
+        // input +/- inside
+        t.line(-27, -12, -21, -12);
+        t.line(-24, -15, -24, -9);
+        t.line(-27, 12, -21, 12);
+        // output polarity
+        t.line(28, -14, 34, -14);
+        t.line(31, -17, 31, -11);
+        t.line(28, 14, 34, 14);
+    } else {
+        t.line(-27, -12, -21, -12);
+        t.line(-24, -15, -24, -9);
+        t.line(-27, 12, -21, 12);
+    }
+    if (nullor) t.text("\u221e", 0, 0, true);
 }
 
-void draw_amp(const Ctx& t) {
-    t.polyline({{-24, -20}, {-24, 20}, {28, 0}}, true);
-    t.line(-30, 0, -24, 0);
-    t.line(28, 0, 30, 0);
-    t.text("A", 0, 0, true);
+void draw_amp(Ctx& t) {
+    t.w(kWire);
+    t.line(-30, 0, -26, 0);
+    t.line(21, 0, 30, 0);
+    t.w(kBody);
+    t.polyline({{-26, -26}, {-26, 26}, {21, 0}}, true);
 }
 
-void draw_ratio(const Ctx& t, const std::string& mark) {
-    t.polyline({{-28, -20}, {28, -20}, {28, 20}, {-28, 20}}, true);
-    t.line(-30, 0, -28, 0);
-    t.line(28, 0, 30, 0);
+void draw_ratio(Ctx& t, const std::string& mark) {
+    t.w(kWire);
+    t.line(-30, 0, -22, 0);
+    t.line(22, 0, 30, 0);
+    t.w(kBody);
+    t.polyline({{-22, -22}, {22, -22}, {22, 22}, {-22, 22}}, true);
     t.text(mark, 0, 0, true);
 }
 
-void draw_nullor(const Ctx& t) {
-    // nullator (input, oval) with a short diagonal, norator (output, bar)
-    t.line(-30, 0, -14, 0);
-    t.polyline({{-14, 0}, {0, -12}, {14, 0}, {0, 12}}, true);
-    t.line(14, 0, 30, 0); // placeholder; nullor is usually drawn symbolically
-    t.text("N", 0, 0, true);
+void draw_transformer(Ctx& t) {
+    t.w(kWire);
+    // primary (left) and secondary (right) windings
+    t.line(-40, -20, -40, -16);
+    t.line(-40, 16, -40, 20);
+    for (int i = 0; i < 4; ++i)
+        t.arc(-40, -12 + i * 8, 4, M_PI / 2, 3 * M_PI / 2);
+    t.line(40, -20, 40, -16);
+    t.line(40, 16, 40, 20);
+    for (int i = 0; i < 4; ++i)
+        t.arc(40, -12 + i * 8, 4, -M_PI / 2, M_PI / 2);
+    // core
+    t.w(kBody);
+    t.line(-5, -16, -5, 16);
+    t.line(5, -16, 5, 16);
 }
 
-void draw_transformer(const Ctx& t) {
-    // primary winding (top) and secondary (bottom) as mirrored humps
-    t.line(0, -30, 0, -18);
-    for (int i = 0; i < 3; ++i) t.arc(0, -12 + i * 12, 6, -M_PI / 2, M_PI / 2);
-    t.line(0, 6, 0, 30);
-    // core: two short bars between windings
-    t.line(6, -14, 6, 14);
-    t.line(10, -14, 10, 14);
-}
-
-std::string default_label(syms::Kind k) {
-    return syms::kind_token(k);
-}
-
-} // namespace
-
-// ---------------------------------------------------------------------------
-void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
-                 bool selected) {
-    wxColour ink = selected ? kSel : kInk;
-    dc.SetPen(wxPen(ink, selected ? 2 : 1));
-    dc.SetBrush(*wxTRANSPARENT_BRUSH);
-
-    Ctx t{dc, pl.x, pl.y, pl.rot, pl.flip_h, pl.flip_v};
-    switch (c.kind) {
+void draw_body(Ctx& t, Kind k) {
+    switch (k) {
     case Kind::R: draw_resistor(t); break;
     case Kind::C: draw_capacitor(t); break;
     case Kind::L: draw_inductor(t); break;
@@ -352,41 +380,78 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     case Kind::VDD: draw_vdd(t); break;
     case Kind::D: draw_diode(t); break;
     case Kind::E:
-    case Kind::G: draw_vcvs(t, c.kind); break;
+    case Kind::G: draw_vcvs(t, k); break;
     case Kind::NMOS:
-    case Kind::PMOS: draw_mosfet(t, c.kind); break;
+    case Kind::PMOS: draw_mosfet(t, k); break;
     case Kind::NPN:
-    case Kind::PNP: draw_bjt(t, c.kind); break;
-    case Kind::NULLOR: draw_nullor(t); break;
-    case Kind::OPAMP: draw_opamp(t, false); break;
-    case Kind::FDOPAMP: draw_opamp(t, true); break;
+    case Kind::PNP: draw_bjt(t, k); break;
+    case Kind::NULLOR: draw_opamp(t, false, true); break;
+    case Kind::OPAMP: draw_opamp(t, false, false); break;
+    case Kind::FDOPAMP: draw_opamp(t, true, false); break;
     case Kind::AMP: draw_amp(t); break;
     case Kind::IS: draw_ratio(t, "1/s"); break;
     case Kind::SBLK: draw_ratio(t, "s"); break;
     case Kind::T: draw_transformer(t); break;
-    case Kind::K:
-        // coupling marks are drawn on the two inductors; nothing standalone
-        break;
+    case Kind::K: break;
     }
+}
 
-    if (c.kind == Kind::K) return; // no label for the coupling marker
+void label_anchor(Kind k, double& lx, double& ly) {
+    lx = 22;
+    ly = -22;
+    switch (k) {
+    case Kind::GND: lx = 16; ly = 4; break;
+    case Kind::VDD: lx = 18; ly = -26; break;
+    case Kind::E:
+    case Kind::G: lx = 28; ly = -24; break;
+    case Kind::NMOS:
+    case Kind::PMOS: lx = 12; ly = -34; break;
+    case Kind::NPN:
+    case Kind::PNP: lx = 8; ly = -36; break;
+    case Kind::OPAMP:
+    case Kind::FDOPAMP:
+    case Kind::AMP:
+    case Kind::NULLOR: lx = 10; ly = -34; break;
+    case Kind::T: lx = -34; ly = -34; break;
+    case Kind::IS:
+    case Kind::SBLK: lx = 24; ly = -24; break;
+    default: break;
+    }
+}
 
-    // labels: reference above-right, value below-right
+} // namespace
+
+// ---------------------------------------------------------------------------
+void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
+                 bool selected) {
+    wxColour ink = selected ? kSel : kInk;
+    dc.SetPen(wxPen(ink, int(kWire)));
+    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+
+    Ctx t{dc, pl.x, pl.y, pl.rot, pl.flip_h, pl.flip_v, ink};
+    draw_body(t, c.kind);
+
+    if (c.kind == Kind::K) return; // coupling marker carries no label
+
+    wxFont base = dc.GetFont();
+    double lx, ly;
+    label_anchor(c.kind, lx, ly);
+
+    wxFont ref_font = base;
+    ref_font.SetStyle(wxFONTSTYLE_ITALIC);
+    ref_font.SetWeight(wxFONTWEIGHT_BOLD);
+    dc.SetFont(ref_font);
     dc.SetTextForeground(kRefInk);
-    double lx = 34, ly = -20;
-    if (c.kind == Kind::GND) { lx = 20; ly = 6; }
-    if (c.kind == Kind::VDD) { lx = 20; ly = -24; }
-    if (c.kind == Kind::E || c.kind == Kind::G) { lx = 44; ly = -26; }
-    if (c.kind == Kind::NMOS || c.kind == Kind::PMOS) { lx = 20; ly = -34; }
-    if (c.kind == Kind::NPN || c.kind == Kind::PNP) { lx = 12; ly = -40; }
-    if (c.kind == Kind::OPAMP || c.kind == Kind::FDOPAMP ||
-        c.kind == Kind::AMP || c.kind == Kind::NULLOR) { lx = 16; ly = -30; }
     t.text(c.ref, lx, ly, false);
 
     if (!c.value_text.empty() && c.kind != Kind::GND && c.kind != Kind::VDD) {
+        wxFont val_font = base;
+        val_font.SetStyle(wxFONTSTYLE_ITALIC);
+        dc.SetFont(val_font);
         dc.SetTextForeground(kValInk);
-        t.text(c.value_text, lx, ly + 12, false);
+        t.text(c.value_text, lx, ly + 14, false);
     }
+    dc.SetFont(base);
 
     // device non-ideality marker: only when at least one parasitic is on
     if (syms::is_device(c.kind)) {
@@ -395,7 +460,7 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
             if (kv.second) any = true;
         if (any) {
             dc.SetTextForeground(wxColour(170, 60, 20));
-            t.text("\u00b6", lx, ly + 24, false);
+            t.text("\u00b6", lx, ly + 26, false);
         }
     }
 }
@@ -428,39 +493,11 @@ wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     wxMemoryDC dc(bmp);
     dc.SetBackground(*wxWHITE_BRUSH);
     dc.Clear();
-    dc.SetPen(wxPen(kInk, 1));
+    dc.SetPen(wxPen(kInk, int(kWire)));
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
-    syms::Component c;
-    c.kind = k;
-    c.ref = "";
-    Placement pl{0, 0, 0};
-    // scale into the swatch
-    dc.SetUserScale(0.42, 0.42);
-    Ctx t{dc, w / (2 * 0.42), h / (2 * 0.42), 0, false, false};
-    switch (k) {
-    case Kind::R: draw_resistor(t); break;
-    case Kind::C: draw_capacitor(t); break;
-    case Kind::L: draw_inductor(t); break;
-    case Kind::V: draw_vsource(t); break;
-    case Kind::I: draw_isource(t); break;
-    case Kind::GND: draw_gnd(t); break;
-    case Kind::VDD: draw_vdd(t); break;
-    case Kind::D: draw_diode(t); break;
-    case Kind::E:
-    case Kind::G: draw_vcvs(t, k); break;
-    case Kind::NMOS:
-    case Kind::PMOS: draw_mosfet(t, k); break;
-    case Kind::NPN:
-    case Kind::PNP: draw_bjt(t, k); break;
-    case Kind::NULLOR: draw_nullor(t); break;
-    case Kind::OPAMP: draw_opamp(t, false); break;
-    case Kind::FDOPAMP: draw_opamp(t, true); break;
-    case Kind::AMP: draw_amp(t); break;
-    case Kind::IS: draw_ratio(t, "1/s"); break;
-    case Kind::SBLK: draw_ratio(t, "s"); break;
-    case Kind::T: draw_transformer(t); break;
-    case Kind::K: break;
-    }
+    dc.SetUserScale(0.36, 0.36);
+    Ctx t{dc, w / (2 * 0.36), h / (2 * 0.36), 0, false, false, kInk};
+    draw_body(t, k);
     dc.SelectObject(wxNullBitmap);
     return bmp;
 }

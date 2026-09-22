@@ -1,0 +1,15 @@
+symcirc 1
+req "V1" "V(out)" 1000 40 0
+comp "M1" "NMOS" 180 130 0 0 0 1 ""
+comp "M2" "PMOS" 400 130 0 0 0 1 ""
+comp "Q1" "NPN" 620 130 0 0 0 1 ""
+comp "Q2" "PNP" 840 130 0 0 0 1 ""
+comp "X1" "OPAMP" 180 330 0 0 0 1 "100k"
+comp "X2" "FDOPAMP" 420 330 0 0 0 1 "100k"
+comp "A1" "AMP" 660 330 0 0 0 1 "10"
+comp "N1" "NULLOR" 880 330 0 0 0 1 ""
+comp "I1" "IS" 180 520 0 0 0 1 "1"
+comp "S1" "SBLK" 380 520 0 0 0 1 "1"
+comp "T1" "T" 620 520 0 0 0 1 "1"
+comp "V1" "V" 880 520 270 0 0 1 "1"
+comp "C1" "C" 1000 520 270 0 0 1 "1n"
