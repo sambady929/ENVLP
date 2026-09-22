@@ -320,13 +320,44 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                               pd.default_text);
 
             if (c->kind == Kind::K) {
-                wxString links;
-                for (const auto& l : c->links)
-                    links += (links.empty() ? "" : ", ") + wxString::FromUTF8(l);
-                auto* lk = new wxStaticText(
-                    this, wxID_ANY, "Coupled: " + (links.empty() ? "none" : links));
-                lk->SetForegroundColour(wxColour(80, 80, 85));
-                sizer->Add(lk, 0, wxALL, 6);
+                auto* names = new wxArrayString();
+                names->Add("(none)");
+                for (const auto& cc : doc_->circuit.comps)
+                    if (cc.kind == Kind::L) names->Add(wxString::FromUTF8(cc.ref));
+                int nL = int(names->GetCount());
+
+                auto add_link_row = [&](int which, const wxString& label) {
+                    auto* row = new wxBoxSizer(wxHORIZONTAL);
+                    row->Add(new wxStaticText(this, wxID_ANY, label), 0,
+                             wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+                    wxString cur = c->links.size() > size_t(which)
+                                       ? wxString::FromUTF8(c->links[which])
+                                       : wxString("(none)");
+                    auto* ch = new wxChoice(this, wxID_ANY, wxDefaultPosition,
+                                            wxDefaultSize, *names);
+                    int sel = names->Index(cur);
+                    ch->SetSelection(sel == wxNOT_FOUND ? 0 : sel);
+                    row->Add(ch, 1, wxEXPAND);
+                    sizer->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
+                    ch->Bind(wxEVT_CHOICE, [this, comp, which, ch](wxCommandEvent&) {
+                        wxString v = ch->GetString(ch->GetSelection());
+                        if (comp->links.size() < 2) comp->links.resize(2);
+                        comp->links[which] =
+                            (v == "(none)") ? std::string() : v.ToStdString();
+                        doc_->dirty = true;
+                        if (on_edited) on_edited();
+                    });
+                };
+                add_link_row(0, "Couples L:");
+                add_link_row(1, "with L:");
+                (void)nL;
+
+                auto* info = new wxStaticText(
+                    this, wxID_ANY,
+                    "K value above is the coupling coefficient.\n"
+                    "Pick the two inductors this marker couples.");
+                info->SetForegroundColour(wxColour(115, 115, 120));
+                sizer->Add(info, 0, wxALL, 6);
             }
 
             auto* info = new wxStaticText(

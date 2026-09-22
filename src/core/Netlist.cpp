@@ -201,6 +201,10 @@ std::vector<std::string> pin_names(Kind k) {
 const std::vector<ParamDef>& param_defs(Kind k) {
     static const std::vector<ParamDef> none;
 
+    static const std::vector<ParamDef> coupling = {
+        {"M", "1u", false, true, "H", "mutual inductance (Lp=Ls=1H reference)"},
+    };
+
     static const std::vector<ParamDef> nmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
@@ -238,6 +242,7 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         case Kind::NPN: return npn;
         case Kind::PNP: return pnp;
         case Kind::D: return diode;
+        case Kind::K: return coupling;
         default: return none;
     }
 }
@@ -245,6 +250,7 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 UnitClass param_unit_class(Kind k, const std::string& p) {
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
     if (p == "ro" || p == "rpi" || p == "rb" || p == "rd") return UnitClass::Ohm;
+    if (p == "M") return UnitClass::Henry;
     if (p == "Cgs" || p == "Cgd" || p == "Cdb" || p == "Csb" || p == "Cpi" ||
         p == "Cmu" || p == "Cd")
         return UnitClass::Farad;
