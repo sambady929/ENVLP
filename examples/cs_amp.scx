@@ -1,11 +1,11 @@
 symcirc 1
 req "V1" "V(out)" 10000 40 1
-comp "V1" "V" 80 200 270 0 "1"
-comp "M1" "NMOS" 300 250 0 0 ""
-comp "Rd" "R" 420 300 90 0 "10k"
-comp "GND1" "GND" 80 300 0 0 ""
-comp "GND2" "GND" 300 360 0 0 ""
-comp "GND3" "GND" 420 400 0 0 ""
+comp "V1" "V" 80 200 270 0 0 0 "1"
+comp "M1" "NMOS" 300 250 0 0 0 0 ""
+comp "Rd" "R" 420 300 90 0 0 0 "10k"
+comp "GND1" "GND" 80 300 0 0 0 0 ""
+comp "GND2" "GND" 300 360 0 0 0 0 ""
+comp "GND3" "GND" 420 400 0 0 0 0 ""
 wire 80,230 80,300
 wire 80,170 150,170 150,250 260,250
 wire 340,250 380,250 380,290 300,290
