@@ -110,9 +110,14 @@ syms::Circuit Document::resolved(std::string& err) const {
         double ox = pl == placements.end() ? 0.0 : pl->second.x;
         double oy = pl == placements.end() ? 0.0 : pl->second.y;
         int rot = pl == placements.end() ? 0 : pl->second.rot;
+        bool fh = pl != placements.end() && pl->second.flip_h;
+        bool fv = pl != placements.end() && pl->second.flip_v;
         auto offs = pin_offsets(c.kind);
         for (size_t pi = 0; pi < offs.size(); ++pi) {
-            Pt rp = rotate_pt(offs[pi], rot);
+            Pt p = offs[pi];
+            if (fh) p.first = -p.first;
+            if (fv) p.second = -p.second;
+            Pt rp = rotate_pt(p, rot);
             pins.push_back({int(ci), int(pi), {ox + rp.first, oy + rp.second}});
         }
     }
@@ -160,15 +165,23 @@ syms::Circuit Document::resolved(std::string& err) const {
         for (auto& ch : s) ch = char(tolower(ch));
         return s == "0" || s == "gnd" || s == "ground";
     };
+    auto is_vdd_name = [](std::string s) {
+        for (auto& ch : s) ch = char(tolower(ch));
+        return s == "vdd" || s == "vcc" || s == "v+";
+    };
 
     int auto_n = 1;
     for (int r : roots) {
         std::string name;
-        // any GND component pin here?
+        // any GND/VDD component pin here?
         for (size_t i = 0; i < pins.size(); ++i) {
             if (uf.find(int(i)) != r) continue;
             if (circuit.comps[pins[i].comp].kind == syms::Kind::GND) {
                 name = "0";
+                break;
+            }
+            if (circuit.comps[pins[i].comp].kind == syms::Kind::VDD) {
+                name = "VDD";
                 break;
             }
         }
@@ -176,6 +189,7 @@ syms::Circuit Document::resolved(std::string& err) const {
             for (size_t k = 0; k < labels.size(); ++k) {
                 if (uf.find(int(label_base + int(k))) != r) {
                     if (is_gnd_name(labels[k].name)) name = "0";
+                    else if (is_vdd_name(labels[k].name)) name = "VDD";
                     else name = labels[k].name;
                     break;
                 }
@@ -217,9 +231,13 @@ std::string Document::serialize() const {
         double x = pl == placements.end() ? 0.0 : pl->second.x;
         double y = pl == placements.end() ? 0.0 : pl->second.y;
         int rot = pl == placements.end() ? 0 : pl->second.rot;
+        int fh = pl != placements.end() && pl->second.flip_h ? 1 : 0;
+        int fv = pl != placements.end() && pl->second.flip_v ? 1 : 0;
         o << "comp " << quote(c.ref) << " " << quote(syms::kind_token(c.kind))
-          << " " << x << " " << y << " " << rot << " " << c.size_db << " "
-          << quote(c.value_text) << "\n";
+          << " " << x << " " << y << " " << rot << " " << fh << " " << fv << " "
+          << c.size_db << " " << quote(c.value_text);
+        for (const auto& lk : c.links) o << " " << quote(lk);
+        o << "\n";
         for (const auto& kv : c.param_on)
             o << "param " << quote(c.ref) << " " << quote(kv.first) << " "
               << (kv.second ? 1 : 0) << " " << quote(c.param_text.count(kv.first)
@@ -276,9 +294,10 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             req.threshold_db = std::atof(d.c_str());
             req.global_ref = e != "0";
         } else if (kw == "comp") {
-            std::string ref, tok, sx, sy, srot, sdb, val;
+            std::string ref, tok, sx, sy, srot, sfh, sfv, sdb, val;
             if (!need(ref) || !need(tok) || !need(sx) || !need(sy) ||
-                !need(srot) || !need(sdb) || !need(val))
+                !need(srot) || !need(sfh) || !need(sfv) || !need(sdb) ||
+                !need(val))
                 return fail("bad comp");
             syms::Kind k;
             if (!syms::kind_from_token(tok, k)) return fail("unknown kind " + tok);
@@ -288,11 +307,16 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             c.value_text = val;
             c.size_db = std::atoi(sdb.c_str());
             c.nodes.assign(syms::pin_count(k), "");
+            // K stores its two coupled-inductor refs at the end of the line
+            std::string extra;
+            while (next_token(line, i, extra)) c.links.push_back(extra);
             circuit.comps.push_back(c);
             Placement pl;
             pl.x = std::atof(sx.c_str());
             pl.y = std::atof(sy.c_str());
             pl.rot = std::atoi(srot.c_str());
+            pl.flip_h = sfh != "0";
+            pl.flip_v = sfv != "0";
             placements[ref] = pl;
         } else if (kw == "param") {
             std::string ref, name, son, text, sdb;

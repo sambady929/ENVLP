@@ -20,6 +20,8 @@ class MainFrame : public wxFrame {
 public:
     MainFrame();
 
+    void open_path(const wxString& p); // open a .scx (command line / recent)
+
 private:
     Document doc_;
     std::unique_ptr<syms::AnalysisResult> result_;
@@ -52,6 +54,11 @@ private:
     // analysis
     void on_run(wxCommandEvent&);
     void run_analysis();
+
+    // keyboard placement map / instance menu
+    bool handle_shortcut(wxKeyEvent& e);
+    void sync_palette();
+    void show_instance_menu();
 
     void on_about(wxCommandEvent&);
 

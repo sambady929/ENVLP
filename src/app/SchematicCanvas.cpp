@@ -41,17 +41,59 @@ SchematicCanvas::SchematicCanvas(wxWindow* parent, Document* doc)
                        wxHSCROLL | wxVSCROLL | wxWANTS_CHARS),
       doc_(doc) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
-    SetBackgroundColour(wxColour(250, 250, 248));
-    SetVirtualSize(2000, 1400);
+    SetBackgroundColour(*wxWHITE);
+    SetVirtualSize(2400, 1600);
     SetScrollRate(20, 20);
 }
 
 void SchematicCanvas::set_tool(Tool t, Kind k) {
     tool_ = t;
     place_kind_ = k;
+    place_rot_ = 0;
+    place_flip_h_ = place_flip_v_ = false;
     wiring_ = false;
     wire_draft_.clear();
     Refresh();
+}
+
+void SchematicCanvas::begin_place(Kind k, int rot) {
+    tool_ = Tool::Place;
+    place_kind_ = k;
+    place_rot_ = rot;
+    place_flip_h_ = place_flip_v_ = false;
+    Refresh();
+}
+
+void SchematicCanvas::rotate_ghost(int delta) {
+    if (tool_ == Tool::Place) {
+        place_rot_ = ((place_rot_ + delta) % 360 + 360) % 360;
+        Refresh();
+        return;
+    }
+    if (!sel_.empty() && sel_[0] != '#') {
+        auto pl = doc_->placements.find(sel_);
+        if (pl != doc_->placements.end()) {
+            pl->second.rot = ((pl->second.rot + delta) % 360 + 360) % 360;
+            notify_doc();
+        }
+    }
+}
+
+void SchematicCanvas::flip_ghost(bool horizontal) {
+    if (tool_ == Tool::Place) {
+        if (horizontal) place_flip_h_ = !place_flip_h_;
+        else place_flip_v_ = !place_flip_v_;
+        Refresh();
+        return;
+    }
+    if (!sel_.empty() && sel_[0] != '#') {
+        auto pl = doc_->placements.find(sel_);
+        if (pl != doc_->placements.end()) {
+            if (horizontal) pl->second.flip_h = !pl->second.flip_h;
+            else pl->second.flip_v = !pl->second.flip_v;
+            notify_doc();
+        }
+    }
 }
 
 void SchematicCanvas::set_selection(const std::string& s) {
@@ -148,10 +190,14 @@ bool SchematicCanvas::hit_label(Pt p, int& idx) const {
 // ---------------------------------------------------------------------------
 void SchematicCanvas::on_paint(wxPaintEvent&) {
     wxAutoBufferedPaintDC dc(this);
+    // wxBG_STYLE_PAINT suppresses automatic erasing: clear explicitly so the
+    // sheet is white paper with black ink.
+    dc.SetBackground(wxBrush(*wxWHITE));
+    dc.Clear();
     DoPrepareDC(dc);
 
-    // grid
-    dc.SetPen(wxPen(wxColour(228, 228, 224)));
+    // grid: faint dots on white
+    dc.SetPen(wxPen(wxColour(226, 226, 226)));
     wxPoint tl;
     CalcUnscrolledPosition(0, 0, &tl.x, &tl.y);
     wxSize cs = GetClientSize();
@@ -163,11 +209,11 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
              y += kGrid)
             dc.DrawPoint(wxPoint(int(x), int(y)));
 
-    // wires
+    // wires (black)
     for (size_t i = 0; i < doc_->wires.size(); ++i) {
         const auto& w = doc_->wires[i];
         bool is_sel = sel_ == "#wire" + std::to_string(i);
-        dc.SetPen(wxPen(is_sel ? wxColour(0, 120, 215) : wxColour(70, 70, 75),
+        dc.SetPen(wxPen(is_sel ? wxColour(0, 92, 200) : wxColour(0, 0, 0),
                         is_sel ? 3 : 2));
         for (size_t k = 1; k < w.pts.size(); ++k)
             dc.DrawLine(wxPoint(int(w.pts[k - 1].first), int(w.pts[k - 1].second)),
@@ -176,7 +222,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
 
     // wire in progress
     if (wiring_ && !wire_draft_.empty()) {
-        dc.SetPen(wxPen(wxColour(0, 150, 90), 2, wxPENSTYLE_SHORT_DASH));
+        dc.SetPen(wxPen(wxColour(0, 120, 200), 2, wxPENSTYLE_SHORT_DASH));
         for (size_t k = 1; k < wire_draft_.size(); ++k)
             dc.DrawLine(
                 wxPoint(int(wire_draft_[k - 1].first), int(wire_draft_[k - 1].second)),
@@ -189,19 +235,17 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         }
     }
 
-    // labels
-    dc.SetTextForeground(wxColour(140, 60, 160));
+    // net labels
     for (size_t i = 0; i < doc_->labels.size(); ++i) {
         const auto& l = doc_->labels[i];
         bool is_sel = sel_ == "#label" + std::to_string(i);
         wxString txt = wxString::FromUTF8(l.name);
         wxSize ts = dc.GetTextExtent(txt);
         wxPoint p(int(l.pt.first) - ts.x / 2, int(l.pt.second) - ts.y - 6);
-        dc.SetTextBackground(is_sel ? wxColour(0, 120, 215)
-                                    : GetBackgroundColour());
-        dc.SetTextForeground(is_sel ? *wxWHITE : wxColour(140, 60, 160));
+        dc.SetTextForeground(is_sel ? *wxWHITE : wxColour(0, 0, 0));
+        dc.SetTextBackground(is_sel ? wxColour(0, 92, 200) : *wxWHITE);
         dc.DrawText(txt, p.x, p.y);
-        dc.SetTextBackground(GetBackgroundColour());
+        dc.SetTextBackground(*wxWHITE);
     }
 
     // components
@@ -211,27 +255,17 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         draw_symbol(dc, c, pl->second, sel_ == c.ref);
     }
 
-    // pin dots (subtle) + hover highlight while wiring
-    dc.SetPen(wxPen(wxColour(150, 150, 155)));
-    for (const auto& c : doc_->circuit.comps) {
-        auto pl = doc_->placements.find(c.ref);
-        if (pl == doc_->placements.end()) continue;
-        int n = int(pin_offsets(c.kind).size());
-        for (int i = 0; i < n; ++i) {
-            Pt w = pin_world(c, pl->second, i);
-            dc.DrawCircle(wxPoint(int(w.first), int(w.second)), 2);
-        }
-    }
-    if (wiring_) {
+    // hover highlight while wiring onto a pin
+    if (wiring_ && has_mouse_) {
         std::string ref;
         Pt m = to_doc(mouse_);
-        if (hit_any_pin(m, ref) >= 0) {
-            int i = hit_any_pin(m, ref);
+        int i = hit_any_pin(m, ref);
+        if (i >= 0) {
             const Component* c = doc_->circuit.find(ref);
             auto pl = doc_->placements.find(ref);
             if (c && pl != doc_->placements.end()) {
                 Pt w = pin_world(*c, pl->second, i);
-                dc.SetPen(wxPen(wxColour(0, 150, 90), 2));
+                dc.SetPen(wxPen(wxColour(0, 120, 200), 2));
                 dc.SetBrush(*wxTRANSPARENT_BRUSH);
                 dc.DrawCircle(wxPoint(int(w.first), int(w.second)), 6);
             }
@@ -242,10 +276,12 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     if (tool_ == Tool::Place && has_mouse_) {
         Pt m = snap(to_doc(mouse_));
         Component tmp;
-        tmp.ref = "?";
+        tmp.ref = "";
         tmp.kind = place_kind_;
-        Placement pl{m.first, m.second, 0};
-        dc.SetPen(wxPen(wxColour(0, 150, 90), 1, wxPENSTYLE_DOT));
+        Placement pl{m.first, m.second, place_rot_};
+        pl.flip_h = place_flip_h_;
+        pl.flip_v = place_flip_v_;
+        dc.SetPen(wxPen(wxColour(0, 120, 200), 1, wxPENSTYLE_SHORT_DASH));
         draw_symbol(dc, tmp, pl, false);
     }
 }
@@ -262,8 +298,24 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         Pt s = snap(p);
         Component c;
         c.kind = place_kind_;
-        c.nodes.assign(syms::pin_count(place_kind_), "");
+        if (place_kind_ == Kind::K) {
+            // coupling: attach to the two nearest inductors
+            std::vector<std::string> ls;
+            for (const auto& cc : doc_->circuit.comps)
+                if (cc.kind == Kind::L) ls.push_back(cc.ref);
+            if (ls.size() < 2) {
+                if (on_status) on_status("Need two inductors to couple");
+                return;
+            }
+            c.links = {ls[0], ls[1]};
+        }
         std::string ref = doc_->add(c, s.first, s.second);
+        auto pl = doc_->placements.find(ref);
+        if (pl != doc_->placements.end()) {
+            pl->second.rot = place_rot_;
+            pl->second.flip_h = place_flip_h_;
+            pl->second.flip_v = place_flip_v_;
+        }
         notify_doc();
         set_selection(ref);
         break;
@@ -284,10 +336,9 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
     }
     case Tool::Wire: {
         std::string ref;
-        Pt target = p;
+        Pt target = snap(p);
         int pin = hit_any_pin(p, ref);
-        if (pin >= 0) target = snap(p); // pins are on the grid by construction
-        else target = snap(p);
+        if (pin >= 0) target = snap(p);
 
         if (!wiring_) {
             wiring_ = true;
@@ -295,9 +346,6 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             wire_draft_.push_back(target);
         } else {
             wire_draft_.push_back(target);
-            // finish when clicking an endpoint pin (and we have >= 2 pts and
-            // this click is on a pin different from the start's pin or the
-            // same pin twice = no-op)
             if (pin >= 0 && wire_draft_.size() >= 2) {
                 Wire w;
                 w.pts = wire_draft_;
@@ -315,7 +363,7 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         if (!ref.empty()) {
             set_selection(ref);
             auto pl = doc_->placements.find(ref);
-            if (pl != doc_->placements.end()) {
+            if (pl != doc_->placements.end() && ref != "") {
                 dragging_ = true;
                 drag_dx_ = pl->second.x - p.first;
                 drag_dy_ = pl->second.y - p.second;
@@ -359,7 +407,6 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         return;
     }
 
-    // hover feedback
     std::string nh;
     if (tool_ == Tool::Wire && wiring_) nh = "wire";
     else if (tool_ == Tool::Delete) {
@@ -391,8 +438,8 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
 }
 
 void SchematicCanvas::on_right_down(wxMouseEvent& e) {
+    (void)e;
     if (wiring_) {
-        // commit draft as an open wire (segments up to here) only if 2+ points
         if (wire_draft_.size() >= 2) {
             Wire w;
             w.pts = wire_draft_;
@@ -404,7 +451,6 @@ void SchematicCanvas::on_right_down(wxMouseEvent& e) {
         Refresh();
         return;
     }
-    // right-click cycles tool back to Select for convenience
     set_tool(Tool::Select);
     if (on_status) on_status("");
 }
@@ -414,13 +460,9 @@ void SchematicCanvas::on_leave(wxMouseEvent&) {
 }
 
 // ---------------------------------------------------------------------------
-void SchematicCanvas::rotate_selection() {
-    if (sel_.empty() || sel_[0] == '#') return;
-    auto pl = doc_->placements.find(sel_);
-    if (pl == doc_->placements.end()) return;
-    pl->second.rot = (pl->second.rot + 90) % 360;
-    notify_doc();
-}
+void SchematicCanvas::rotate_selection() { rotate_ghost(90); }
+void SchematicCanvas::flip_selection_h() { flip_ghost(true); }
+void SchematicCanvas::flip_selection_v() { flip_ghost(false); }
 
 void SchematicCanvas::delete_selection() {
     if (sel_.empty()) return;
@@ -450,14 +492,11 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
     case WXK_BACK:
         delete_selection();
         return true;
-    case 'r':
-    case 'R':
-        rotate_selection();
-        return true;
     case WXK_ESCAPE:
-        if (wiring_) {
+        if (wiring_ || tool_ == Tool::Place) {
             wiring_ = false;
             wire_draft_.clear();
+            set_tool(Tool::Select);
             Refresh();
             return true;
         }

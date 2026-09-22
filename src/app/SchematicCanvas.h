@@ -18,6 +18,10 @@ public:
 
     void set_tool(Tool t, syms::Kind k = syms::Kind::R);
     Tool tool() const { return tool_; }
+    syms::Kind place_kind() const { return place_kind_; }
+
+    // Enter placement mode for a specific kind (keyboard shortcuts / menu).
+    void begin_place(syms::Kind k, int rot = 0);
 
     // Selection is a component ref ("" = none). Wire/label selection uses
     // negative sentinels: "#wireN", "#labelN".
@@ -30,7 +34,13 @@ public:
     std::function<void(const std::string&)> on_selection_changed;
     std::function<void(const std::string&)> on_status; // hover hint
 
-    void rotate_selection();  // Ctrl+R
+    // Transform the pending ghost (Place) or the selected component.
+    void rotate_ghost(int delta);      // Space = +90
+    void flip_ghost(bool horizontal);  // Shift+Space / Ctrl+Space
+
+    void rotate_selection();
+    void flip_selection_h();
+    void flip_selection_v();
     void delete_selection();  // Delete
     bool handle_key(wxKeyEvent& e);
 
@@ -38,6 +48,8 @@ private:
     Document* doc_;
     Tool tool_ = Tool::Select;
     syms::Kind place_kind_ = syms::Kind::R;
+    int place_rot_ = 0;
+    bool place_flip_h_ = false, place_flip_v_ = false;
     std::string sel_;
 
     // interaction state

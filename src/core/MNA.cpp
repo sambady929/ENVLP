@@ -59,7 +59,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
     std::vector<std::string> nodes;
     std::set<std::string> seen;
     auto add_node = [&](const std::string& raw) {
-        std::string nd = (raw == "GND") ? "0" : raw;
+        std::string nd = (raw == "GND") ? "0" : (raw == "VDD") ? "VDD" : raw;
         if (seen.insert(nd).second) nodes.push_back(nd);
     };
     for (const auto& c : circ.comps) {
@@ -80,9 +80,13 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
     }
     for (const auto& c : circ.comps) {
         if (has_branch_current(c.kind)) {
-            sys.branch_idx[c.ref] = sys.n;
-            sys.var_names.push_back("i(" + c.ref + ")");
-            ++sys.n;
+            std::string base = (c.kind == Kind::L) ? "L:" : "";
+            for (const auto& sfx : branch_suffixes(c.kind)) {
+                std::string key = branch_key(c.ref, sfx);
+                sys.branch_idx[key] = sys.n;
+                sys.var_names.push_back("i(" + base + key + ")");
+                ++sys.n;
+            }
         }
     }
     if (sys.n == 0) throw std::runtime_error("circuit has no unknowns");
@@ -91,7 +95,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
     sys.b = matrix(sys.n, 1);
 
     auto idx = [&](const std::string& raw) -> int {
-        std::string key = (raw == "GND") ? "0" : raw;
+        std::string key = (raw == "GND") ? "0" : (raw == "VDD") ? "VDD" : raw;
         if (key == "0") return -1;
         auto it = sys.node_idx.find(key);
         return it == sys.node_idx.end() ? -1 : it->second;
@@ -120,6 +124,14 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             if (cn >= 0) sys.Y(on, cn) += g;
         }
     };
+    // branch k with current i flowing from node a into the branch and out at
+    // node bb: stamp the KCL column and the KVL row (op is the branch output).
+    auto stamp_branch = [&](int a, int bb, int k) {
+        if (a >= 0) sys.Y(a, k) += 1;
+        if (bb >= 0) sys.Y(bb, k) -= 1;
+        if (a >= 0) sys.Y(k, a) += 1;
+        if (bb >= 0) sys.Y(k, bb) -= 1;
+    };
 
     // --- component stamps ------------------------------------------------
     for (const auto& c : circ.comps) {
@@ -141,7 +153,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             sys.params.set(c.ref, c.estimate(), UnitClass::Henry);
             ex l = sys.params.get(c.ref);
             int a = idx(nd[0]), bb = idx(nd[1]);
-            int k = sys.branch_idx.at(c.ref);
+            int k = sys.branch_idx.at("L:" + c.ref);
             if (a >= 0) {
                 sys.Y(a, k) += 1;
                 sys.Y(k, a) += 1;
@@ -192,8 +204,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::G: {
-            sys.params.set(c.ref, c.estimate(), UnitClass::Siemens);
-            ex g = sys.params.get(c.ref);
+            ex g = gain_ex(c);
             stamp_vccs(idx(nd[0]), idx(nd[1]), idx(nd[2]), idx(nd[3]), g);
             break;
         }
@@ -242,7 +253,163 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::GND:
+        case Kind::VDD:
             break;
+        case Kind::D: {
+            // small-signal diode: gm(A->K), optional rd in series, Cd
+            int A = idx(nd[0]), Kk = idx(nd[1]);
+            ex gm = reg_param(sys.params, c, "gm");
+            ex rd = reg_param(sys.params, c, "rd");
+            ex cd = reg_param(sys.params, c, "Cd");
+            stamp_vccs(A, Kk, A, Kk, gm);
+            if (c.param_enabled("rd")) stamp_adm(A, Kk, ex(1) / rd);
+            if (c.param_enabled("Cd")) stamp_cap(A, Kk, cd);
+            break;
+        }
+        case Kind::IS: {
+            // ideal 1/s block: branch current i flows in at `in`, out at `out`,
+            // with s*i = v(in) - v(out)  (integrator into a 1 ohm sense port)
+            int a = idx(nd[0]), bb = idx(nd[1]);
+            int k = sys.branch_idx.at(c.ref);
+            stamp_branch(a, bb, k);
+            sys.Y(k, k) -= s;
+            break;
+        }
+        case Kind::SBLK: {
+            // ideal s block: i = s*(v(in) - v(out))
+            int a = idx(nd[0]), bb = idx(nd[1]);
+            int k = sys.branch_idx.at(c.ref);
+            stamp_branch(a, bb, k);
+            sys.Y(k, k) -= s;
+            break;
+        }
+        case Kind::AMP: {
+            // gain block: v(out) = A*(v(in) - v(out)), inverting sides grounded
+            ex gain = gain_ex(c);
+            int a = idx(nd[0]), bb = idx(nd[1]);
+            int k = sys.branch_idx.at(c.ref);
+            stamp_branch(a, bb, k);
+            if (bb >= 0) sys.Y(k, bb) -= gain;
+            break;
+        }
+        case Kind::OPAMP: {
+            // finite-gain op-amp: v(out) = A*(v(in+) - v(in-))
+            ex gain = gain_ex(c);
+            int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
+            int k = sys.branch_idx.at(c.ref);
+            stamp_branch(o, -1, k);
+            if (im >= 0) sys.Y(k, im) += gain;
+            if (ip >= 0) sys.Y(k, ip) -= gain;
+            break;
+        }
+        case Kind::NULLOR: {
+            // ideal op-amp: virtual short (v(in+) = v(in-)) plus an ideal
+            // norator branch at the output
+            int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
+            int k = sys.branch_idx.at(c.ref);
+            stamp_branch(o, -1, k);
+            if (im >= 0) sys.Y(k, im) += 1;
+            if (ip >= 0) sys.Y(k, ip) -= 1;
+            break;
+        }
+        case Kind::FDOPAMP: {
+            // fully differential: v(out+)-v(out-) = A*(v(in+)-v(in-))
+            ex gain = gain_ex(c);
+            int ip = idx(nd[0]), im = idx(nd[1]);
+            int op = idx(nd[2]), on = idx(nd[3]);
+            int kp = sys.branch_idx.at(branch_key(c.ref, "p"));
+            int kn = sys.branch_idx.at(branch_key(c.ref, "n"));
+            stamp_branch(op, -1, kp);
+            stamp_branch(on, -1, kn);
+            if (im >= 0) {
+                sys.Y(kp, im) += gain;
+                sys.Y(kn, im) += gain;
+            }
+            if (ip >= 0) {
+                sys.Y(kp, ip) -= gain;
+                sys.Y(kn, ip) -= gain;
+            }
+            // v(out+) - v(out-) constraint (row kp already couples op-on)
+            if (on >= 0) sys.Y(kp, on) -= 1;
+            break;
+        }
+        case Kind::T: {
+            // ideal transformer, all inductors 1 H, mutual M = sqrt(Lp*Ls)*k
+            ex lp = reg_param(sys.params, c, "Lp");
+            ex ls = reg_param(sys.params, c, "Ls");
+            ex kk = reg_param(sys.params, c, "k");
+            int pp = idx(nd[0]), pn = idx(nd[1]);
+            int sp = idx(nd[2]), sn = idx(nd[3]);
+            int kp = sys.branch_idx.at(branch_key(c.ref, "p"));
+            int kn = sys.branch_idx.at(branch_key(c.ref, "n"));
+            // KCL columns of both windings
+            if (pp >= 0) {
+                sys.Y(pp, kp) += 1;
+                sys.Y(pp, kn) += 1;
+            }
+            if (pn >= 0) {
+                sys.Y(pn, kp) -= 1;
+                sys.Y(pn, kn) -= 1;
+            }
+            if (sp >= 0) {
+                sys.Y(sp, kp) -= 1;
+                sys.Y(sp, kn) -= 1;
+            }
+            if (sn >= 0) {
+                sys.Y(sn, kp) += 1;
+                sys.Y(sn, kn) += 1;
+            }
+            // KVL rows for the two windings
+            if (pp >= 0) {
+                sys.Y(kp, pp) += 1;
+                sys.Y(kn, pp) -= 1;
+            }
+            if (pn >= 0) {
+                sys.Y(kp, pn) -= 1;
+                sys.Y(kn, pn) += 1;
+            }
+            if (sp >= 0) {
+                sys.Y(kp, sp) -= 1;
+                sys.Y(kn, sp) += 1;
+            }
+            if (sn >= 0) {
+                sys.Y(kp, sn) += 1;
+                sys.Y(kn, sn) -= 1;
+            }
+            ex m = kk * GiNaC::sqrt((lp * ls).expand());
+            sys.Y(kp, kp) -= s * lp;
+            sys.Y(kn, kn) -= s * ls;
+            sys.Y(kp, kn) -= s * m;
+            sys.Y(kn, kp) -= s * m;
+            break;
+        }
+        case Kind::K: {
+            const Component* la = circ.find(c.links[0]);
+            const Component* lb = circ.find(c.links[1]);
+            if (la && lb && la->kind == Kind::L && lb->kind == Kind::L) {
+                ex m = reg_param(sys.params, c, "M");
+                int aa = sys.node_idx.count(la->nodes[0])
+                             ? sys.node_idx.at(la->nodes[0])
+                             : -1;
+                int ab = sys.node_idx.count(la->nodes[1])
+                             ? sys.node_idx.at(la->nodes[1])
+                             : -1;
+                int ba = sys.node_idx.count(lb->nodes[0])
+                             ? sys.node_idx.at(lb->nodes[0])
+                             : -1;
+                int bb = sys.node_idx.count(lb->nodes[1])
+                             ? sys.node_idx.at(lb->nodes[1])
+                             : -1;
+                int ka = sys.branch_idx.at("L:" + la->ref);
+                int kb = sys.branch_idx.at("L:" + lb->ref);
+                // v(a1) - v(a2) += s*M*i(b);  v(b1) - v(b2) += s*M*i(a)
+                if (aa >= 0) sys.Y(ka, aa) += s * m;
+                if (ab >= 0) sys.Y(ka, ab) -= s * m;
+                if (ba >= 0) sys.Y(kb, ba) += s * m;
+                if (bb >= 0) sys.Y(kb, bb) -= s * m;
+            }
+            break;
+        }
         }
     }
     return sys;

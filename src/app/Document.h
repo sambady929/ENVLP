@@ -15,6 +15,8 @@ using Pt = std::pair<double, double>;
 struct Placement {
     double x = 0, y = 0;
     int rot = 0;
+    bool flip_h = false;
+    bool flip_v = false;
 };
 
 // A polyline of wire segments. Consecutive points are electrically one net;

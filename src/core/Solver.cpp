@@ -119,7 +119,13 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
         out.output_desc = "V(" + node + ")";
     } else if (spec.size() > 3 && spec.front() == 'I' && spec.back() == ')') {
         std::string ref = spec.substr(2, spec.size() - 3);
-        auto bit = sys.branch_idx.find(ref);
+        // strip an explicit L: prefix used to disambiguate the inductor
+        // branch from the inductor's symbol name
+        std::string look = ref;
+        if (look.rfind("L:", 0) == 0) look = look.substr(2);
+        auto bit = sys.branch_idx.find(look);
+        if (bit == sys.branch_idx.end() && look != ref)
+            bit = sys.branch_idx.find(ref);
         if (bit != sys.branch_idx.end()) {
             num = solution(bit->second);
         } else {

@@ -21,6 +21,8 @@ enum {
     ID_ROTATE,
     ID_DELETE,
     ID_ABOUT_APP,
+    ID_INSTANCE,
+    ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
 wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
@@ -125,10 +127,115 @@ void MainFrame::build_layout() {
     };
 
     canvas_->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
+        if (handle_shortcut(e)) return;
         if (!canvas_->handle_key(e)) e.Skip();
     });
 
     props_->refresh(&doc_, canvas_->selection());
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard placement map + quick transform keys.
+// ---------------------------------------------------------------------------
+bool MainFrame::handle_shortcut(wxKeyEvent& e) {
+    const int code = e.GetKeyCode();
+    const bool shift = e.ShiftDown();
+    const bool ctrl = e.ControlDown();
+    const bool alt = e.AltDown();
+
+    // Space: rotate / flip the ghost (or the selection)
+    if (code == WXK_SPACE) {
+        if (ctrl) canvas_->flip_ghost(false);
+        else if (shift) canvas_->flip_ghost(true);
+        else canvas_->rotate_ghost(90);
+        sync_palette();
+        return true;
+    }
+    if (ctrl || alt) return false; // leave Ctrl/Alt combos to menus
+
+    auto place = [&](syms::Kind k) {
+        canvas_->begin_place(k, 0);
+        sync_palette();
+        SetStatusText("Placing -- Space rotates, Shift/Space flips, Esc cancels.",
+                      0);
+        return true;
+    };
+    switch (code) {
+    case 'R': return place(syms::Kind::R);
+    case 'C': return place(syms::Kind::C);
+    case 'L': return place(syms::Kind::L);
+    case 'V': return place(syms::Kind::V);
+    case 'B': case 'b': return place(syms::Kind::I);
+    case 'G': case 'g':
+        return place(shift ? syms::Kind::VDD : syms::Kind::GND);
+    case 'D': return place(syms::Kind::D);
+    case 'T': return place(syms::Kind::T);
+    case 'K': return place(syms::Kind::K);
+    case 'Y': return place(syms::Kind::D); // common alternate for diode
+    case 'W': case 'w':
+        canvas_->set_tool(Tool::Wire);
+        sync_palette();
+        SetStatusText("Wire: click a start pin, route, click the end pin.", 0);
+        return true;
+    case 'M': {
+        // M toggles between NMOS and PMOS while already placing a MOSFET
+        syms::Kind cur = canvas_->tool() == Tool::Place
+                             ? canvas_->place_kind()
+                             : syms::Kind::NMOS;
+        syms::Kind nxt = (cur == syms::Kind::NMOS) ? syms::Kind::PMOS
+                                                   : syms::Kind::NMOS;
+        return place(nxt);
+    }
+    case 'I':
+        show_instance_menu();
+        return true;
+    }
+    return false;
+}
+
+void MainFrame::sync_palette() {
+    palette_->set_active(canvas_->tool(), canvas_->place_kind());
+}
+
+void MainFrame::show_instance_menu() {
+    // Cadence-style popup listing every component, keyed by mnemonic.
+    struct Ent { const char* label; syms::Kind kind; };
+    static const Ent entries[] = {
+        {"Resistor\tR", syms::Kind::R},
+        {"Capacitor\tC", syms::Kind::C},
+        {"Inductor\tL", syms::Kind::L},
+        {"Voltage source\tV", syms::Kind::V},
+        {"Current source\tB", syms::Kind::I},
+        {"Ground\tG", syms::Kind::GND},
+        {"Supply rail (VDD)\tShift+G", syms::Kind::VDD},
+        {"Diode\tD", syms::Kind::D},
+        {"N-MOSFET\tM", syms::Kind::NMOS},
+        {"P-MOSFET\tM (again)", syms::Kind::PMOS},
+        {"NPN BJT", syms::Kind::NPN},
+        {"PNP BJT", syms::Kind::PNP},
+        {"Transformer\tT", syms::Kind::T},
+        {"Inductor coupling\tK", syms::Kind::K},
+        {"Op-amp (single out)", syms::Kind::OPAMP},
+        {"Fully differential op-amp", syms::Kind::FDOPAMP},
+        {"Amplifier (gain block)", syms::Kind::AMP},
+        {"Nullor", syms::Kind::NULLOR},
+        {"VCVS (E)", syms::Kind::E},
+        {"VCCS (G)", syms::Kind::G},
+        {"Ideal 1/s block", syms::Kind::IS},
+        {"Ideal s block", syms::Kind::SBLK},
+    };
+    wxMenu menu;
+    const int n = int(sizeof(entries) / sizeof(entries[0]));
+    for (int i = 0; i < n; ++i)
+        menu.Append(ID_PLACE_BASE + i, entries[i].label);
+    menu.Bind(wxEVT_MENU, [this, &entries](wxCommandEvent& ev) {
+        int i = ev.GetId() - ID_PLACE_BASE;
+        canvas_->begin_place(entries[i].kind, 0);
+        sync_palette();
+        SetStatusText("Placing -- Space rotates, Shift/Space flips, Esc cancels.",
+                      0);
+    });
+    PopupMenu(&menu);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +298,13 @@ void MainFrame::on_open(wxCommandEvent&) {
                      "SymCirc circuits (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_OPEN | wxFD_FILE_MUST_EXIST);
     if (dlg.ShowModal() != wxID_OK) return;
+    open_path(dlg.GetPath());
+}
+
+void MainFrame::open_path(const wxString& p) {
     std::string err;
     Document nd;
-    if (!nd.load(dlg.GetPath().ToStdString(), err)) {
+    if (!nd.load(p.ToStdString(), err)) {
         wxMessageBox(wxString::FromUTF8(err), "Open failed", wxICON_ERROR, this);
         return;
     }
@@ -206,7 +317,7 @@ void MainFrame::on_open(wxCommandEvent&) {
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     update_title();
-    SetStatusText("Loaded " + dlg.GetPath(), 0);
+    SetStatusText("Loaded " + p, 0);
 }
 
 void MainFrame::on_save(wxCommandEvent&) {

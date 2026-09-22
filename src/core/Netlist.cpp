@@ -19,6 +19,16 @@ std::string kind_token(Kind k) {
         case Kind::NPN: return "NPN";
         case Kind::PNP: return "PNP";
         case Kind::GND: return "GND";
+        case Kind::VDD: return "VDD";
+        case Kind::D: return "D";
+        case Kind::T: return "T";
+        case Kind::K: return "K";
+        case Kind::NULLOR: return "NULLOR";
+        case Kind::OPAMP: return "OPAMP";
+        case Kind::FDOPAMP: return "FDOPAMP";
+        case Kind::AMP: return "AMP";
+        case Kind::IS: return "IS";
+        case Kind::SBLK: return "SBLK";
     }
     return "?";
 }
@@ -37,6 +47,16 @@ std::string kind_display(Kind k) {
         case Kind::NPN: return "NPN BJT";
         case Kind::PNP: return "PNP BJT";
         case Kind::GND: return "Ground";
+        case Kind::VDD: return "Supply rail";
+        case Kind::D: return "Diode";
+        case Kind::T: return "Transformer";
+        case Kind::K: return "Inductor coupling";
+        case Kind::NULLOR: return "Nullor";
+        case Kind::OPAMP: return "Op-amp";
+        case Kind::FDOPAMP: return "Fully differential op-amp";
+        case Kind::AMP: return "Amplifier";
+        case Kind::IS: return "1/s block";
+        case Kind::SBLK: return "s block";
     }
     return "?";
 }
@@ -55,14 +75,26 @@ std::string ref_prefix(Kind k) {
         case Kind::NPN:
         case Kind::PNP: return "Q";
         case Kind::GND: return "GND";
+        case Kind::VDD: return "VDD";
+        case Kind::D: return "D";
+        case Kind::T: return "T";
+        case Kind::K: return "K";
+        case Kind::NULLOR: return "X";
+        case Kind::OPAMP: return "U";
+        case Kind::FDOPAMP: return "U";
+        case Kind::AMP: return "A";
+        case Kind::IS: return "IS";
+        case Kind::SBLK: return "S";
     }
     return "X";
 }
 
 bool kind_from_token(const std::string& t, Kind& out) {
-    static const Kind all[] = {Kind::R,   Kind::C,    Kind::L,   Kind::V,
-                               Kind::I,   Kind::E,    Kind::G,   Kind::NMOS,
-                               Kind::PMOS, Kind::NPN, Kind::PNP, Kind::GND};
+    static const Kind all[] = {
+        Kind::R,    Kind::C,   Kind::L,     Kind::V,  Kind::I,  Kind::E,
+        Kind::G,    Kind::NMOS, Kind::PMOS, Kind::NPN, Kind::PNP, Kind::GND,
+        Kind::VDD,  Kind::D,   Kind::T,     Kind::K,  Kind::NULLOR,
+        Kind::OPAMP, Kind::FDOPAMP, Kind::AMP, Kind::IS, Kind::SBLK};
     for (Kind k : all) {
         if (kind_token(k) == t) {
             out = k;
@@ -78,16 +110,51 @@ int pin_count(Kind k) {
         case Kind::C:
         case Kind::L:
         case Kind::V:
-        case Kind::I: return 2;
+        case Kind::I:
+        case Kind::D:
+        case Kind::AMP:
+        case Kind::IS:
+        case Kind::SBLK: return 2;
         case Kind::E:
         case Kind::G: return 4;
         case Kind::NMOS:
         case Kind::PMOS: return 4;
         case Kind::NPN:
         case Kind::PNP: return 3;
-        case Kind::GND: return 1;
+        case Kind::GND:
+        case Kind::VDD: return 1;
+        case Kind::T: return 4;
+        case Kind::K: return 0;
+        case Kind::NULLOR:
+        case Kind::OPAMP: return 3;
+        case Kind::FDOPAMP: return 4;
     }
     return 0;
+}
+
+int branch_count(Kind k) {
+    switch (k) {
+        case Kind::V:
+        case Kind::L:
+        case Kind::E:
+        case Kind::IS:
+        case Kind::SBLK:
+        case Kind::OPAMP:
+        case Kind::AMP:
+        case Kind::NULLOR:
+        case Kind::T:
+        case Kind::FDOPAMP: return 1;
+        default: return 0;
+    }
+}
+
+std::vector<std::string> branch_suffixes(Kind k) {
+    if (k == Kind::T || k == Kind::FDOPAMP) return {"p", "n"};
+    return {""};
+}
+
+std::string branch_key(const std::string& ref, const std::string& suffix) {
+    return suffix.empty() ? ref : ref + ":" + suffix;
 }
 
 std::vector<std::string> pin_names(Kind k) {
@@ -104,6 +171,16 @@ std::vector<std::string> pin_names(Kind k) {
         case Kind::NPN:
         case Kind::PNP: return {"C", "B", "E"};
         case Kind::GND: return {"GND"};
+        case Kind::VDD: return {"VDD"};
+        case Kind::D: return {"A", "K"};
+        case Kind::T: return {"p+", "p-", "s+", "s-"};
+        case Kind::K: return {};
+        case Kind::NULLOR:
+        case Kind::OPAMP: return {"in+", "in-", "out"};
+        case Kind::FDOPAMP: return {"in+", "in-", "out+", "out-"};
+        case Kind::AMP:
+        case Kind::IS:
+        case Kind::SBLK: return {"in", "out"};
     }
     return {};
 }
@@ -138,21 +215,27 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"Cmu", "1p", true, true, "F", "base-collector (Miller) capacitance"},
     };
     static const std::vector<ParamDef> pnp = npn;
+    static const std::vector<ParamDef> diode = {
+        {"gm", "40m", false, true, "S", "small-signal conductance"},
+        {"rd", "1k", true, false, "Ohm", "series/ohmic resistance"},
+        {"Cd", "10p", true, true, "F", "junction capacitance"},
+    };
 
     switch (k) {
         case Kind::NMOS: return nmos;
         case Kind::PMOS: return pmos;
         case Kind::NPN: return npn;
         case Kind::PNP: return pnp;
+        case Kind::D: return diode;
         default: return none;
     }
 }
 
 UnitClass param_unit_class(Kind k, const std::string& p) {
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
-    if (p == "ro" || p == "rpi" || p == "rb") return UnitClass::Ohm;
+    if (p == "ro" || p == "rpi" || p == "rb" || p == "rd") return UnitClass::Ohm;
     if (p == "Cgs" || p == "Cgd" || p == "Cdb" || p == "Csb" || p == "Cpi" ||
-        p == "Cmu")
+        p == "Cmu" || p == "Cd")
         return UnitClass::Farad;
     return UnitClass::Plain;
 }
@@ -164,6 +247,8 @@ UnitClass value_unit_class(Kind k) {
         case Kind::L: return UnitClass::Henry;
         case Kind::G: return UnitClass::Siemens;
         case Kind::V: return UnitClass::Volt;
+        // T, K, and the controlled blocks carry gains/ratios: keep them Plain
+        // so they are not mistaken for R/C/L time-constant candidates.
         default: return UnitClass::Plain;
     }
 }
@@ -248,6 +333,10 @@ bool Circuit::validate(std::string& err) const {
         // A node literally named "0" or "GND" also counts as ground.
         for (const auto& n : c.nodes) {
             if (n == "0" || n == "GND") has_ground = true;
+        }
+        if (c.kind == Kind::K && c.links.size() != 2) {
+            err = c.ref + ": inductor coupling needs two linked inductors";
+            return false;
         }
     }
     if (comps.empty()) {

@@ -10,7 +10,9 @@
 namespace symcirc {
 
 // Right-side property editor for the current selection:
-//  - component: value, size offset (dB), parasitic toggles + estimates
+//  - component: value, K links, size offset (dB)
+//  - devices: non-ideality checkbox + coefficient dropdown + exponent
+//    dropdown (engineering notation), e.g. Cgs = 100e-13, ro = 10e3
 //  - net label: name
 //  - analysis: input source, output, f0, threshold (always visible)
 class PropertiesPanel : public wxScrolledWindow {
@@ -33,6 +35,11 @@ private:
                          std::function<void(const wxString&)> on_change);
     wxSpinCtrl* add_spin(const wxString& label, int value, int min, int max,
                          std::function<void(int)> on_change);
+    void add_param_row(syms::Component* comp, const std::string& name,
+                       const std::string& unit, bool parasitic,
+                       const std::string& default_text);
+    void add_mantissa_exp(syms::Component* comp, const std::string& name,
+                          bool parasitic, const wxString& default_text);
 
     void on_analysis_changed(wxCommandEvent& e);
     wxDECLARE_EVENT_TABLE();
