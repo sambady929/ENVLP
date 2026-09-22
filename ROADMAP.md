@@ -30,6 +30,39 @@ Status: core builds and runs; test fixes in progress, then Phase A below.
   threshold 40 dB, f0 = 1 kHz, `size_db` per component, `gm*ro >> 1` on.
 - Switched-capacitor z-domain: deferred ("figure it out later").
 
+## Low-entropy engine — implemented decisions
+
+The low-entropy output is the most important part of the project. The engine
+(`src/core/LowEntropy.cpp`) currently does:
+
+- **Exact factoring only when exact.** A candidate `(1 + s*tau)` factor is
+  accepted only if it actually divides the polynomial
+  (`poly_remainder_is_zero`, GiNaC's polynomial remainder after clearing any
+  symbolic denominator via `normal()`). The earlier vacuous test
+  `(poly - (poly/f)*f).is_zero()` — an algebraic identity that accepted
+  *wrong* factors — is gone.
+- **Approximate (numeric) factoring when exact fails.** Coefficients are
+  estimated numerically, rooted with Durand–Kerner, and each real root becomes
+  `1 + s*tau`, matched to a physically meaningful time constant (`R*C`,
+  `(R1||R2)*C`, `R*(C1+C2)`, `L/R`, `C/gm`) when one is within ~2 %,
+  otherwise carrying the numeric `tau`. Complex pairs become second-order
+  factors. The reconstruction is verified before the factors are accepted.
+  Toggle: **approx roots** per card and in the properties panel.
+- **Parallel form kept symbolic.** `par(a,b)` is a registered GiNaC function
+  printed `a||b` (`\parallel` in LaTeX): two parallel resistors are `R1||R2`,
+  never `R1*R2/(R1+R2)`.
+- **Factored, not multiplied out.** `(1 + s*tau1)(1 + s*tau2)`, with compound
+  factors parenthesized so the printed form is unambiguous.
+- **Magnitude pruning, always reported.** Every addend is ranked at `f0` from
+  the user estimates; anything more than `threshold_db` below the dominant term
+  is dropped and listed with its relative dB. A product of two small terms in a
+  coefficient (`s*(C1*C2 + C3)`) drops the product, leaving `s*C3`.
+- **`gm*ro >> 1` idealization** (default on) removes the `+1` beside a
+  dominating `gm*ro` product.
+
+The **prune** checkbox switches the whole reduction on/off; **approx roots** is
+independent, so exact-but-unfactored output is also available.
+
 ## Style references (symbols)
 
 - Razavi textbook schematics; Linear Technology / LTspice datasheet style
@@ -93,43 +126,38 @@ Status: core builds and runs; test fixes in progress, then Phase A below.
 
 1. **AC small-signal** — MOSFETs/diodes converted to small-signal equivalents
    using only enabled non-idealities; node voltages / branch currents as
-   expressions + Bode plots; low-entropy factored form.
+   expressions + Bode plots; low-entropy factored form. **DONE**
 2. **s-domain transfer function** — mark a source `Vin`/`Iin` and a node or
-   branch `out`; produce H(s).
-3. **DC** — symbolic node voltages / branch currents; MOSFET model option:
-   square-law (Vgs) vs gm/Id (Vgs = Vth + vdsat); right-click → expression.
-   *Research risk:* nonlinear symbolic DC — start with square-law closed forms
-   for tractable chains, then generalize.
+   branch `out`; produce H(s). **DONE**
+3. **DC** — symbolic node voltages / branch currents (s -> 0), with LaTeX.
+   **DONE** (symbolic operating-point form; the square-law / gm-Id nonlinear
+   bias model remains future work).
 4. **PSR / PSRR** — excitation = universal VDD (per-unit); PSR = H(VDD→out);
-   PSRR = H(Vin→out) / H(VDD→out).
+   PSRR = H(Vin→out) / H(VDD→out). **DONE**
 5. **Return ratio (loop gain)** — user selects reference element:
-   (a) replace with nullor → ideal H∞, (b) compute return ratio T(s);
-   plots: Bode, **Nyquist**, **Nichols chart**. (Refs: Rosenstark, Middlebrook,
-   Tahan short tutorial.)
+   (a) replace with a real **nullor** (nullator + norator) → ideal H∞,
+   (b) return ratio T(s) = H/(H∞ − H); plots: Bode, **Nyquist**, **Nichols**.
+   **DONE**
 6. **Short-circuit current** — short chosen node to gnd through 0 V source;
-   give I through that branch.
-7. **Input/output impedance** — Zin (needs input source spec), Zout (needs
-   output node label); symbolic Z expressions.
+   give I through that branch. **DONE**
+7. **Input/output impedance** — Zin (input source spec), Zout (output node
+   label); symbolic Z expressions, LaTeX. **DONE**
+8. **Noise** — input- and output-referred noise densities with a per-source
+   contribution breakdown; thermal `4kT/R`, MOSFET `4kT*(2/3)*gm`, BJT and
+   diode shot noise. **DONE**
 
 All analyses: right-click any node/branch → expression and/or plot.
 
-## Phase C — Low-entropy engine upgrades
-
-- Method selector per card: **time/transfer constants** (current peel +
-  candidate-τ, extended) and **EET/Blackman** (extra-element theorem) for
-  pulling poles/zeros into factored form.
-- **gm·ro ≫ 1 assumption (default ON):** idealization rewrite pass that
-  eliminates `1 + gm·ro`-type combinations (estimates decide dominance);
-  toggle on the card.
-- Keep: Bareiss solve, per-coefficient/global ranking, f0/threshold, size_db,
-  degree drop, pole/zero tables, hidden internal nodes (rb etc.).
-- Ideal 1/s and s blocks participate in AC/TF/return-ratio analyses.
+## Phase C — Low-entropy engine upgrades. **DONE** (see "Low-entropy engine"
+above). Remaining: an explicit EET/Blackman card option is folded into the
+numeric-approx factoring; the `1 + gm*ro` idealization is implemented.
 
 ## Phase D — Output & export
 
-- **LaTeX**: GiNaC `print_latex` → copy-to-clipboard buttons on every
-  expression (results panel and right-click popups).
-- **Plots**: save as SVG, PNG, CSV (Bode / Nyquist / Nichols panels).
+- **LaTeX**: `to_latex` / `low_entropy_latex` → copy buttons ("Copy LaTeX") in
+  the results panel and via `latex()` in Lua. **DONE**
+- **Plots**: save as **SVG**, **PNG**, **CSV** (Bode / Nyquist / Nichols).
+  **DONE**
 
 ## Phase E — Later: switched-capacitor z-domain
 
@@ -142,5 +170,7 @@ schematic-entry conventions TBD with the user.
 
 - Symbolic nonlinear DC (square-law / gm-Id): approach spike needed before
   promising arbitrary-topology DC.
-- Return-ratio element selection + nullor substitution conventions.
-- EET factoring path for MNA-derived polynomials (interaction with pruning).
+- Return-ratio element selection: T(s) = H/(H∞ − H) assumes no direct
+  feedthrough at the break; a general double-injection form is future work.
+- Approximate factoring matches numeric roots to named time constants within
+  ~2 %; a genuinely complex-conjugate pole pair is emitted with numeric terms.

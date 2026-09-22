@@ -39,11 +39,24 @@ MNA matrices whose entries are sparse monomials (`s·C`, `gm`, `1/R`, …).
    s-coefficient.
 3. The denominator is normalized so its constant term is 1; the remaining
    constant ratio becomes the gain `K`.
-4. Factoring: degree-1 factors peel exactly; higher-order denominators are
+4. Factoring: degree-1 factors peel exactly. Higher-order denominators are
    factored by generating physically meaningful time-constant candidates
-   (`R·C`, `L/R`, `C/gm`, products of these from pole tables) and verifying
-   each division symbolically before accepting it.
-5. Roots of the surviving polynomial (Durand–Kerner) give numeric pole/zero
+   (`R·C`, `(R1||R2)·C`, `R·(C1+C2)`, `L/R`, `C/gm`, products of these from
+   pole tables) and verifying each division **with GiNaC's polynomial
+   remainder after clearing symbolic denominators** (`poly_remainder_is_zero`).
+   A candidate is accepted only if it genuinely divides — the previous
+   `(poly - (poly/f)*f).is_zero()` test was an identity and accepted wrong
+   factors.
+5. When the polynomial does not factor symbolically, **approximate factoring**
+   estimates each coefficient, roots the real polynomial with Durand–Kerner,
+   matches each real root to a candidate time constant within ~2 % (else
+   carries the numeric `tau`), turns complex pairs into second-order factors,
+   verifies the reconstruction numerically, and only then accepts the result.
+   `Pruned::numeric_factors` records whether this path was used.
+6. Parallel combinations are preserved symbolically: a registered GiNaC
+   function `par(a,b)` prints as `a||b` (LaTeX `\parallel`), so `R1||R2`
+   survives into the output instead of `R1*R2/(R1+R2)`.
+7. Roots of the surviving polynomial (Durand–Kerner) give numeric pole/zero
    frequencies; recognizable factors get component labels (`R1·C1`).
 
 Everything dropped is shown in the report — pruning is never silent.

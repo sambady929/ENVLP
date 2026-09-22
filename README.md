@@ -18,17 +18,27 @@ for the GUI, and Lua for interactive scripting/plotting.
   VCVS/VCCS, NMOS/PMOS, NPN/PNP, ground; wire pins; label nets.
 - Symbolic analysis: transfer function H = num/den in `s`, any node voltage
   `V(node)` or branch current `I(ref)`, driven by one ideal source.
+- Analyses: **transfer function**, **AC**, **DC**, **PSR/PSRR**, **loop gain**
+  (nullor substitution → return ratio `T = H/(H∞−H)`), **short-circuit
+  current**, **input/output impedance**, and **noise** (input- and
+  output-referred, with a per-source breakdown).
 - Transistor parasitics (gm, ro, Cgs, Cgd, rpi, Cmu, rb, …) toggled
   **per instance**, each with an editable order-of-magnitude estimate.
 - Low-entropy pruning: every term is ranked at frequency `f0` using your
   magnitude estimates (`size_db` gives 10 dB order offsets per component);
   terms more than `threshold_db` below the dominant one are dropped and
   reported with their relative dB.
-- Factored forms, pole/zero tables with component labels
-  (`τ = R1·C1`, `1/gm·C`, …) and a full human-readable report.
-- Bode plot (magnitude/phase) of the exact (unpruned) H.
-- Lua console: `mag(f)`, `phase(f)`, `H()`, `roots()`, `dropped()`, … for
-  interactive post-processing and custom plots.
+- **Factored forms** with symbolic **parallel** terms (`R1||R2`, never
+  `R1*R2/(R1+R2)`), pole/zero tables with component labels
+  (`τ = R1·C1`, `(Rd||ro)·(Cgd+CL)`, `1/gm·C`, …) and a full report.
+- **Exact factoring only when exact**: a factor is accepted only if it really
+  divides the polynomial. When the denominator does not factor symbolically,
+  numeric roots are matched to physical time constants ("approx roots").
+- Bode plot (magnitude/phase), **Nyquist** and **Nichols** plots, exported as
+  **SVG / PNG / CSV**.
+- LaTeX for every expression, copy-to-clipboard.
+- Lua console: `mag(f)`, `phase(f)`, `H()`, `latex()`, `roots()`, `dropped()`,
+  … for interactive post-processing and custom plots.
 
 ## Building (Windows, MSYS2 UCRT64)
 
@@ -78,8 +88,14 @@ ctest --test-dir build --output-on-failure   # run the engine tests
 3. Place at least one **Ground** symbol.
 4. In the right panel set the input source (`V1`), output (`V(out)` or
    `I(R2)`), the tuning frequency `f0`, and the pruning threshold (dB).
+   Alternatively add **analysis cards** on the far-right panel (one per
+   analysis; add/remove, edit the options in the card, run one or all).
 5. Press **F5** (Run → Analyze). Read the report in **Results**, the plot in
-   **Bode**, or post-process in **Lua**.
+   **Bode** (switch to Nyquist / Nichols), or post-process in **Lua**.
+
+`examples/common_source_amp.scx` is a common-source amplifier with a resistor
+load and an output capacitor, pre-loaded with TF / AC / DC / Zin / Zout / noise
+cards.
 
 ### Component magnitudes
 
@@ -93,10 +109,11 @@ on/off checkbox.
 ### Lua API
 
 ```lua
-mag(f)            -- magnitude of H in dB at f Hz
+mag(f)            -- magnitude of H in dB at f Hz (unpruned, exact)
 phase(f)          -- phase in degrees
 H()               -- factored low-entropy form (string)
 Hpoly()           -- expanded pruned polynomial (string)
+latex()           -- LaTeX of the factored form (string)
 report()          -- full report (string)
 roots("poles")    -- { {w=, tau=, real=, q=, label=, factor=}, ... }
 roots("zeros")
@@ -107,8 +124,11 @@ dropped()         -- { {location=, term=, db=}, ... }
 ## File format
 
 `.scx` files are a small line-based text format (`symcirc 1` header:
-`comp`, `param`, `wire`, `netlabel`, `req`). Net topology is derived from
-wire geometry at analyze time, so files stay geometry-based and diffable.
+`comp`, `param`, `wire`, `netlabel`, `req`, `card`). Net topology is derived
+from wire geometry at analyze time, so files stay geometry-based and diffable.
+The `req` line ends with the engine switches
+(`… global_ref prune || gm*ro approx`); `card` lines configure the analysis
+stack and round-trip verbatim.
 
 ## Repository layout
 

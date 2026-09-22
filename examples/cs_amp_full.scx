@@ -1,0 +1,27 @@
+symcirc 1
+req "V1" "V(out)" 100000 40 0 1 1
+comp "V1" "V" 140 300 0 0 0 0 "1"
+comp "M1" "NMOS" 420 220 0 0 0 0 ""
+param "M1" "ro" 1 "100k" 0
+param "M1" "Cgd" 1 "20f" 0
+param "M1" "Cgs" 1 "100f" 0
+comp "Rd" "R" 560 160 90 0 0 0 "10k"
+comp "CL" "C" 680 220 0 0 0 0 "1p"
+comp "GND1" "GND" 420 340 0 0 0 0 ""
+comp "GND2" "GND" 680 320 0 0 0 0 ""
+comp "GND3" "GND" 140 360 0 0 0 0 ""
+wire 140,270 140,300
+wire 140,340 420,340
+wire 140,360 420,360 420,260
+wire 560,260 560,320
+wire 680,280 680,320
+wire 420,220 420,180 490,180 530,180
+netlabel 420,260 "in"
+netlabel 680,220 "out"
+card "Transfer function (H(s))" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "Transfer function (H(s))" 1
+card "AC (small-signal)" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "AC (small-signal)" 1
+card "DC operating point" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "DC operating point" 1
+card "Output impedance" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "Output impedance" 1
+card "Input impedance" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "Input impedance" 1
+card "Short-circuit current" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "Short-circuit current" 1
+card "Noise" "V1" "V(out)" "" 100000 40 0 1 1 1 1 "Noise" 1

@@ -2,6 +2,7 @@
 // Assert-based mini framework; run via CTest (all tests) or
 //   test_core <substring>   to run a subset.
 
+#include "core/Analysis.h"
 #include "core/Eng.h"
 #include "core/Engine.h"
 #include "core/LowEntropy.h"
@@ -544,6 +545,236 @@ static void test_report_has_latex_and_factors() {
 }
 
 // ---------------------------------------------------------------------------
+// Regressions for the low-entropy engine correctness fixes.
+// ---------------------------------------------------------------------------
+
+// A malformed factor (a rational whose denominator survives into a
+// "factor") used to print a sum containing an internal division next to a
+// leading coefficient. Check the factored text is a well-formed product of
+// (1 + s*...) factors.
+static bool text_looks_factored(const std::string& t) {
+    if (t.empty()) return false;
+    // every '/' must be at the very top level of the outer ratio, not nested
+    // inside a parenthesised factor. Count balance at each '/'.
+    int depth = 0;
+    for (size_t i = 0; i < t.size(); ++i) {
+        if (t[i] == '(') ++depth;
+        else if (t[i] == ')') --depth;
+        else if (t[i] == '/' && depth > 0) return false;
+    }
+    return true;
+}
+
+static void test_low_entropy_no_bogus_factor() {
+    // This denominator is NOT exactly factorable (the s^2 term is a sum), so
+    // the old engine fabricated a wrong factor via a vacuous divisibility
+    // test and printed garbage. Now it must either factor numerically or keep
+    // one honest polynomial.
+    ParamTable pt;
+    ex s = pt.get("s");
+    ex a = pt.get("a"), b = pt.get("b"), c = pt.get("c");
+    pt.set("a", 1e-3, UnitClass::Farad);
+    pt.set("b", 2e-3, UnitClass::Farad);
+    pt.set("c", 3e-3, UnitClass::Farad);
+    // 1 + s*(a+b) + s^2*(a*b+c) is not a product of linear real factors in
+    // general, but the coefficients are all positive and it is a valid
+    // (stable) denominator.
+    ex den = 1 + s * (a + b) + s * s * (a * b + c);
+    LowEntropyOptions o;
+    o.prune = false;
+    o.approx_factor = false; // force the exact path
+    LowEntropy le = low_entropy(ex(1), den, pt, o);
+    CHECK(text_looks_factored(le.text));
+    // and the exact engine must still reproduce the polynomial
+    ex den2 = ex(1);
+    for (const auto& f : le.den_factors) den2 = den2 * f.expr;
+    CHECK((den - den2.expand()).expand().is_zero());
+}
+
+static void test_approx_factor_accuracy() {
+    // CS amp with source resistance: the denominator does not factor exactly
+    // but is well approximated by two real poles. Approximate factoring must
+    // reproduce the magnitude response at low and mid frequencies.
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "Rs", {"in", "g"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "Rg", {"g", "0"}, "100k"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_on["Cgs"] = true;
+    m.param_on["Cgd"] = true;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    m.param_text["Cgs"] = "100f";
+    m.param_text["Cgd"] = "20f";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "CL", {"out", "0"}, "1p"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.f0_hz = 1e6;
+    AnalysisResult r = analyze(c, req);
+    CHECK(r.pruned.poles.size() == 2);
+
+    // rebuild the low-entropy H and compare with the exact H at a few points
+    ex Hle = r.pruned.gain;
+    for (const auto& f : r.pruned.num_factors) Hle = Hle * f.expr;
+    ex Dle = ex(1);
+    for (const auto& f : r.pruned.den_factors) Dle = Dle * f.expr;
+    Hle = (Hle / Dle).normal();
+    for (double f : {1e3, 1e5, 1e6, 1e7, 1e8}) {
+        double w = 2 * M_PI * f;
+        double exact = mag_db_at(r, w);
+        double approx = eval_mag_db(Hle, r.params, w);
+        CHECK_CLOSE(approx, exact, 1.0); // within 1 dB across the band
+    }
+}
+
+static void test_coefficient_product_not_dropped() {
+    // The user-visible low-entropy contract: a product of two small terms
+    // inside a coefficient must be dropped when it is negligible.
+    ParamTable pt;
+    ex s = pt.get("s");
+    ex R1 = pt.get("R1"), C1 = pt.get("C1"), C2 = pt.get("C2"), C3 = pt.get("C3");
+    pt.set("R1", 1e3, UnitClass::Ohm);
+    pt.set("C1", 1e-6, UnitClass::Farad);
+    pt.set("C2", 1e-6, UnitClass::Farad);
+    pt.set("C3", 1e-6, UnitClass::Farad);
+    ex den = 1 + s * (C1 * C2 + C3) * R1; // s-coefficient = C1*C2*R1 + C3*R1
+    LowEntropyOptions o;
+    o.prune = true;
+    o.f0_hz = 1e3;
+    LowEntropy le = low_entropy(ex(1), den, pt, o);
+    // C1*C2*R1 is ~120 dB below C3*R1: the surviving form is 1 + s*C3*R1
+    CHECK(le.dropped.size() == 1);
+    CHECK(le.text.find("C3") != std::string::npos);
+    CHECK(le.text.find("C2") == std::string::npos);
+}
+
+static void test_approx_off_is_consistent() {
+    // Turning approximate factoring off must never fabricate a factor: the
+    // factors must still multiply back to the exact polynomial.
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "a"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"a", "out"}, "20k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"a", "0"}, "1n"));
+    c.comps.push_back(comp(Kind::C, "C2", {"out", "0"}, "2n"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.approx_factor = false;
+    AnalysisResult r = analyze(c, req);
+    ex prod = ex(1);
+    for (const auto& f : r.pruned.den_factors) prod = prod * f.expr;
+    CHECK((r.pruned.den_poly - prod.expand()).expand().is_zero());
+}
+
+// ---------------------------------------------------------------------------
+// New analyses: DC, noise, loop gain, PSRR.
+// ---------------------------------------------------------------------------
+static void test_dc_analysis() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1u")); // opens at DC
+    c = ground(c);
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    // resistive divider: V(out) = 1/2
+    CHECK(cr.report.find("V(out)") != std::string::npos);
+    CHECK(cr.report.find("LaTeX") != std::string::npos);
+    CHECK(!cr.latex.empty());
+    CHECK(cr.latex.find("aligned") != std::string::npos);
+}
+
+static void test_noise_analysis_input_referred() {
+    // resistive divider driven by V1: input-referred noise density is
+    // sqrt(4kT*(R1||R2)) (the two resistors' thermal noise seen at the input),
+    // output-referred is half of that; check the ratio and the value.
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"out", "0"}, "10k"));
+    c = ground(c);
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::Noise;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    sp.f0_hz = 1e3;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("output-referred") != std::string::npos);
+    CHECK(cr.report.find("input-referred") != std::string::npos);
+    CHECK(cr.values.size() == 2);
+
+    // numeric: gain = 1/2, so vin_rms = 2*vout_rms
+    auto get = [&](const std::string& k) -> double {
+        for (const auto& v : cr.values)
+            if (v.first == k) return std::atof(v.second.c_str());
+        return -1;
+    };
+    double vout = get("Vout_n"), vin = get("Vin_n");
+    CHECK_CLOSE(vin / vout, 2.0, 0.01);
+    // Both resistors contribute 4kT/R seen through R1||R2, so
+    //   vout^2 = 2*(4kT/R)*(R1||R2)^2 = 4kT*(R1||R2)
+    double expect_vout = std::sqrt(4.0 * 1.380649e-23 * 300.15 * 5000.0);
+    CHECK_CLOSE(vout, expect_vout, expect_vout * 0.02);
+    CHECK_CLOSE(vin, 2.0 * expect_vout, expect_vout * 0.03);
+}
+
+static void test_loop_gain_opamp() {
+    // non-inverting op-amp with gain block A: T = A*R2/(R1+R2)
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::OPAMP, "X1", {"in", "fb", "out"}, "1e5"));
+    c.comps.push_back(comp(Kind::R, "R1", {"out", "fb"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"fb", "0"}, "1k"));
+    c = ground(c);
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::LoopGain;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    sp.probe_ref = "X1";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("Return ratio") != std::string::npos);
+    CHECK(cr.report.find("T(s)") != std::string::npos);
+    // at DC, T = 1e5 * 1k/(11k) ~ 9091
+    double T = std::abs(syms::eval_complex(
+        (cr.transfer.num_raw / cr.transfer.den_raw).normal(), cr.transfer.params,
+        0.0));
+    CHECK_CLOSE(T, 1e5 * 1.0 / 11.0, 5.0);
+}
+
+static void test_psrr_vdd() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::VDD, "VDD1", {"VDD"}));
+    c.comps.push_back(comp(Kind::R, "Rd", {"VDD", "out"}, "10k"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::PSRR;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("PSR ") != std::string::npos);
+    CHECK(cr.report.find("PSRR") != std::string::npos);
+    CHECK(!cr.transfer.pruned.text.empty());
+}
+
+// ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
     std::vector<Test> tests = {
@@ -565,6 +796,14 @@ int main(int argc, char** argv) {
         {"parallel_collapse", test_parallel_collapse},
         {"latex_output", test_latex_output},
         {"report_latex", test_report_has_latex_and_factors},
+        {"le_no_bogus_factor", test_low_entropy_no_bogus_factor},
+        {"approx_factor_accuracy", test_approx_factor_accuracy},
+        {"coeff_product_dropped", test_coefficient_product_not_dropped},
+        {"approx_off_consistent", test_approx_off_is_consistent},
+        {"dc_analysis", test_dc_analysis},
+        {"noise_input_referred", test_noise_analysis_input_referred},
+        {"loop_gain_opamp", test_loop_gain_opamp},
+        {"psrr_vdd", test_psrr_vdd},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
