@@ -17,16 +17,6 @@ using GiNaC::exmap;
 using GiNaC::is_a;
 using GiNaC::numeric;
 
-namespace {
-
-std::string ginac_str(const ex& e) {
-    std::ostringstream os;
-    os << e;
-    return os.str();
-}
-
-} // namespace
-
 // ---------------------------------------------------------------------------
 // numeric evaluation
 // ---------------------------------------------------------------------------
@@ -64,6 +54,28 @@ double eval_phase_deg(const ex& e, const ParamTable& params, double omega) {
 namespace {
 ex factor_common_impl(const ex& e);
 ex gm_ro_idealize(const ex& e, const ParamTable& pt);
+
+// Exact polynomial divisibility of `num` (a polynomial in `s`) by `fac`.
+// GiNaC's ex::degree() drops rational coefficients, so (a+b)*x/y and similar
+// rational coefficients are *not* seen as polynomials; clear the denominator
+// first, then ask GiNaC for the remainder.
+bool poly_remainder_is_zero(const ex& num, const ex& fac, const ex& s) {
+    if (fac.is_zero()) return false;
+    ex q = (num / fac).normal();
+    ex numc = q.numer().expand(); // polynomial part
+    ex denc = q.denom().expand(); // symbolic denominator (may be 1)
+    try {
+        ex r = GiNaC::rem(numc, fac, s);
+        if (!r.is_zero()) return false;
+        if (!denc.is_equal(ex(1)) && !denc.is_zero()) {
+            ex r2 = GiNaC::rem(denc, fac, s);
+            if (!r2.is_zero()) return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -266,7 +278,7 @@ std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
     }
     std::vector<Candidate> out;
     auto add = [&](double v, const ex& e) {
-        if (out.size() > 4096) return;
+        if (out.size() > 8192) return;
         if (v > 0.0 && std::isfinite(v)) out.push_back({v, e});
     };
     for (const auto& r : rs)
@@ -282,14 +294,160 @@ std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
             ex rex = par_ex(rs[i].e, rs[j].e);
             for (const auto& c : cs) add(rp * c.v, rex * c.e);
         }
+    // sums of two capacitors sharing one effective resistance -- the signature
+    // of a Miller / output pole: R*(Cgd + CL), (Rd||ro)*(Cgd + Cgs), ...
+    for (size_t i = 0; i < rs.size(); ++i) {
+        for (size_t a = 0; a < cs.size(); ++a)
+            for (size_t b = a + 1; b < cs.size(); ++b)
+                add(rs[i].v * (cs[a].v + cs[b].v),
+                    rs[i].e * (cs[a].e + cs[b].e));
+    }
+    for (size_t i = 0; i < rs.size(); ++i)
+        for (size_t j = i + 1; j < rs.size(); ++j) {
+            double rp = rs[i].v * rs[j].v / (rs[i].v + rs[j].v);
+            ex rex = par_ex(rs[i].e, rs[j].e);
+            for (size_t a = 0; a < cs.size(); ++a)
+                for (size_t b = a + 1; b < cs.size(); ++b)
+                    add(rp * (cs[a].v + cs[b].v),
+                        rex * (cs[a].e + cs[b].e));
+        }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// approximate (numeric) factoring
+// ---------------------------------------------------------------------------
+// Exact symbolic factoring of a real MNA denominator is frequently impossible
+// (the poles are not products of a single R and a single C). This helper
+// estimates every coefficient numerically, roots the resulting real polynomial
+// with Durand-Kerner, then rebuilds real first-order factors -- matching each
+// root to a physically meaningful time constant when one is numerically close,
+// and falling back to the numeric 1/|w| otherwise. Complex-conjugate pairs
+// become second-order factors (1 + s/(Q*w) + s^2/w^2). The reconstruction is
+// verified numerically before the factors are accepted, so a failure leaves
+// the exact polynomial untouched.
+bool approx_factor(ex& poly, ParamTable& pt, const ex& s,
+                   const std::vector<Candidate>& cands,
+                   std::vector<Factor>& factors, bool& any_numeric) {
+    int deg = 0;
+    try {
+        if (!poly.is_polynomial(s)) return false;
+        deg = poly.has(s) ? poly.degree(s) : 0;
+    } catch (...) {
+        return false;
+    }
+    if (deg < 2 || deg > 16) return false;
+
+    std::vector<double> coeffs;
+    for (int k = 0; k <= deg; ++k) {
+        ex v = pt.eval_real(poly.coeff(s, k)).evalf();
+        if (!is_a<numeric>(v)) return false;
+        double d = GiNaC::ex_to<numeric>(v).to_double();
+        if (!std::isfinite(d)) return false;
+        coeffs.push_back(d);
+    }
+    if (coeffs[deg] == 0.0 || coeffs[0] == 0.0) return false;
+
+    std::vector<std::complex<double>> roots = poly_roots(coeffs);
+    if (int(roots.size()) != deg) return false;
+
+    // 1. numeric factors (used for the verification)
+    struct NumFac { bool complex_pair; double a, b; };
+    std::vector<NumFac> nf;
+    std::vector<char> used(roots.size(), 0);
+    // The factors are normalized to a constant term of 1; the polynomial's own
+    // constant term (which may not be 1 when it could not be normalized) is
+    // carried out as a leading numeric constant.
+    double lead_const = coeffs[0];
+    if (!(lead_const > 0.0) || !std::isfinite(lead_const)) return false;
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (used[i]) continue;
+        double re = roots[i].real(), im = roots[i].imag();
+        if (std::fabs(im) > 1e-6 * (1.0 + std::fabs(re))) continue;
+        used[i] = 1;
+        double tau = -1.0 / re;
+        if (!(tau > 0.0) || !std::isfinite(tau)) return false;
+        nf.push_back({false, tau, 0.0});
+    }
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (used[i]) continue;
+        if (roots[i].imag() < 0.0) continue;
+        used[i] = 1;
+        double re = roots[i].real(), im = roots[i].imag();
+        double wn = std::hypot(re, im);
+        double q = (im > 0.0) ? wn / (2.0 * im) : 1e30;
+        if (!(wn > 0.0) || !std::isfinite(q)) return false;
+        nf.push_back({true, 1.0 / (q * wn), 1.0 / (wn * wn)});
+    }
+
+    // 2. verify the numeric reconstruction against the (numeric) polynomial
+    {
+        std::vector<double> recon(coeffs.size(), 0.0);
+        recon[0] = lead_const;
+        int rdeg = 0;
+        for (const auto& f : nf) {
+            std::vector<double> nxt(coeffs.size(), 0.0);
+            int nd = rdeg;
+            for (int k = 0; k <= rdeg; ++k) {
+                nxt[k] += recon[k];                    // * 1
+                nxt[k + 1] += recon[k] * f.a;          // * a*s
+                if (f.complex_pair) nxt[k + 2] += recon[k] * f.b; // * b*s^2
+            }
+            nd += f.complex_pair ? 2 : 1;
+            recon = nxt;
+            rdeg = nd;
+        }
+        for (int k = 0; k <= deg; ++k) {
+            double tol = 1e-6 * std::fabs(coeffs[k]) + 1e-300;
+            if (std::fabs(recon[k] - coeffs[k]) > tol) return false;
+        }
+    }
+
+    // 3. display factors: swap a numeric tau for a matched time constant
+    auto close_candidate = [&](double tau) -> const Candidate* {
+        if (!(tau > 0.0) || !std::isfinite(tau)) return nullptr;
+        const Candidate* best = nullptr;
+        double bestd = std::log(1.02); // accept a ~2% numeric match
+        for (const auto& c : cands) {
+            if (!(c.value > 0.0)) continue;
+            double d = std::fabs(std::log(c.value / tau));
+            if (d < bestd) { bestd = d; best = &c; }
+        }
+        return best;
+    };
+    // the residual constant term (1 when the polynomial was normalized)
+    if (std::fabs(lead_const - 1.0) > 1e-12) {
+        ex cf = GiNaC::numeric(lead_const);
+        factors.push_back({cf, pretty(cf), false});
+    }
+    for (const auto& f : nf) {
+        ex fe;
+        if (!f.complex_pair) {
+            double tau = f.a;
+            const Candidate* c = close_candidate(tau);
+            if (c) {
+                fe = ex(1) + s * c->expr;
+            } else {
+                fe = ex(1) + s * GiNaC::numeric(tau);
+            }
+        } else {
+            fe = ex(1) + s * GiNaC::numeric(f.a) + GiNaC::pow(s, 2) *
+                 GiNaC::numeric(f.b);
+        }
+        factors.push_back({fe, pretty_in_s(fe, s), false});
+    }
+    poly = ex(1);
+    any_numeric = true; // approximate by construction, even when the time
+                        // constant matched a named candidate
+    return true;
 }
 
 // ---------------------------------------------------------------------------
 // symbolic factor peeling
 // ---------------------------------------------------------------------------
 void peel_factors(ex& poly, const std::vector<Candidate>& cands,
-                  ParamTable& pt, const ex& s, std::vector<Factor>& factors) {
+                  ParamTable& pt, const ex& s, std::vector<Factor>& factors,
+                  bool approx_ok, bool& any_numeric) {
     while (true) {
         int deg;
         try {
@@ -336,20 +494,29 @@ void peel_factors(ex& poly, const std::vector<Candidate>& cands,
         for (const Ranked& rk : ranked) {
             if (++tried > 8 && rk.score > std::log(1.02)) break;
             ex f = ex(1) + rk.c->expr * s;
+            // Exact symbolic division only: the factor must actually divide.
+            if (!poly_remainder_is_zero(poly, f, s)) continue;
             ex q = (poly / f).normal();
-            ex rem = (poly - q * f).normal();
-            if (rem.is_zero()) {
-                factors.push_back({f, pretty_in_s(f, s), false});
-                poly = q.expand();
-                peeled = true;
-                break;
-            }
+            if (q.denom().has(s)) continue; // not a polynomial quotient
+            factors.push_back({f, pretty_in_s(f, s), false});
+            poly = q.expand();
+            peeled = true;
+            break;
         }
-        if (!peeled) {
-            factors.push_back({poly, pretty_in_s(poly, s), false});
-            poly = ex(1);
-            return;
+        if (peeled) continue;
+        // No exact factor: attempt approximate (numeric) factoring so a
+        // multi-pole denominator still comes out as (1+s*tau1)(1+s*tau2).
+        if (approx_ok) {
+            int before = int(factors.size());
+            if (approx_factor(poly, pt, s, cands, factors, any_numeric))
+                continue;
+            factors.resize(before);
         }
+        // Not factorable: keep the whole polynomial as one factor so the
+        // printed denominator is never a fabricated product.
+        factors.push_back({poly, pretty_in_s(poly, s), false});
+        poly = ex(1);
+        return;
     }
 }
 
@@ -472,6 +639,9 @@ ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
 
 // Pull a common factor out of a sum of products: a*x + a*y -> a*(x+y).
 // Used to make pole labels readable ("(Rd||ro)*(Cgd+CL)").
+// Only a *polynomial* common factor is pulled out: pulling out a factor that
+// itself sits in a denominator would turn the sum into (a/x + b) inside a
+// product, which is not a valid factor and prints as garbage.
 ex factor_common_impl(const ex& e) {
     if (!is_a<GiNaC::add>(e)) return e;
     // collect the multiplicative factor lists of each term
@@ -487,9 +657,21 @@ ex factor_common_impl(const ex& e) {
         terms.push_back(fs);
     }
     if (terms.empty()) return e;
-    // common factors: present in every term (compare structurally)
+    // common factors: present in every term (compare structurally). Only
+    // polynomial factors (non-negative powers) are extracted -- pulling out a
+    // factor that lives in a denominator would turn the sum into a nested
+    // fraction such as (a/x + b)*x, which is not low-entropy and reads badly.
+    auto is_polynomial_factor = [](const ex& f) {
+        if (is_a<GiNaC::power>(f)) {
+            const ex& xp = f.op(1);
+            if (is_a<numeric>(xp) && GiNaC::ex_to<numeric>(xp).is_negative())
+                return false;
+        }
+        return true;
+    };
     std::vector<ex> common;
     for (const ex& f : terms[0]) {
+        if (!is_polynomial_factor(f)) continue;
         bool inall = true;
         for (size_t i = 1; i < terms.size() && inall; ++i) {
             bool found = false;
@@ -508,20 +690,50 @@ ex factor_common_impl(const ex& e) {
     return cpart * rest;
 }
 
-std::string join_factors(const std::vector<Factor>& fs) {
+// Wrap a factor's text in parentheses when it is a sum or a ratio, so a
+// product of factors prints unambiguously: "(a+b)" not "a+b".
+std::string paren_factor(const std::string& t) {
+    if (t == "1") return t;
+    bool sum = t.find('+') != std::string::npos ||
+               t.find(" - ") != std::string::npos;
+    bool ratio = t.find('/') != std::string::npos;
+    bool product = t.find("\xC2\xB7") != std::string::npos;
+    if (sum || ratio || product) return "(" + t + ")";
+    return t;
+}
+
+// Already enclosed by one matching outer pair of parentheses?
+bool already_wrapped(const std::string& t) {
+    if (t.size() < 2 || t.front() != '(' || t.back() != ')') return false;
+    int depth = 0;
+    for (size_t i = 0; i < t.size(); ++i) {
+        if (t[i] == '(') ++depth;
+        else if (t[i] == ')') {
+            --depth;
+            if (depth == 0) return i == t.size() - 1;
+        }
+    }
+    return false;
+}
+
+std::string join_factors_pretty(const std::vector<Factor>& fs) {
     std::string out;
     for (const auto& f : fs) {
         if (f.text == "1" && !out.empty()) continue;
+        std::string t = f.text;
+        // the origin factor s^k needs no parentheses
+        if (!f.origin && !already_wrapped(t)) t = paren_factor(t);
         if (out.empty())
-            out = f.text;
+            out = t;
         else
-            out += "\xC2\xB7" + f.text;
+            out += "\xC2\xB7" + t;
     }
     return out.empty() ? "1" : out;
 }
 
 std::string wrap_compound(const std::string& t) {
     if (t == "1") return t;
+    if (already_wrapped(t)) return t;
     bool compound = t.find("\xC2\xB7") != std::string::npos ||
                     t.find('+') != std::string::npos ||
                     t.find('-') != std::string::npos ||
@@ -609,12 +821,18 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         d = (d / GiNaC::pow(s, kd)).normal();
     }
 
-    // 2. normalize by the denominator constant term so den(0) == 1
+    // 2. Normalize by the denominator constant term so den(0) == 1. This is
+    //    what lets the factored output read as (1 + s*tau1)(1 + s*tau2): the
+    //    s-coefficients of the polynomial are not multiplied by the (in
+    //    general symbolic) DC gain, and a genuine parallel combination
+    //    C1*R1*R2/(R1+R2) collapses to a single (R1||R2)*C1.
     ex c0d = d.coeff(s, 0);
     if (c0d.is_zero()) c0d = d.coeff(s, std::min(kd, 1));
     if (c0d.is_zero()) c0d = ex(1);
-    n = (n / c0d).normal();
-    d = (d / c0d).normal();
+    if (opts.normalize && !c0d.is_equal(ex(1))) {
+        n = (n / c0d).normal();
+        d = (d / c0d).normal();
+    }
 
     // 3. magnitude pruning (optional)
     if (opts.prune) {
@@ -659,10 +877,12 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     }
 
     // 5. normalize the denominator again (the rewrite can reintroduce a scale)
-    ex c0 = d.coeff(s, 0);
-    if (!c0.is_zero() && !c0.is_equal(ex(1))) {
-        n = (n / c0).normal();
-        d = (d / c0).normal();
+    if (opts.normalize) {
+        ex c0 = d.coeff(s, 0);
+        if (!c0.is_zero() && !c0.is_equal(ex(1))) {
+            n = (n / c0).normal();
+            d = (d / c0).normal();
+        }
     }
 
     // 4b. gm*ro >> 1 idealization, then pull common factors out of the
@@ -698,8 +918,12 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // 8. factor extraction by time-constant matching (TTC style)
     std::vector<Candidate> cands = build_tau_candidates(params);
     ex dd = d, nn = n;
-    peel_factors(dd, cands, params, s, R.den_factors);
-    peel_factors(nn, cands, params, s, R.num_factors);
+    bool any_numeric = false;
+    peel_factors(dd, cands, params, s, R.den_factors, opts.approx_factor,
+                 any_numeric);
+    peel_factors(nn, cands, params, s, R.num_factors, opts.approx_factor,
+                 any_numeric);
+    R.numeric_factors = any_numeric;
 
     // 9. root tables
     roots_from_factors(R.den_factors, params, s, R.poles);
@@ -707,8 +931,8 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
 
     // 9. display text (compound numerator/denominator get parentheses)
     std::string Kt = pretty(R.gain);
-    std::string Nt = join_factors(R.num_factors);
-    std::string Dt = join_factors(R.den_factors);
+    std::string Nt = join_factors_pretty(R.num_factors);
+    std::string Dt = join_factors_pretty(R.den_factors);
     std::string base;
     if (Kt == "1")
         base = wrap_compound(Nt);

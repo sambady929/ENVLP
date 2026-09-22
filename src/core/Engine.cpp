@@ -22,7 +22,11 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.threshold_db = req.threshold_db;
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
-    r.opts.use_parallel = req.use_parallel;    r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
+    r.opts.use_parallel = req.use_parallel;
+    r.opts.gm_ro_assume = req.gm_ro_assume;
+    r.opts.approx_factor = req.approx_factor;
+    r.opts.normalize = req.normalize;
+    r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
     r.report = format_report(r);
     return r;
 }
@@ -117,6 +121,10 @@ std::string format_report(const AnalysisResult& r) {
     out += "  H(s) = " + r.pruned.text_poly + "\n";
     out += "\nLaTeX (copy into a paper/slides):\n";
     out += "  " + r.pruned.latex + "\n";
+    if (r.pruned.numeric_factors)
+        out += "\nNote: one or more factors are approximate -- the exact "
+               "denominator/numerator\n      does not factor symbolically, so "
+               "numeric (estimate-based) roots were used.\n";
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";

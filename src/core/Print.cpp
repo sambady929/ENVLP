@@ -226,9 +226,27 @@ std::string pretty_in_s(const ex& e, const ex& s) {
 }
 
 std::string pretty_ratio(const ex& num, const ex& den, const ex& s) {
-    std::string ns = pretty_in_s(num, s);
+    auto wrapped = [](const std::string& t) {
+        if (t.size() < 2 || t.front() != '(' || t.back() != ')') return false;
+        int depth = 0;
+        for (size_t i = 0; i < t.size(); ++i) {
+            if (t[i] == '(') ++depth;
+            else if (t[i] == ')') {
+                --depth;
+                if (depth == 0) return i == t.size() - 1;
+            }
+        }
+        return false;
+    };
+    ex nd = den.expand();
     std::string ds = pretty_in_s(den, s);
-    if (is_a<GiNaC::add>(den) || is_a<GiNaC::mul>(den)) ds = "(" + ds + ")";
+    if (is_a<GiNaC::add>(nd) || is_a<GiNaC::mul>(nd)) ds = "(" + ds + ")";
+
+    std::string ns = pretty_in_s(num, s);
+    // A sum numerator must be parenthesized, otherwise "a + b / d" would be
+    // read as "a + (b/d)" rather than "(a+b)/d".
+    ex nn = num.expand();
+    if (is_a<GiNaC::add>(nn) && !wrapped(ns)) ns = "(" + ns + ")";
     return ns + " / " + ds;
 }
 

@@ -1,6 +1,8 @@
 #include "core/MNA.h"
 #include "core/Eng.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <set>
 #include <stdexcept>
 
@@ -18,7 +20,9 @@ ex reg_param(ParamTable& pt, const Component& c, const std::string& p) {
 }
 
 // Ideal controlled-source gains are dimensionless numbers: stamp them
-// numerically so H(s) stays in terms of the real design variables.
+// numerically so H(s) stays in terms of the real design variables. Integral
+// values (including "1e5") are stamped as exact integers so downstream
+// rational simplification and gcd cancellation stay exact.
 ex gain_ex(const Component& c) {
     const std::string& t = c.value_text;
     bool plain = !t.empty();
@@ -26,16 +30,21 @@ ex gain_ex(const Component& c) {
         if (!((ch >= '0' && ch <= '9') || ch == '.' || ch == '+' ||
               ch == '-' || ch == 'e' || ch == 'E'))
             plain = false;
+    double v = 0.0;
     if (plain) {
         try {
-            return ex(GiNaC::numeric(t.c_str()));
+            v = std::strtod(t.c_str(), nullptr);
         } catch (...) {
+            v = c.estimate();
         }
+    } else {
+        v = c.estimate();
     }
-    double v = c.estimate();
-    long i = static_cast<long>(v);
-    if (static_cast<double>(i) == v && v >= -1e12 && v <= 1e12)
-        return ex(i);
+    if (!std::isfinite(v)) v = c.estimate();
+    double ri = std::round(v);
+    if (std::fabs(v - ri) < 1e-12 * (1.0 + std::fabs(v)) &&
+        std::fabs(ri) < 1e15)
+        return ex(static_cast<long>(ri));
     return ex(v);
 }
 
@@ -355,14 +364,16 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::NULLOR: {
-            // ideal two-port: a nullator at the input (zero voltage across it,
-            // zero current through it) and a norator at the output (its
-            // current is whatever the rest of the circuit demands).
+            // Ideal nullor: a nullator across the input port (zero voltage,
+            // zero current) and a norator at the output (its current is
+            // whatever the circuit demands). Model with one extra unknown, the
+            // norator current k (flowing from `out` into the norator, which
+            // returns to ground), and one constraint row v(in+) = v(in-).
             int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
             int k = sys.branch_idx.at(c.ref);
-            stamp_branch(o, -1, k);
-            if (im >= 0) sys.Y(k, im) += 1;
-            if (ip >= 0) sys.Y(k, ip) -= 1;
+            if (ip >= 0) sys.Y(k, ip) += 1;
+            if (im >= 0) sys.Y(k, im) -= 1;
+            if (o >= 0) sys.Y(o, k) += 1;
             break;
         }
         case Kind::FDOPAMP: {

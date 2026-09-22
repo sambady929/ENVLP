@@ -49,6 +49,8 @@ struct LowEntropy {
     std::string text;      // factored form with || and · (UTF-8)
     std::string text_poly; // expanded (pruned) form
     std::string latex;     // H(s) in LaTeX
+    bool numeric_factors = false; // some factors use numeric (approx) roots
+    bool exact = false;    // true when pruning was disabled
 };
 
 struct LowEntropyOptions {
@@ -61,6 +63,19 @@ struct LowEntropyOptions {
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
     bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product
+    // When the exact denominator/ numerator does not factor symbolically,
+    // estimate each coefficient numerically and factor the resulting real
+    // polynomial, then rebuild component-labelled factors. Bounded by the
+    // pruning threshold so a factor is only accepted when its root is real
+    // (within a few % of its imaginary part) and its contribution at f0 is
+    // meaningful.
+    bool approx_factor = true;
+    // Normalize the denominator to a constant term of 1 (pulling the DC gain
+    // out front). Ideal for transfer functions -- it is what makes the output
+    // read as (1 + s*tau1)(1 + s*tau2) -- but for an impedance whose
+    // denominator constant is itself a symbolic sum it would turn the numerator
+    // into nested fractions, so it is disabled for those analyses.
+    bool normalize = true;
 };
 
 // The low-entropy engine. This is the heart of SymCirc: it turns a raw

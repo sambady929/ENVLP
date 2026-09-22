@@ -47,6 +47,7 @@ struct Pruned {
     std::string text_poly; // H(s) expanded (pruned) polynomial form
     std::string latex;     // H(s) in LaTeX (from the factored form)
     bool exact = false;    // true when pruning was disabled
+    bool numeric_factors = false; // some factors are approximate (numeric)
 };
 
 struct PruneOptions {
@@ -56,6 +57,8 @@ struct PruneOptions {
     bool prune = true;       // false => keep every symbolic term (exact)
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
     bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product
+    bool approx_factor = true; // numeric factoring when exact fails
+    bool normalize = true; // normalize denominator DC term to 1
 };
 
 // The low-entropy engine:
