@@ -76,6 +76,7 @@ add_library(symcore STATIC
   src/core/Solver.cpp
   src/core/Prune.cpp
   src/core/LowEntropy.cpp
+  src/core/Analysis.cpp
   src/core/Print.cpp
   src/core/Engine.cpp
 )

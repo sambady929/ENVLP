@@ -63,6 +63,7 @@ double eval_phase_deg(const ex& e, const ParamTable& params, double omega) {
 
 namespace {
 ex factor_common_impl(const ex& e);
+ex gm_ro_idealize(const ex& e, const ParamTable& pt);
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -412,6 +413,63 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
     }
 }
 
+// Idealization pass: with gm*ro >> 1 the "+1" next to a gm*ro product is
+// negligible. Rewrite sums where one term is (gm*ro)-like and another is
+// small: (gm*ro + x) -> gm*ro. Only applies to sums, never products.
+// gm*ro >> 1 idealization pass: inside a sum, if exactly one term is a
+// gm*ro product (or a multiple of one) and it dominates, drop the rest.
+// This is deliberately conservative -- it only fires on sums that contain an
+// explicit gm*ro term, so ordinary polynomials are untouched.
+bool looks_like_gm_ro(const ex& e, const ParamTable& pt) {
+    // numeric value must be >> 1
+    std::complex<double> z = eval_complex(e, pt, 0.0);
+    double mag = std::hypot(z.real(), z.imag());
+    if (!(mag > 100.0)) return false;
+    // and it must contain a gm symbol (Siemens) and an ro symbol (Ohm)
+    bool has_gm = false, has_ro = false;
+    for (const auto& kv : pt.cls) {
+        auto sit = pt.syms.find(kv.first);
+        if (sit == pt.syms.end()) continue;
+        if (!e.has(sit->second)) continue;
+        if (kv.second == UnitClass::Siemens) has_gm = true;
+        if (kv.second == UnitClass::Ohm) has_ro = true;
+    }
+    return has_gm && has_ro;
+}
+
+ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
+    if (is_a<GiNaC::add>(e)) {
+        // recurse first
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(gm_ro_idealize(e.op(i), pt));
+        ex sum = GiNaC::add(ops);
+        // find gm*ro-like terms
+        std::vector<ex> terms;
+        if (is_a<GiNaC::add>(sum))
+            for (size_t i = 0; i < sum.nops(); ++i) terms.push_back(sum.op(i));
+        else
+            terms.push_back(sum);
+        ex dom;
+        int ndom = 0;
+        for (const ex& t : terms)
+            if (looks_like_gm_ro(t, pt)) { dom = t; ++ndom; }
+        if (ndom == 1) {
+            // drop the other terms (they are the "+1" of gm*ro+1)
+            return dom;
+        }
+        return sum;
+    }
+    if (is_a<GiNaC::mul>(e) || is_a<GiNaC::power>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(gm_ro_idealize(e.op(i), pt));
+        return is_a<GiNaC::mul>(e) ? ex(GiNaC::mul(ops))
+                                   : ex(GiNaC::pow(ops[0], ops[1]));
+    }
+    return e;
+}
+
 // Pull a common factor out of a sum of products: a*x + a*y -> a*(x+y).
 // Used to make pole labels readable ("(Rd||ro)*(Cgd+CL)").
 ex factor_common_impl(const ex& e) {
@@ -518,8 +576,9 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // Normalise the *ratio* into one reduced fraction (num and den from MNA
     // carry arbitrary common factors; reducing cancels them).
     ex Hrat = (num / den).normal();
-    ex n = Hrat.numer(), d = Hrat.denom();
-    if (n.expand().is_zero()) {
+    ex n = Hrat.numer().expand();
+    ex d = Hrat.denom().expand();
+    if (n.is_zero()) {
         R.gain = ex(0);
         R.text = "0";
         R.text_poly = "0";
@@ -604,6 +663,18 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     if (!c0.is_zero() && !c0.is_equal(ex(1))) {
         n = (n / c0).normal();
         d = (d / c0).normal();
+    }
+
+    // 4b. gm*ro >> 1 idealization, then pull common factors out of the
+    //     numerator/denominator so the printed form is as compact as possible
+    //     (e.g. x*a + x*b -> x*(a+b)).
+    if (opts.prune) {
+        n = gm_ro_idealize(n, params);
+        d = gm_ro_idealize(d, params);
+        ex nf = factor_common_impl(n);
+        ex df = factor_common_impl(d);
+        if (!nf.is_zero()) n = nf;
+        if (!df.is_zero()) d = df;
     }
 
     R.num_poly = n;

@@ -71,6 +71,22 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
         throw std::runtime_error(
             "no ground reference (place a Ground symbol or name a node \"0\")");
 
+    // A VDD rail that is not connected to anything else is electrically
+    // dangling; tie it to ground so analyses other than PSR still work.
+    {
+        std::map<std::string, int> uses;
+        for (const auto& c : circ.comps)
+            for (const auto& n : c.nodes)
+                if (n == "VDD") ++uses["VDD"];
+        // one use = the VDD symbol itself
+        if (uses["VDD"] <= 1) {
+            std::vector<std::string> keep;
+            for (const auto& nd : nodes)
+                if (nd != "VDD") keep.push_back(nd);
+            nodes.swap(keep);
+        }
+    }
+
     // --- unknown ordering: node voltages, then branch currents ----------
     for (const auto& nd : nodes) {
         if (nd == "0") continue;
