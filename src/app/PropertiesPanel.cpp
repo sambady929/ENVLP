@@ -354,6 +354,17 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             if (on_edited) on_edited();
         });
         sizer->Add(prune, 0, wxALL, 4);
+
+        auto* approx = new wxCheckBox(
+            this, wxID_ANY, "Approximate roots when exact factoring fails");
+        approx->SetValue(doc_->req.approx_factor);
+        approx->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& e) {
+            if (rebuilding_) return;
+            doc_->req.approx_factor = e.IsChecked();
+            doc_->dirty = true;
+            if (on_edited) on_edited();
+        });
+        sizer->Add(approx, 0, wxALL, 4);
     }
 
     // ---------------- selection-specific rows ----------------

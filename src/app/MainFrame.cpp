@@ -265,9 +265,12 @@ void MainFrame::show_instance_menu() {
     const int n = int(sizeof(entries) / sizeof(entries[0]));
     for (int i = 0; i < n; ++i)
         menu.Append(ID_PLACE_BASE + i, entries[i].label);
-    menu.Bind(wxEVT_MENU, [this, &entries](wxCommandEvent& ev) {
+    // capture the table by pointer to a static, not by reference to a local
+    const Ent* ents = entries;
+    menu.Bind(wxEVT_MENU, [this, ents, n](wxCommandEvent& ev) {
         int i = ev.GetId() - ID_PLACE_BASE;
-        canvas_->begin_place(entries[i].kind, 0);
+        if (i < 0 || i >= n) return;
+        canvas_->begin_place(ents[i].kind, 0);
         sync_palette();
         SetStatusText("Placing -- Space rotates, Shift/Space flips, Esc cancels.",
                       0);
@@ -454,6 +457,7 @@ void MainFrame::run_card(int index) {
         def.global_ref = doc_.req.global_ref;
         def.prune = doc_.req.prune;
         def.use_parallel = doc_.req.use_parallel;
+        def.approx_factor = doc_.req.approx_factor;
         cards.push_back(def);
         analysis_->refresh(&doc_);
     }
@@ -476,6 +480,7 @@ void MainFrame::run_card(int index) {
         sp.prune = card.prune;
         sp.use_parallel = card.use_parallel;
         sp.gm_ro_assume = card.gm_ro;
+        sp.approx_factor = card.approx_factor;
 
         syms::CardResult cr = syms::run_analysis(c, sp);
         report += "==================================================\n";

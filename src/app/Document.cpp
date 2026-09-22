@@ -225,7 +225,9 @@ std::string Document::serialize() const {
     o << "symcirc 1\n";
     o << "req " << quote(req.input_ref) << " " << quote(req.output) << " "
       << req.f0_hz << " " << req.threshold_db << " "
-      << (req.global_ref ? 1 : 0) << "\n";
+      << (req.global_ref ? 1 : 0) << " " << (req.prune ? 1 : 0) << " "
+      << (req.use_parallel ? 1 : 0) << " " << (req.gm_ro_assume ? 1 : 0)
+      << " " << (req.approx_factor ? 1 : 0) << "\n";
     for (const auto& c : circuit.comps) {
         auto pl = placements.find(c.ref);
         double x = pl == placements.end() ? 0.0 : pl->second.x;
@@ -295,6 +297,12 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             req.f0_hz = std::atof(c.c_str());
             req.threshold_db = std::atof(d.c_str());
             req.global_ref = e != "0";
+            // optional trailing engine switches (older files omit them)
+            std::string f, g, h, i2;
+            if (next_token(line, i, f)) req.prune = f != "0";
+            if (next_token(line, i, g)) req.use_parallel = g != "0";
+            if (next_token(line, i, h)) req.gm_ro_assume = h != "0";
+            if (next_token(line, i, i2)) req.approx_factor = i2 != "0";
         } else if (kw == "comp") {
             std::string ref, tok, sx, sy, srot, sfh, sfv, sdb, val;
             if (!need(ref) || !need(tok) || !need(sx) || !need(sy) ||

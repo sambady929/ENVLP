@@ -26,6 +26,7 @@ struct AnalysisCard {
     bool prune = true;
     bool use_parallel = true;
     bool gm_ro = true;
+    bool approx_factor = true;
     bool enabled = true;
 };
 

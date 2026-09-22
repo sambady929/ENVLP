@@ -21,6 +21,7 @@ public:
 
     bool OnInit() override {
         if (!wxApp::OnInit()) return false;
+        wxInitAllImageHandlers(); // needed for PNG plot export
         auto* frame = new symcirc::MainFrame();
         frame->Show(true);
         if (!file_.empty()) {

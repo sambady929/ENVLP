@@ -60,6 +60,7 @@ void AnalysisPanel::add_card(AnalysisKind kind) {
         c.global_ref = doc_->req.global_ref;
         c.prune = doc_->req.prune;
         c.use_parallel = doc_->req.use_parallel;
+        c.approx_factor = doc_->req.approx_factor;
     }
     cards_.push_back(c);
     if (doc_) doc_->dirty = true;
@@ -191,9 +192,12 @@ void AnalysisPanel::refresh(Document* doc) {
             par->SetValue(c.use_parallel);
             auto* gro = new wxCheckBox(box, wxID_ANY, "gm*ro>>1");
             gro->SetValue(c.gm_ro);
+            auto* af = new wxCheckBox(box, wxID_ANY, "approx roots");
+            af->SetValue(c.approx_factor);
             opts->Add(prune, 0, wxRIGHT, 8);
             opts->Add(par, 0, wxRIGHT, 8);
-            opts->Add(gro, 0);
+            opts->Add(gro, 0, wxRIGHT, 8);
+            opts->Add(af, 0);
             s->Add(opts, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
             prune->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
                 c.prune = e.IsChecked();
@@ -207,6 +211,11 @@ void AnalysisPanel::refresh(Document* doc) {
             });
             gro->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
                 c.gm_ro = e.IsChecked();
+                if (doc_) doc_->dirty = true;
+                if (on_changed) on_changed();
+            });
+            af->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
+                c.approx_factor = e.IsChecked();
                 if (doc_) doc_->dirty = true;
                 if (on_changed) on_changed();
             });
@@ -265,7 +274,7 @@ std::string AnalysisPanel::serialize() const {
           << " " << c.threshold_db << " " << (c.global_ref ? 1 : 0) << " "
           << (c.prune ? 1 : 0) << " " << (c.use_parallel ? 1 : 0) << " "
           << (c.gm_ro ? 1 : 0) << " " << (c.enabled ? 1 : 0) << " " << q(title)
-          << "\n";
+          << " " << (c.approx_factor ? 1 : 0) << "\n";
     }
     return o.str();
 }
@@ -300,6 +309,8 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         int g = 0, pr = 1, par = 1, gro = 1, en = 1;
         ls >> f0 >> thr >> g >> pr >> par >> gro >> en;
         std::string title = unq(ls);
+        int af = 1;
+        ls >> af;
         c.kind = analysis_kind_from_name(kind);
         c.f0_hz = f0;
         c.threshold_db = thr;
@@ -308,6 +319,7 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         c.use_parallel = par != 0;
         c.gm_ro = gro != 0;
         c.enabled = en != 0;
+        c.approx_factor = af != 0;
         c.title = title.empty() ? analysis_kind_name(c.kind) : title;
         cards_.push_back(c);
     }

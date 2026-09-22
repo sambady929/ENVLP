@@ -9,6 +9,7 @@
 #include <vector>
 #include <wx/dcbuffer.h>
 #include <wx/filedlg.h>
+#include <wx/image.h>
 #include <wx/msgdlg.h>
 
 namespace symcirc {
@@ -33,6 +34,11 @@ BodeCanvas::BodeCanvas(wxWindow* parent) : wxPanel(parent) {
 
 void BodeCanvas::set_result(const syms::AnalysisResult* r) {
     res_ = r;
+    Refresh();
+}
+
+void BodeCanvas::set_mode(PlotMode m) {
+    mode_ = m;
     Refresh();
 }
 
@@ -128,6 +134,24 @@ bool BodeCanvas::save_svg(const std::string& path) const {
     return bool(o);
 }
 
+bool BodeCanvas::save_png(const std::string& path) const {
+    wxSize sz = GetClientSize();
+    if (sz.x < 50 || sz.y < 50) sz = wxSize(900, 640);
+    wxBitmap bmp(sz.x, sz.y, 24);
+    {
+        wxMemoryDC dc(bmp);
+        dc.SetBackground(wxBrush(*wxWHITE));
+        dc.Clear();
+        switch (mode_) {
+            case PlotMode::Bode: paint_bode(dc, sz); break;
+            case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
+            case PlotMode::Nichols: paint_nichols(dc, sz); break;
+        }
+    }
+    wxImage img = bmp.ConvertToImage();
+    return img.SaveFile(wxString::FromUTF8(path), wxBITMAP_TYPE_PNG);
+}
+
 std::string BodeCanvas::escape_xml(std::string s) {
     std::string o;
     for (char c : s) {
@@ -139,6 +163,9 @@ std::string BodeCanvas::escape_xml(std::string s) {
     return o;
 }
 
+// ---------------------------------------------------------------------------
+// painting
+// ---------------------------------------------------------------------------
 void BodeCanvas::on_paint(wxPaintEvent&) {
     wxAutoBufferedPaintDC dc(this);
     wxSize sz = GetClientSize();
@@ -147,10 +174,39 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
 
     if (!res_) {
         dc.SetTextForeground(wxColour(150, 150, 155));
-        dc.DrawText("Run an analysis (F5) to see the Bode plot.", 12, 12);
+        dc.DrawText("Run an analysis (F5) to see the plot.", 12, 12);
         return;
     }
+    switch (mode_) {
+        case PlotMode::Bode: paint_bode(dc, sz); break;
+        case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
+        case PlotMode::Nichols: paint_nichols(dc, sz); break;
+    }
+}
 
+namespace {
+// shared: sample magnitude/phase then give the caller the raw re/im too
+struct Curve {
+    std::vector<double> f, mag, ph, re, im;
+};
+void sample_curve(const syms::AnalysisResult* r, Curve& c) {
+    std::vector<double> freqs = syms::sweep_hz(kFstart, kFend, kN);
+    for (double fr : freqs) {
+        double w = 2 * M_PI * fr;
+        auto z = syms::eval_complex((r->num_raw / r->den_raw).normal(),
+                                    r->params, w);
+        c.f.push_back(fr);
+        c.mag.push_back(std::isfinite(z.real())
+                            ? 20.0 * std::log10(std::hypot(z.real(), z.imag()))
+                            : -1e300);
+        c.ph.push_back(std::atan2(z.imag(), z.real()) * 180.0 / M_PI);
+        c.re.push_back(z.real());
+        c.im.push_back(z.imag());
+    }
+}
+} // namespace
+
+void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     const int mL = 56, mR = 12, mT = 12, mB = 42;
     const int W = sz.x - mL - mR;
     const int Hh = (sz.y - mT - mB - 14) / 2;
@@ -252,6 +308,124 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
     dc.DrawText("frequency [Hz]", mL + W - 78, mT + Hh + 14 + Hp + 4);
 }
 
+void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
+    Curve c;
+    sample_curve(res_, c);
+    if (c.f.empty()) return;
+
+    // auto-scale the real/imag extents with a little margin
+    double lo = 1e300, hi = -1e300;
+    for (size_t i = 0; i < c.f.size(); ++i) {
+        if (!std::isfinite(c.re[i]) || !std::isfinite(c.im[i])) continue;
+        lo = std::min({lo, c.re[i], c.im[i]});
+        hi = std::max({hi, c.re[i], c.im[i]});
+    }
+    if (lo > hi) return;
+    double span = std::max(hi - lo, 1e-12);
+    lo -= span * 0.08;
+    hi += span * 0.08;
+
+    const int mL = 48, mR = 16, mT = 16, mB = 30;
+    int W = sz.x - mL - mR, H = sz.y - mT - mB;
+    if (W < 50 || H < 50) return;
+    auto X = [&](double v) { return mL + (v - lo) / (hi - lo) * W; };
+    auto Y = [&](double v) { return mT + H - (v - lo) / (hi - lo) * H; };
+
+    dc.SetPen(wxPen(wxColour(215, 215, 220)));
+    dc.DrawRectangle(mL, mT, W, H);
+    dc.SetPen(wxPen(wxColour(160, 160, 168)));
+    dc.DrawLine(int(X(0)), mT, int(X(0)), mT + H);
+    dc.DrawLine(mL, int(Y(0)), mL + W, int(Y(0)));
+    dc.SetTextForeground(wxColour(130, 130, 138));
+    dc.DrawText("Re", mL + W - 18, int(Y(0)) - 16);
+    dc.DrawText("Im", int(X(0)) + 4, mT + 4);
+    char b1[48], b2[48];
+    std::snprintf(b1, sizeof(b1), "%.3g", hi);
+    std::snprintf(b2, sizeof(b2), "%.3g", lo);
+    dc.DrawText(b1, mL + W - 46, mT + H + 4);
+    dc.DrawText(b2, mL, mT + H + 4);
+
+    dc.SetPen(wxPen(wxColour(190, 40, 40), 2));
+    bool started = false;
+    wxPoint prev(0, 0);
+    for (size_t i = 0; i < c.f.size(); ++i) {
+        if (!std::isfinite(c.re[i]) || !std::isfinite(c.im[i])) {
+            started = false;
+            continue;
+        }
+        wxPoint p(int(X(c.re[i])), int(Y(c.im[i])));
+        if (started) dc.DrawLine(prev, p);
+        prev = p;
+        started = true;
+    }
+    dc.SetTextForeground(wxColour(190, 40, 40));
+    dc.DrawText("Nyquist: Im vs Re of H(jw)", mL + 6, mT + 4);
+}
+
+void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
+    Curve c;
+    sample_curve(res_, c);
+    if (c.f.empty()) return;
+
+    // x: phase (deg), y: magnitude (dB), both auto-scaled
+    double plo = 1e300, phi = -1e300, mlo = 1e300, mhi = -1e300;
+    for (size_t i = 0; i < c.f.size(); ++i) {
+        if (!std::isfinite(c.mag[i]) || !std::isfinite(c.ph[i])) continue;
+        plo = std::min(plo, c.ph[i]);
+        phi = std::max(phi, c.ph[i]);
+        mlo = std::min(mlo, c.mag[i]);
+        mhi = std::max(mhi, c.mag[i]);
+    }
+    if (plo > phi || mlo > mhi) return;
+    plo -= 10;
+    phi += 10;
+    if (mhi - mlo < 1.0) mhi = mlo + 1.0;
+    mlo -= 5;
+    mhi += 5;
+
+    const int mL = 56, mR = 16, mT = 16, mB = 34;
+    int W = sz.x - mL - mR, H = sz.y - mT - mB;
+    if (W < 50 || H < 50) return;
+    auto X = [&](double deg) { return mL + (deg - plo) / (phi - plo) * W; };
+    auto Y = [&](double db) { return mT + H - (db - mlo) / (mhi - mlo) * H; };
+
+    dc.SetPen(wxPen(wxColour(215, 215, 220)));
+    dc.DrawRectangle(mL, mT, W, H);
+    for (int deg = int(std::ceil(plo / 45) * 45); deg <= phi; deg += 45) {
+        int x = int(X(deg));
+        dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
+                                 : wxColour(240, 240, 244)));
+        dc.DrawLine(x, mT, x, mT + H);
+        dc.SetTextForeground(wxColour(130, 130, 138));
+        dc.DrawText(wxString::Format("%d\u00b0", deg), x - 8, mT + H + 4);
+    }
+    for (int db = int(std::ceil(mlo / 20) * 20); db <= mhi; db += 20) {
+        int y = int(Y(db));
+        dc.SetPen(wxPen(wxColour(240, 240, 244)));
+        dc.DrawLine(mL, y, mL + W, y);
+        dc.SetTextForeground(wxColour(130, 130, 138));
+        dc.DrawText(wxString::Format("%d dB", db), 4, y - 6);
+    }
+
+    dc.SetPen(wxPen(wxColour(40, 110, 60), 2));
+    bool started = false;
+    wxPoint prev(0, 0);
+    for (size_t i = 0; i < c.f.size(); ++i) {
+        if (!std::isfinite(c.mag[i]) || !std::isfinite(c.ph[i])) {
+            started = false;
+            continue;
+        }
+        wxPoint p(int(X(c.ph[i])), int(Y(c.mag[i])));
+        if (started) dc.DrawLine(prev, p);
+        prev = p;
+        started = true;
+    }
+    dc.SetTextForeground(wxColour(40, 110, 60));
+    dc.DrawText("Nichols: |H| (dB) vs phase", mL + 6, mT + 4);
+    dc.SetTextForeground(wxColour(90, 90, 95));
+    dc.DrawText("phase [deg]", mL + W - 70, mT + H + 4);
+}
+
 // ---------------------------------------------------------------------------
 BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* root = new wxBoxSizer(wxVERTICAL);
@@ -259,23 +433,48 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     root->Add(plot_, 1, wxEXPAND);
 
     auto* bar = new wxBoxSizer(wxHORIZONTAL);
+    auto* mode = new wxChoice(this, wxID_ANY);
+    mode->Append("Bode");
+    mode->Append("Nyquist");
+    mode->Append("Nichols");
+    mode->SetSelection(0);
     auto* svg = new wxButton(this, wxID_ANY, "Save SVG...");
+    auto* png = new wxButton(this, wxID_ANY, "Save PNG...");
     auto* csv = new wxButton(this, wxID_ANY, "Save CSV...");
+    bar->Add(new wxStaticText(this, wxID_ANY, "Plot:"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    bar->Add(mode, 0, wxRIGHT, 8);
     bar->Add(svg, 0, wxRIGHT, 6);
+    bar->Add(png, 0, wxRIGHT, 6);
     bar->Add(csv, 0, 0);
     bar->AddStretchSpacer();
     root->Add(bar, 0, wxEXPAND | wxALL, 4);
     SetSizer(root);
 
+    mode->Bind(wxEVT_CHOICE, [this, mode](wxCommandEvent&) {
+        switch (mode->GetSelection()) {
+            case 1: plot_->set_mode(PlotMode::Nyquist); break;
+            case 2: plot_->set_mode(PlotMode::Nichols); break;
+            default: plot_->set_mode(PlotMode::Bode); break;
+        }
+    });
+
     svg->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        wxFileDialog dlg(this, "Save Bode plot", "", "bode.svg",
+        wxFileDialog dlg(this, "Save plot", "", "plot.svg",
                          "SVG (*.svg)|*.svg", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
         if (dlg.ShowModal() == wxID_OK && !plot_->save_svg(dlg.GetPath().ToStdString()))
             wxMessageBox("Could not write the SVG file.", "Save failed",
                          wxICON_ERROR, this);
     });
+    png->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        wxFileDialog dlg(this, "Save plot", "", "plot.png",
+                         "PNG (*.png)|*.png", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+        if (dlg.ShowModal() == wxID_OK && !plot_->save_png(dlg.GetPath().ToStdString()))
+            wxMessageBox("Could not write the PNG file.", "Save failed",
+                         wxICON_ERROR, this);
+    });
     csv->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        wxFileDialog dlg(this, "Save Bode data", "", "bode.csv",
+        wxFileDialog dlg(this, "Save plot data", "", "plot.csv",
                          "CSV (*.csv)|*.csv", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
         if (dlg.ShowModal() == wxID_OK && !plot_->save_csv(dlg.GetPath().ToStdString()))
             wxMessageBox("Could not write the CSV file.", "Save failed",

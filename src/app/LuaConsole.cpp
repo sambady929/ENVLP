@@ -20,8 +20,8 @@ LuaConsole::LuaConsole(wxWindow* parent) : wxPanel(parent) {
 
     auto* hint = new wxStaticText(
         this, wxID_ANY,
-        "Lua: mag(f) phase(f) H() Hpoly() report() roots() estimate(name) "
-        "dropped() -- Enter runs, Up/Down recalls history");
+        "Lua: mag(f) phase(f) H() Hpoly() latex() report() roots() "
+        "estimate(name) dropped() -- Enter runs, Up/Down recalls history");
     hint->SetForegroundColour(wxColour(115, 115, 120));
 
     sizer->Add(out_, 1, wxEXPAND | wxALL, 4);

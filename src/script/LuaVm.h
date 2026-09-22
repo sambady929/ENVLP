@@ -16,6 +16,7 @@ namespace symcirc {
 //   phase(f_hz) -> deg       phase of unpruned H
 //   H() -> string            factored low-entropy form
 //   Hpoly() -> string        expanded pruned form
+//   latex() -> string        LaTeX form of H(s)
 //   report() -> string       full report text
 //   poles() -> { {w=, label=}, ... }
 //   zeros() -> { ... }

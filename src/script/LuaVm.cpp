@@ -57,6 +57,14 @@ int l_report(lua_State* L) {
     return 1;
 }
 
+int l_latex(lua_State* L) {
+    auto* vm = LuaVm::self(L);
+    if (!vm || !vm->result())
+        return luaL_error(L, "no analysis result yet");
+    lua_pushstring(L, vm->result()->pruned.latex.c_str());
+    return 1;
+}
+
 int l_roots(lua_State* L) {
     auto* vm = LuaVm::self(L);
     if (!vm || !vm->result())
@@ -152,8 +160,9 @@ void LuaVm::push_api() {
     const Entry entries[] = {
         {"mag", l_mag},        {"phase", l_phase},
         {"H", l_H},            {"Hpoly", l_Hpoly},
-        {"report", l_report},  {"roots", l_roots},
-        {"estimate", l_estimate}, {"dropped", l_dropped},
+        {"latex", l_latex},    {"report", l_report},
+        {"roots", l_roots},    {"estimate", l_estimate},
+        {"dropped", l_dropped},
     };
     for (const auto& e : entries) {
         lua_pushcfunction(L_, e.fn);
