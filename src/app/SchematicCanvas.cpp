@@ -129,6 +129,20 @@ std::string SchematicCanvas::hit_component(Pt p) const {
     // topmost last drawn wins -> iterate in reverse
     for (auto it = doc_->circuit.comps.rbegin();
          it != doc_->circuit.comps.rend(); ++it) {
+        if (it->kind == Kind::K) {
+            if (it->links.size() != 2) continue;
+            auto pa = doc_->placements.find(it->links[0]);
+            auto pb = doc_->placements.find(it->links[1]);
+            if (pa == doc_->placements.end() || pb == doc_->placements.end())
+                continue;
+            double x0, y0, x1, y1;
+            coupling_bbox({pa->second.x, pa->second.y},
+                          {pb->second.x, pb->second.y}, x0, y0, x1, y1);
+            if (p.first >= x0 && p.first <= x1 && p.second >= y0 &&
+                p.second <= y1)
+                return it->ref;
+            continue;
+        }
         auto pl = doc_->placements.find(it->ref);
         if (pl == doc_->placements.end()) continue;
         double x0, y0, x1, y1;
@@ -248,11 +262,21 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         dc.SetTextBackground(*wxWHITE);
     }
 
-    // components
+    // components (coupling markers are drawn after the windings)
     for (const auto& c : doc_->circuit.comps) {
+        if (c.kind == Kind::K) continue;
         auto pl = doc_->placements.find(c.ref);
         if (pl == doc_->placements.end()) continue;
         draw_symbol(dc, c, pl->second, sel_ == c.ref);
+    }
+    for (const auto& c : doc_->circuit.comps) {
+        if (c.kind != Kind::K || c.links.size() != 2) continue;
+        auto pa = doc_->placements.find(c.links[0]);
+        auto pb = doc_->placements.find(c.links[1]);
+        if (pa == doc_->placements.end() || pb == doc_->placements.end())
+            continue;
+        draw_coupling(dc, {pa->second.x, pa->second.y},
+                      {pb->second.x, pb->second.y}, sel_ == c.ref);
     }
 
     // hover highlight while wiring onto a pin

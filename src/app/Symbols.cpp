@@ -17,10 +17,11 @@ std::vector<Pt> pin_offsets(Kind k) {
     case Kind::C:
     case Kind::L:
         return {{-30, 0}, {30, 0}};
+    // V and I are drawn vertical (rotated 90 deg CCW): +/head up, -/tail down
     case Kind::V:
-        return {{-30, 0}, {30, 0}}; // + , -
+        return {{0, -30}, {0, 30}}; // + , -
     case Kind::I:
-        return {{-30, 0}, {30, 0}}; // head, tail
+        return {{0, -30}, {0, 30}}; // head , tail
     case Kind::D:
         return {{-30, 0}, {30, 0}}; // A , K
     case Kind::IS:
@@ -29,12 +30,14 @@ std::vector<Pt> pin_offsets(Kind k) {
         return {{-30, 0}, {30, 0}}; // in , out
     case Kind::E:
     case Kind::G:
+    case Kind::CCCS:
+    case Kind::CCVS:
         // out+ , out- , ctrl+ , ctrl-
         return {{40, -10}, {40, 10}, {-40, -10}, {-40, 10}};
     case Kind::NMOS:
     case Kind::PMOS:
-        // D , G , S , B
-        return {{0, -40}, {-40, 0}, {0, 40}, {40, 0}};
+        // D , G , S  (no body pin)
+        return {{0, -40}, {-40, 0}, {0, 40}};
     case Kind::NPN:
     case Kind::PNP:
         // C , B , E
@@ -211,9 +214,8 @@ void draw_diode(Ctx& t) {
 // --- sources ---------------------------------------------------------------
 void draw_vsource(Ctx& t) {
     t.w(kWire);
-    t.line(-30, 0, -15, 0);
-    t.line(15, 0, 30, 0);
-    t.w(kWire);
+    t.line(0, -30, 0, -15);
+    t.line(0, 15, 0, 30);
     t.circle(0, 0, 15);
     // polarity marks to the left of the circle (+ upper, - lower)
     t.line(-25, -8, -17, -8);
@@ -223,12 +225,12 @@ void draw_vsource(Ctx& t) {
 
 void draw_isource(Ctx& t) {
     t.w(kWire);
-    t.line(-30, 0, -15, 0);
-    t.line(15, 0, 30, 0);
+    t.line(0, -30, 0, -15);
+    t.line(0, 15, 0, 30);
     t.circle(0, 0, 15);
-    // arrow toward the head pin (left)
-    t.line(7, 0, 1, 0);
-    t.arrow(1, 0, -8, 0, 7);
+    // arrow points up, toward the head pin
+    t.line(0, 8, 0, 1);
+    t.arrow(0, 1, 0, -8, 7);
 }
 
 void draw_vdd(Ctx& t) {
@@ -255,15 +257,35 @@ void draw_vcvs(Ctx& t, Kind k) {
     t.line(-40, 10, -26, 10);
     t.w(kBody);
     t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
-    // polarity marks
+    // polarity marks just outside the box, at the pin rows
     t.w(kWire);
-    t.line(-23, -10, -17, -10);
-    t.line(-20, -13, -20, -7);
-    t.line(-23, 10, -17, 10);
-    t.line(17, -10, 23, -10);
-    t.line(20, -13, 20, -7);
-    t.line(17, 10, 23, 10);
+    t.line(-23, -10, -19, -10);
+    t.line(-21, -12, -21, -8);
+    t.line(-23, 10, -19, 10);
+    t.line(19, -10, 23, -10);
+    t.line(21, -12, 21, -8);
+    t.line(19, 10, 23, 10);
     t.text(k == Kind::E ? "E" : "G", 0, 0, true);
+}
+
+void draw_body_ccvs_cccs(Ctx& t, Kind k) {
+    t.w(kWire);
+    t.line(40, -10, 26, -10);
+    t.line(40, 10, 26, 10);
+    t.line(-40, -10, -26, -10);
+    t.line(-40, 10, -26, 10);
+    t.w(kBody);
+    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // input port polarity marks just outside the box
+    t.w(kWire);
+    t.line(-23, -10, -19, -10);
+    t.line(-21, -12, -21, -8);
+    t.line(-23, 10, -19, 10);
+    // output port polarity marks
+    t.line(19, -10, 23, -10);
+    t.line(21, -12, 21, -8);
+    t.line(19, 10, 23, 10);
+    t.text(k == Kind::CCCS ? "F" : "H", 0, 0, true);
 }
 
 // --- transistors -----------------------------------------------------------
@@ -272,20 +294,19 @@ void draw_mosfet(Ctx& t, Kind k) {
     // gate lead and gate bar (thick, filled)
     t.w(kWire);
     t.line(-40, 0, -16, 0);
-    t.fillrect(-16, -18, -13, 18);
+    t.fillrect(-16, -16, -13, 16);
     // channel bar (thick, filled)
-    t.fillrect(-8, -22, -5, 22);
+    t.fillrect(-8, -20, -5, 20);
     // drain / source taps
     t.w(kWire);
-    t.polyline({{-5, -18}, {0, -18}, {0, -40}});
-    t.polyline({{-5, 18}, {0, 18}, {0, 40}});
-    // bulk tap from mid-channel out to the B pin, with the polarity arrow
-    t.line(-5, 0, 12, 0);
-    t.line(12, 0, 40, 0);
+    t.polyline({{-5, -16}, {0, -16}, {0, -40}});
+    t.polyline({{-5, 16}, {0, 16}, {0, 40}});
+    // source polarity arrow on the channel (no body terminal in this style):
+    // NMOS points into the channel (right), PMOS points out (left)
     if (n)
-        t.arrow(9, 0, -2, 0, 9); // into the channel
+        t.arrow(-12, 16, -3, 16, 8);
     else
-        t.arrow(-2, 0, 9, 0, 9); // out of the channel
+        t.arrow(-3, 16, -12, 16, 8);
 }
 
 void draw_bjt(Ctx& t, Kind k) {
@@ -295,44 +316,56 @@ void draw_bjt(Ctx& t, Kind k) {
     t.w(kBody);
     t.line(-22, -16, -22, 16); // base bar
     t.w(kWire);
-    t.polyline({{-22, -7.5}, {0, -19}, {0, -40}}); // collector
-    t.polyline({{-22, 7.5}, {0, 19}, {0, 40}});    // emitter
+    // emitter is the lower diagonal for NPN, the upper one for PNP
+    Pt cTop{-22, -7.5}, cAt{0, -19};
+    Pt eBot{-22, 7.5}, eAt{0, 19};
+    Pt eLead0 = npn ? eBot : cTop;
+    Pt eLead1 = npn ? eAt : cAt;
+    Pt oLead0 = npn ? cTop : eBot;
+    Pt oLead1 = npn ? cAt : eAt;
+    t.polyline({eLead0, eLead1, {0, 40}});   // emitter to the bottom pin
+    t.polyline({oLead0, oLead1, {0, -40}});  // collector to the top pin
     // emitter arrow sits on the emitter segment
     if (npn)
-        t.arrow(-14, 13, -4, 17.75, 9); // outward (away from base)
+        t.arrow(-14, 13, -4, 17.75, 9);
     else
-        t.arrow(-8, 15, -18, 10.4, 9);  // inward (toward base)
+        t.arrow(-8, -15.2, -18, -10.4, 9);
 }
 
 // --- amplifiers / blocks ---------------------------------------------------
 void draw_opamp(Ctx& t, bool fully_diff, bool nullor) {
+    (void)nullor;
+    (void)nullor;
     t.w(kWire);
     t.line(-40, -12, -30, -12);
     t.line(-40, 12, -30, 12);
     if (fully_diff) {
-        t.line(24, 0, 40, -12);
-        t.line(24, 0, 40, 12);
+        // two outputs: the non-inverting one at the top, inverting at the bottom
+        t.line(21.96, 0, 40, -14);
+        t.line(21.96, 0, 40, 14);
+        t.line(21.96, 0, 40, 0);
+        t.line(22, 0, 30, 0);
     } else {
-        t.line(24, 0, 40, 0);
+        t.line(21.96, 0, 40, 0);
     }
     t.w(kBody);
-    t.polyline({{-30, -30}, {-30, 30}, {24, 0}}, true);
+    t.polyline({{-30, -30}, {-30, 30}, {21.96, 0}}, true);
     t.w(kWire);
     if (fully_diff) {
-        // input +/- inside
-        t.line(-27, -12, -21, -12);
-        t.line(-24, -15, -24, -9);
-        t.line(-27, 12, -21, 12);
-        // output polarity
-        t.line(28, -14, 34, -14);
-        t.line(31, -17, 31, -11);
-        t.line(28, 14, 34, 14);
+        // input + / - (inverting input is below the non-inverting one)
+        t.line(-24, -12, -18, -12);
+        t.line(-21, -15, -21, -9);
+        t.line(-24, 12, -18, 12);
+        // the triangle already ends at x=22 and the leads start there, so the
+        // output marks sit on the leads
+        t.line(26, -20, 30, -20);
+        t.line(28, -22, 28, -18);
+        t.line(26, 20, 30, 20);
     } else {
         t.line(-27, -12, -21, -12);
         t.line(-24, -15, -24, -9);
         t.line(-27, 12, -21, 12);
     }
-    if (nullor) t.text("\u221e", 0, 0, true);
 }
 
 void draw_amp(Ctx& t) {
@@ -369,6 +402,24 @@ void draw_transformer(Ctx& t) {
     t.line(5, -16, 5, 16);
 }
 
+void draw_nullor(Ctx& t) {
+    // two ports: a nullator at the input (circle with a slash: zero volts and
+    // zero current) and a norator at the output (two bars: free current)
+    t.w(kWire);
+    t.line(-40, -10, -26, -10);
+    t.line(-40, 10, -26, 10);
+    t.line(26, -10, 40, -10);
+    t.line(26, 10, 40, 10);
+    t.w(kBody);
+    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // nullator: circle with a diagonal slash
+    t.circle(-14, 0, 7);
+    t.line(-19.5, -5, -8.5, 5);
+    // norator: two bars
+    t.line(9, -11, 9, 11);
+    t.line(17, -11, 17, 11);
+}
+
 void draw_body(Ctx& t, Kind k) {
     switch (k) {
     case Kind::R: draw_resistor(t); break;
@@ -381,11 +432,13 @@ void draw_body(Ctx& t, Kind k) {
     case Kind::D: draw_diode(t); break;
     case Kind::E:
     case Kind::G: draw_vcvs(t, k); break;
+    case Kind::CCCS:
+    case Kind::CCVS: draw_body_ccvs_cccs(t, k); break;
     case Kind::NMOS:
     case Kind::PMOS: draw_mosfet(t, k); break;
     case Kind::NPN:
     case Kind::PNP: draw_bjt(t, k); break;
-    case Kind::NULLOR: draw_opamp(t, false, true); break;
+    case Kind::NULLOR: draw_nullor(t); break;
     case Kind::OPAMP: draw_opamp(t, false, false); break;
     case Kind::FDOPAMP: draw_opamp(t, true, false); break;
     case Kind::AMP: draw_amp(t); break;
@@ -403,7 +456,9 @@ void label_anchor(Kind k, double& lx, double& ly) {
     case Kind::GND: lx = 16; ly = 4; break;
     case Kind::VDD: lx = 18; ly = -26; break;
     case Kind::E:
-    case Kind::G: lx = 28; ly = -24; break;
+    case Kind::G:
+    case Kind::CCCS:
+    case Kind::CCVS: lx = 28; ly = -24; break;
     case Kind::NMOS:
     case Kind::PMOS: lx = 12; ly = -34; break;
     case Kind::NPN:
@@ -488,6 +543,65 @@ void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
     y1 += m;
 }
 
+// Mutual-coupling marker ----------------------------------------------------
+void draw_coupling(wxDC& dc, Pt a, Pt b, bool selected) {
+    wxColour ink = selected ? kSel : kInk;
+    double ax = a.first, ay = a.second, bx = b.first, by = b.second;
+    double dx = bx - ax, dy = by - ay;
+    double len = std::hypot(dx, dy);
+    if (len < 1e-6) return;
+    double ux = dx / len, uy = dy / len;   // along the arc
+    double px = -uy, py = ux;              // perpendicular
+    double off = len * 0.28 + 20.0;        // arc clearance from the windings
+    if (off > len * 0.6) off = len * 0.6;
+    double mx = (ax + bx) / 2 + px * off;
+    double my = (ay + by) / 2 + py * off;
+
+    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+    dc.SetPen(wxPen(ink, 1, wxPENSTYLE_SHORT_DASH));
+    const int steps = 24;
+    Pt prev;
+    if (std::fabs(ay - by) < 6.0) {
+        // side-by-side windings: dots on the facing sides of the coils, arc
+        // bulging vertically toward the reader
+        ax += ux * 12;
+        bx -= ux * 12;
+        for (int i = 0; i <= steps; ++i) {
+            double t = double(i) / steps;
+            double qx = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * mx + t * t * bx;
+            double arc = 4.0 * t * (1 - t) * (my - (ay + by) / 2);
+            double qy = (ay + by) / 2 - std::fabs(arc);
+            if (i) dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
+                               wxPoint(int(qx), int(qy)));
+            prev = {qx, qy};
+        }
+    } else {
+        for (int i = 0; i <= steps; ++i) {
+            double t = double(i) / steps;
+            double qx = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * mx + t * t * bx;
+            double qy = (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * my + t * t * by;
+            if (i) dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
+                               wxPoint(int(qx), int(qy)));
+            prev = {qx, qy};
+        }
+    }
+    dc.SetPen(wxPen(ink, 1));
+    dc.SetBrush(wxBrush(ink));
+    dc.DrawCircle(wxPoint(int(ax), int(ay)), 3);
+    dc.DrawCircle(wxPoint(int(bx), int(by)), 3);
+    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+}
+
+void coupling_bbox(Pt a, Pt b, double& x0, double& y0, double& x1, double& y1) {
+    double dx = b.first - a.first, dy = b.second - a.second;
+    double len = std::hypot(dx, dy);
+    double off = std::max(len * 0.28 + 24.0, 8.0);
+    x0 = std::min(a.first, b.first) - off;
+    y0 = std::min(a.second, b.second) - off;
+    x1 = std::max(a.first, b.first) + off;
+    y1 = std::max(a.second, b.second) + off;
+}
+
 wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     wxBitmap bmp(w, h);
     wxMemoryDC dc(bmp);
@@ -496,8 +610,15 @@ wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     dc.SetPen(wxPen(kInk, int(kWire)));
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
     dc.SetUserScale(0.36, 0.36);
-    Ctx t{dc, w / (2 * 0.36), h / (2 * 0.36), 0, false, false, kInk};
-    draw_body(t, k);
+    if (k == Kind::K) {
+        // preview of the coupling marker
+        dc.SetUserScale(0.36, 0.36);
+        draw_coupling(dc, {w / (2 * 0.36) - 22, h / (2 * 0.36) + 30},
+                      {w / (2 * 0.36) + 22, h / (2 * 0.36) - 30}, false);
+    } else {
+        Ctx t{dc, w / (2 * 0.36), h / (2 * 0.36), 0, false, false, kInk};
+        draw_body(t, k);
+    }
     dc.SelectObject(wxNullBitmap);
     return bmp;
 }

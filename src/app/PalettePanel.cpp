@@ -35,6 +35,8 @@ const CompEntry kComps[] = {
     {"Nullor",       Kind::NULLOR},
     {"VCVS (E)",     Kind::E},
     {"VCCS (G)",     Kind::G},
+    {"CCVS (H)",     Kind::CCVS},
+    {"CCCS (F)",     Kind::CCCS},
     {"1/s block",    Kind::IS},
     {"s block",      Kind::SBLK},
 };

@@ -172,6 +172,9 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     case 'T': return place(syms::Kind::T);
     case 'K': return place(syms::Kind::K);
     case 'Y': return place(syms::Kind::D); // common alternate for diode
+    case 'H': case 'h': return place(syms::Kind::CCVS);
+    case 'F': case 'f': return place(syms::Kind::CCCS);
+    case 'O': case 'o': return place(syms::Kind::OPAMP);
     case 'W': case 'w':
         canvas_->set_tool(Tool::Wire);
         sync_palette();
@@ -221,6 +224,8 @@ void MainFrame::show_instance_menu() {
         {"Nullor", syms::Kind::NULLOR},
         {"VCVS (E)", syms::Kind::E},
         {"VCCS (G)", syms::Kind::G},
+        {"CCVS (H)", syms::Kind::CCVS},
+        {"CCCS (F)", syms::Kind::CCCS},
         {"Ideal 1/s block", syms::Kind::IS},
         {"Ideal s block", syms::Kind::SBLK},
     };

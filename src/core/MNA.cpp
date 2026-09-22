@@ -210,23 +210,22 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
         }
         case Kind::NMOS:
         case Kind::PMOS: {
-            int D = idx(nd[0]), G = idx(nd[1]), S = idx(nd[2]), B = idx(nd[3]);
+            int D = idx(nd[0]), G = idx(nd[1]), S = idx(nd[2]);
             // register every model parameter (enabled or not) so the symbol
             // table always exposes the full model; only enabled ones stamp MNA
             ex gm = reg_param(sys.params, c, "gm");
-            ex gmb = reg_param(sys.params, c, "gmb");
             ex ro = reg_param(sys.params, c, "ro");
             ex cgs = reg_param(sys.params, c, "Cgs");
             ex cgd = reg_param(sys.params, c, "Cgd");
             ex cdb = reg_param(sys.params, c, "Cdb");
             ex csb = reg_param(sys.params, c, "Csb");
+            // no body terminal: the body is tied to the source
             stamp_vccs(D, S, G, S, gm);
-            if (c.param_enabled("gmb")) stamp_vccs(D, S, B, S, gmb);
             if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
             if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
             if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
-            if (c.param_enabled("Cdb")) stamp_cap(D, B, cdb);
-            if (c.param_enabled("Csb")) stamp_cap(S, B, csb);
+            if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
+            if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
             break;
         }
         case Kind::NPN:
@@ -266,6 +265,43 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             if (c.param_enabled("Cd")) stamp_cap(A, Kk, cd);
             break;
         }
+        case Kind::CCCS: {
+            // current-controlled current source: sensing branch k at the
+            // shorted input port, output current = gain * i_ctrl
+            ex gain = gain_ex(c);
+            int cp = idx(nd[0]), cn = idx(nd[1]);
+            int op = idx(nd[2]), on = idx(nd[3]);
+            int k = sys.branch_idx.at(c.ref);
+            // input port is a short: v(ctrl+) - v(ctrl-) = 0
+            if (cp >= 0) sys.Y(k, cp) += 1;
+            if (cn >= 0) sys.Y(k, cn) -= 1;
+            // i_ctrl flows in at ctrl+, out at ctrl-
+            if (cp >= 0) sys.Y(cp, k) += 1;
+            if (cn >= 0) sys.Y(cn, k) -= 1;
+            // output current gain * i_ctrl flows in at out+, out at out-
+            if (op >= 0) sys.Y(op, k) += gain;
+            if (on >= 0) sys.Y(on, k) -= gain;
+            break;
+        }
+        case Kind::CCVS: {
+            // current-controlled voltage source: v(out+) - v(out-) = gain*i_ctrl
+            ex gain = gain_ex(c);
+            int cp = idx(nd[0]), cn = idx(nd[1]);
+            int op = idx(nd[2]), on = idx(nd[3]);
+            int k = sys.branch_idx.at(c.ref);
+            if (cp >= 0) sys.Y(k, cp) += 1; // input short
+            if (cn >= 0) sys.Y(k, cn) -= 1;
+            if (op >= 0) {
+                sys.Y(op, k) += 1;
+                sys.Y(k, op) += 1;
+            }
+            if (on >= 0) {
+                sys.Y(on, k) -= 1;
+                sys.Y(k, on) -= 1;
+            }
+            if (cp >= 0) sys.Y(k, k) -= gain; // -gain * i_ctrl
+            break;
+        }
         case Kind::IS: {
             // ideal 1/s block: branch current i flows in at `in`, out at `out`,
             // with s*i = v(in) - v(out)  (integrator into a 1 ohm sense port)
@@ -303,8 +339,9 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::NULLOR: {
-            // ideal op-amp: virtual short (v(in+) = v(in-)) plus an ideal
-            // norator branch at the output
+            // ideal two-port: a nullator at the input (zero voltage across it,
+            // zero current through it) and a norator at the output (its
+            // current is whatever the rest of the circuit demands).
             int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
             int k = sys.branch_idx.at(c.ref);
             stamp_branch(o, -1, k);
@@ -334,7 +371,6 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::T: {
-            // ideal transformer, all inductors 1 H, mutual M = sqrt(Lp*Ls)*k
             ex lp = reg_param(sys.params, c, "Lp");
             ex ls = reg_param(sys.params, c, "Ls");
             ex kk = reg_param(sys.params, c, "k");

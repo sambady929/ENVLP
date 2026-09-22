@@ -169,7 +169,7 @@ static void test_cs_amp_parasitics() {
     auto make = [](bool ro_on, bool cgd_on, bool cgs_on) {
         Circuit c;
         c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
-        Component m = comp(Kind::NMOS, "M1", {"out", "in", "0", "0"}, "");
+        Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
         m.param_on["ro"] = ro_on;
         m.param_on["Cgd"] = cgd_on;
         m.param_on["Cgs"] = cgs_on;

@@ -30,6 +30,11 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
 void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
                  double& y0, double& x1, double& y1);
 
+// Mutual-coupling marker: a dashed arc between the two inductor centers with
+// a filled dot on each winding.
+void draw_coupling(wxDC& dc, Pt a, Pt b, bool selected);
+void coupling_bbox(Pt a, Pt b, double& x0, double& y0, double& x1, double& y1);
+
 // Palette swatch: draws a small symbol preview into a bitmap.
 wxBitmap symbol_swatch(syms::Kind k, int w, int h);
 

@@ -14,7 +14,7 @@ namespace syms {
 //                                     external circuit, re-enters at tail)
 //   E (VCVS): 4 pins  [out+, out-, ctrl+, ctrl-]   (branch current unknown)
 //   G (VCCS): 4 pins  [out+, out-, ctrl+, ctrl-]
-//   NMOS/PMOS: 4 pins [D, G, S, B]
+//   NMOS/PMOS: 3 pins [D, G, S]      (no body terminal)
 //   NPN/PNP : 3 pins  [C, B, E]      (optional internal node when rb is on)
 //   GND     : 1 pin   always node "0"
 //   VDD     : 1 pin   always net "VDD" (supply; PSR/PSRR excitation)
@@ -27,10 +27,13 @@ namespace syms {
 //   AMP     : 2 pins  [in, out]      gain block, inverting side grounded
 //   IS      : 2 pins  [in, out]      ideal 1/s block  (integrator)
 //   SBLK    : 2 pins  [in, out]      ideal s block    (differentiator)
+//   CCCS(F) : 4 pins  [ctrl+, ctrl-, out+, out-]  current-controlled
+//   CCVS(H) : 4 pins  [ctrl+, ctrl-, out+, out-]  current-controlled
+//             (input port is a short; the control current is sensed there)
 // ---------------------------------------------------------------------------
 enum class Kind {
     R, C, L, V, I, E, G, NMOS, PMOS, NPN, PNP, GND,
-    VDD, D, T, K, NULLOR, OPAMP, FDOPAMP, AMP, IS, SBLK
+    VDD, D, T, K, NULLOR, OPAMP, FDOPAMP, AMP, IS, SBLK, CCCS, CCVS
 };
 
 std::string kind_token(Kind k);   // "R", "NMOS", ...

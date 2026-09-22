@@ -29,6 +29,8 @@ std::string kind_token(Kind k) {
         case Kind::AMP: return "AMP";
         case Kind::IS: return "IS";
         case Kind::SBLK: return "SBLK";
+        case Kind::CCCS: return "CCCS";
+        case Kind::CCVS: return "CCVS";
     }
     return "?";
 }
@@ -57,6 +59,8 @@ std::string kind_display(Kind k) {
         case Kind::AMP: return "Amplifier";
         case Kind::IS: return "1/s block";
         case Kind::SBLK: return "s block";
+        case Kind::CCCS: return "CCCS (F)";
+        case Kind::CCVS: return "CCVS (H)";
     }
     return "?";
 }
@@ -85,6 +89,8 @@ std::string ref_prefix(Kind k) {
         case Kind::AMP: return "A";
         case Kind::IS: return "IS";
         case Kind::SBLK: return "S";
+        case Kind::CCCS: return "F";
+        case Kind::CCVS: return "H";
     }
     return "X";
 }
@@ -94,7 +100,8 @@ bool kind_from_token(const std::string& t, Kind& out) {
         Kind::R,    Kind::C,   Kind::L,     Kind::V,  Kind::I,  Kind::E,
         Kind::G,    Kind::NMOS, Kind::PMOS, Kind::NPN, Kind::PNP, Kind::GND,
         Kind::VDD,  Kind::D,   Kind::T,     Kind::K,  Kind::NULLOR,
-        Kind::OPAMP, Kind::FDOPAMP, Kind::AMP, Kind::IS, Kind::SBLK};
+        Kind::OPAMP, Kind::FDOPAMP, Kind::AMP, Kind::IS, Kind::SBLK,
+        Kind::CCCS, Kind::CCVS};
     for (Kind k : all) {
         if (kind_token(k) == t) {
             out = k;
@@ -116,9 +123,11 @@ int pin_count(Kind k) {
         case Kind::IS:
         case Kind::SBLK: return 2;
         case Kind::E:
-        case Kind::G: return 4;
+        case Kind::G:
+        case Kind::CCCS:
+        case Kind::CCVS: return 4;
         case Kind::NMOS:
-        case Kind::PMOS: return 4;
+        case Kind::PMOS: return 3;
         case Kind::NPN:
         case Kind::PNP: return 3;
         case Kind::GND:
@@ -143,7 +152,9 @@ int branch_count(Kind k) {
         case Kind::AMP:
         case Kind::NULLOR:
         case Kind::T:
-        case Kind::FDOPAMP: return 1;
+        case Kind::FDOPAMP:
+        case Kind::CCCS:
+        case Kind::CCVS: return 1;
         default: return 0;
     }
 }
@@ -167,7 +178,7 @@ std::vector<std::string> pin_names(Kind k) {
         case Kind::E:
         case Kind::G: return {"out+", "out-", "ctrl+", "ctrl-"};
         case Kind::NMOS:
-        case Kind::PMOS: return {"D", "G", "S", "B"};
+        case Kind::PMOS: return {"D", "G", "S"};
         case Kind::NPN:
         case Kind::PNP: return {"C", "B", "E"};
         case Kind::GND: return {"GND"};
@@ -175,6 +186,8 @@ std::vector<std::string> pin_names(Kind k) {
         case Kind::D: return {"A", "K"};
         case Kind::T: return {"p+", "p-", "s+", "s-"};
         case Kind::K: return {};
+        case Kind::CCCS:
+        case Kind::CCVS: return {"ctrl+", "ctrl-", "out+", "out-"};
         case Kind::NULLOR:
         case Kind::OPAMP: return {"in+", "in-", "out"};
         case Kind::FDOPAMP: return {"in+", "in-", "out+", "out-"};
@@ -190,21 +203,19 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 
     static const std::vector<ParamDef> nmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
-        {"gmb", "0.1m", true, false, "S", "body-effect transconductance"},
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
-        {"Cdb", "20f", true, false, "F", "drain-bulk junction capacitance"},
-        {"Csb", "20f", true, false, "F", "source-bulk junction capacitance"},
+        {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
+        {"Csb", "20f", true, false, "F", "source junction capacitance"},
     };
     static const std::vector<ParamDef> pmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
-        {"gmb", "0.1m", true, false, "S", "body-effect transconductance"},
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
-        {"Cdb", "20f", true, false, "F", "drain-bulk junction capacitance"},
-        {"Csb", "20f", true, false, "F", "source-bulk junction capacitance"},
+        {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
+        {"Csb", "20f", true, false, "F", "source junction capacitance"},
     };
     static const std::vector<ParamDef> npn = {
         {"gm", "40m", false, true, "S", "transconductance"},
