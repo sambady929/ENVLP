@@ -374,20 +374,32 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     for (double y = std::floor(y0 / step) * step; y < y1 + step; y += step)
         dc.DrawLine(wxPoint(int(x0), int(y)), wxPoint(int(x1), int(y)));
 
-    // wires (black); the selected segment is highlighted on its own
+    // wires (black); the selected segment is highlighted on its own. Cull to
+    // the visible viewport so large sheets stay responsive.
     Selection si = selection_info();
+    auto on_screen = [&](double x, double y, double m) {
+        return x >= x0 - m && x <= x1 + m && y >= y0 - m && y <= y1 + m;
+    };
     for (size_t i = 0; i < doc_->wires.size(); ++i) {
         const auto& w = doc_->wires[i];
         bool whole = si.type == Selection::Wire && si.wire == int(i);
         for (size_t k = 1; k < w.pts.size(); ++k) {
+            const Pt& a = w.pts[k - 1];
+            const Pt& b = w.pts[k];
+            // cheap AABB rejection
+            if (std::max(a.first, b.first) < x0 - 40 ||
+                std::min(a.first, b.first) > x1 + 40 ||
+                std::max(a.second, b.second) < y0 - 40 ||
+                std::min(a.second, b.second) > y1 + 40)
+                continue;
             bool seg_sel = si.type == Selection::WireSegment &&
                            si.wire == int(i) && si.seg == int(k) - 1;
             dc.SetPen(wxPen(seg_sel ? wxColour(0, 92, 200)
                                     : whole ? wxColour(0, 92, 200)
                                             : wxColour(0, 0, 0),
                             seg_sel ? 3 : whole ? 3 : 2));
-            dc.DrawLine(wxPoint(int(w.pts[k - 1].first), int(w.pts[k - 1].second)),
-                        wxPoint(int(w.pts[k].first), int(w.pts[k].second)));
+            dc.DrawLine(wxPoint(int(a.first), int(a.second)),
+                        wxPoint(int(b.first), int(b.second)));
         }
     }
 
@@ -416,6 +428,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     // net labels
     for (size_t i = 0; i < doc_->labels.size(); ++i) {
         const auto& l = doc_->labels[i];
+        if (!on_screen(l.pt.first, l.pt.second, 40)) continue;
         bool is_sel = sel_ == "#label" + std::to_string(i);
         wxString txt = wxString::FromUTF8(l.name);
         wxSize ts = dc.GetTextExtent(txt);
@@ -430,6 +443,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     for (const auto& c : doc_->circuit.comps) {
         auto pl = doc_->placements.find(c.ref);
         if (pl == doc_->placements.end()) continue;
+        if (!on_screen(pl->second.x, pl->second.y, 120)) continue;
         draw_symbol(dc, c, pl->second, sel_ == c.ref);
     }
 
