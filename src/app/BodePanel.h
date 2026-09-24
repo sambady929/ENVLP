@@ -29,6 +29,9 @@ public:
     void sample(std::vector<double>& f, std::vector<double>& mag,
                 std::vector<double>& ph) const;
 
+    // Frequency band to plot (from the result's sweep, or a default).
+    void band(double& f0, double& f1, int& n) const;
+
 private:
     static std::string escape_xml(std::string s);
     const syms::AnalysisResult* res_ = nullptr;

@@ -1,5 +1,6 @@
 #include "BodePanel.h"
 #include "core/Eng.h"
+#include "core/Engine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,10 +23,25 @@ wxBEGIN_EVENT_TABLE(BodePanel, wxPanel)
 wxEND_EVENT_TABLE()
 
 namespace {
+// Default sweep when no result is loaded yet.
 constexpr double kFstart = 1.0;
 constexpr double kFend = 1e8;
-constexpr int kN = 400;
+constexpr int kMaxPoints = 4000;
 } // namespace
+
+// The frequency band to plot: the analysis result's sweep, or a default.
+void BodeCanvas::band(double& f0, double& f1, int& n) const {
+    if (res_ && res_->sweep.f_stop_hz > res_->sweep.f_start_hz) {
+        f0 = res_->sweep.f_start_hz;
+        f1 = res_->sweep.f_stop_hz;
+        // keep the on-screen point count bounded for responsiveness
+        n = std::min(kMaxPoints, std::max(50, res_->sweep.points_per_interval * 10));
+    } else {
+        f0 = kFstart;
+        f1 = kFend;
+        n = 400;
+    }
+}
 
 BodeCanvas::BodeCanvas(wxWindow* parent) : wxPanel(parent) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -48,7 +64,10 @@ void BodeCanvas::sample(std::vector<double>& f, std::vector<double>& mag,
     mag.clear();
     ph.clear();
     if (!res_) return;
-    std::vector<double> freqs = syms::sweep_hz(kFstart, kFend, kN);
+    double f0, f1;
+    int n;
+    band(f0, f1, n);
+    std::vector<double> freqs = syms::sweep_hz(f0, f1, n);
     for (double fr : freqs) {
         double w = 2 * M_PI * fr;
         f.push_back(fr);
@@ -85,9 +104,12 @@ bool BodeCanvas::save_svg(const std::string& path) const {
     mag_lo -= span * 0.08;
     mag_hi += span * 0.08;
     const double ph_lo = -200, ph_hi = 200;
-    const double lr = std::log10(kFend / kFstart);
+    double f0, f1;
+    int npts;
+    band(f0, f1, npts);
+    const double lr = std::log10(f1 / f0);
 
-    auto X = [&](double fr) { return mL + std::log10(fr / kFstart) / lr * (W - mL - mR); };
+    auto X = [&](double fr) { return mL + std::log10(fr / f0) / lr * (W - mL - mR); };
     auto Ym = [&](double db) { return mT + Hh - (db - mag_lo) / (mag_hi - mag_lo) * Hh; };
     auto Yp = [&](double deg) { return mT + Hh + gap + Hp - (deg - ph_lo) / (ph_hi - ph_lo) * Hp; };
 
@@ -102,15 +124,19 @@ bool BodeCanvas::save_svg(const std::string& path) const {
       << "\" height=\"" << Hh << "\" fill=\"none\" stroke=\"#c8c8cf\"/>\n";
     s << "<rect x=\"" << mL << "\" y=\"" << (mT + Hh + gap) << "\" width=\""
       << (W - mL - mR) << "\" height=\"" << Hp << "\" fill=\"none\" stroke=\"#c8c8cf\"/>\n";
-    // decade grid
-    for (int e = 0; e <= 8; ++e) {
-        double fr = std::pow(10.0, e);
-        double x = X(fr);
-        s << "<line x1=\"" << x << "\" y1=\"" << mT << "\" x2=\"" << x << "\" y2=\""
-          << (mT + Hh) << "\" stroke=\"#eeeef2\"/>\n";
-        s << "<text x=\"" << (x + 2) << "\" y=\"" << (mT + Hh + gap + Hp + 14)
-          << "\" fill=\"#8a8a90\">" << (e == 0 ? "1" : ("1e" + std::to_string(e)))
-          << "</text>\n";
+    // decade grid lines within the band
+    {
+        int e0 = int(std::floor(std::log10(f0) - 1e-9));
+        int e1 = int(std::ceil(std::log10(f1) + 1e-9));
+        for (int e = e0; e <= e1; ++e) {
+            double fr = std::pow(10.0, e);
+            if (fr < f0 * 0.999 || fr > f1 * 1.001) continue;
+            double x = X(fr);
+            s << "<line x1=\"" << x << "\" y1=\"" << mT << "\" x2=\"" << x << "\" y2=\""
+              << (mT + Hh) << "\" stroke=\"#eeeef2\"/>\n";
+            s << "<text x=\"" << (x + 2) << "\" y=\"" << (mT + Hh + gap + Hp + 14)
+              << "\" fill=\"#8a8a90\">" << syms::eng::format_eng(fr, 1) << "</text>\n";
+        }
     }
     // magnitude curve
     s << "<polyline fill=\"none\" stroke=\"#c82828\" stroke-width=\"1.6\" points=\"";
@@ -189,8 +215,12 @@ namespace {
 struct Curve {
     std::vector<double> f, mag, ph, re, im;
 };
-void sample_curve(const syms::AnalysisResult* r, Curve& c) {
-    std::vector<double> freqs = syms::sweep_hz(kFstart, kFend, kN);
+void sample_curve(const syms::AnalysisResult* r, Curve& c,
+                  const BodeCanvas& cv) {
+    double f0, f1;
+    int n;
+    cv.band(f0, f1, n);
+    std::vector<double> freqs = syms::sweep_hz(f0, f1, n);
     for (double fr : freqs) {
         double w = 2 * M_PI * fr;
         auto z = syms::eval_complex((r->num_raw / r->den_raw).normal(),
@@ -213,8 +243,11 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     const int Hp = sz.y - mT - mB - 14;
     if (W < 50 || Hh < 30) return;
 
+    double f_lo, f_hi;
+    int npts;
+    band(f_lo, f_hi, npts);
     std::vector<double> mag, ph;
-    std::vector<double> freqs = syms::sweep_hz(kFstart, kFend, kN);
+    std::vector<double> freqs = syms::sweep_hz(f_lo, f_hi, npts);
     double mag_min = 1e300, mag_max = -1e300;
     for (size_t i = 0; i < freqs.size(); ++i) {
         double w = 2 * M_PI * freqs[i];
@@ -233,20 +266,26 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     mag_max += msp * 0.08;
     const double ph_min = -200, ph_max = 200;
 
+    double loglo = std::log10(f_lo), loghi = std::log10(f_hi);
     auto x_of = [&](double f) {
-        double t = std::log10(f / kFstart) / std::log10(kFend / kFstart);
+        double t = (std::log10(f) - loglo) / (loghi - loglo);
         return mL + t * W;
     };
 
     dc.SetPen(wxPen(wxColour(232, 232, 236)));
     dc.SetTextForeground(wxColour(140, 140, 145));
-    for (int e = 0; e <= 8; ++e) {
-        double f = std::pow(10.0, e);
-        int x = int(x_of(f));
-        dc.DrawLine(x, mT, x, mT + Hh);
-        dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
-        wxString lbl = (e == 0) ? "1" : wxString::Format("1e%d", e);
-        dc.DrawText(lbl, x + 2, mT + Hh + 14 + Hp + 4);
+    {
+        int e0 = int(std::floor(loglo - 1e-9));
+        int e1 = int(std::ceil(loghi + 1e-9));
+        for (int e = e0; e <= e1; ++e) {
+            double f = std::pow(10.0, e);
+            if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
+            int x = int(x_of(f));
+            dc.DrawLine(x, mT, x, mT + Hh);
+            dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
+            wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
+            dc.DrawText(lbl, x + 2, mT + Hh + 14 + Hp + 4);
+        }
     }
 
     auto y_mag = [&](double db) {
@@ -310,7 +349,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
 
 void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
     Curve c;
-    sample_curve(res_, c);
+    sample_curve(res_, c, *this);
     if (c.f.empty()) return;
 
     // auto-scale the real/imag extents with a little margin
@@ -364,7 +403,7 @@ void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
 
 void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     Curve c;
-    sample_curve(res_, c);
+    sample_curve(res_, c, *this);
     if (c.f.empty()) return;
 
     // x: phase (deg), y: magnitude (dB), both auto-scaled

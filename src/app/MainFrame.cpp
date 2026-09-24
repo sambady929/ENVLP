@@ -11,6 +11,8 @@
 
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
+#include <wx/textdlg.h>
+#include <wx/toolbar.h>
 
 namespace symcirc {
 
@@ -26,6 +28,10 @@ enum {
     ID_REDO,
     ID_ABOUT_APP,
     ID_INSTANCE,
+    ID_IGNORE_NEG,
+    ID_WIRE_TOOL,
+    ID_SELECT_TOOL,
+    ID_NET_LABEL,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -40,16 +46,19 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_UNDO, MainFrame::on_undo)
     EVT_MENU(ID_REDO, MainFrame::on_redo)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
+    EVT_MENU(ID_IGNORE_NEG, MainFrame::on_ignore_neg)
+    EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame()
     : wxFrame(nullptr, wxID_ANY, "SymCirc", wxDefaultPosition,
-              wxSize(1280, 860)) {
+              wxSize(1360, 900)) {
     // sensible default analysis request (before panels read it)
     doc_.req.input_ref = "V1";
     doc_.req.output = "V(out)";
 
     build_menu();
+    build_toolbar();
     build_layout();
 
     update_title();
@@ -70,8 +79,17 @@ void MainFrame::build_menu() {
     edit->Append(ID_UNDO, "&Undo\tCtrl+Z", "Undo the last edit");
     edit->Append(ID_REDO, "&Redo\tCtrl+Y", "Redo the last undone edit");
     edit->AppendSeparator();
-    edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection90 deg");
+    edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection 90 deg");
     edit->Append(ID_DELETE, "&Delete\tDel", "Delete the selection");
+    edit->AppendSeparator();
+    edit->Append(ID_NET_LABEL, "Place &net label(s)...\tN",
+                 "Name one or more nets");
+
+    auto* view = new wxMenu;
+    mi_ignore_ = view->AppendCheckItem(
+        ID_IGNORE_NEG, "&Ignore negligible terms",
+        "Drop terms that are far below the dominant one (low entropy)");
+    mi_ignore_->Check(doc_.req.prune);
 
     auto* run = new wxMenu;
     run->Append(ID_RUN, "&Analyze\tF5", "Run the symbolic analysis");
@@ -82,9 +100,75 @@ void MainFrame::build_menu() {
     auto* bar = new wxMenuBar;
     bar->Append(file, "&File");
     bar->Append(edit, "&Edit");
+    bar->Append(view, "&View");
     bar->Append(run, "&Run");
     bar->Append(help, "&Help");
     SetMenuBar(bar);
+}
+
+void MainFrame::build_toolbar() {
+    toolbar_ = CreateToolBar(wxTB_HORIZONTAL | wxTB_TEXT | wxTB_NOICONS);
+    auto add = [&](int id, const wxString& label, const wxString& help) {
+        toolbar_->AddTool(id, label, wxBitmapBundle(), help);
+    };
+    add(ID_SELECT_TOOL, "Select", "Select / move");
+    add(ID_WIRE_TOOL, "Wire (W)", "Draw a wire");
+    toolbar_->AddSeparator();
+    add(ID_NET_LABEL, "Net label (N)", "Name one or more nets");
+    toolbar_->AddSeparator();
+    toolbar_->AddCheckTool(ID_IGNORE_NEG, "Ignore negligible",
+                           wxBitmapBundle(), wxBitmapBundle(),
+                           "Drop terms far below the dominant one");
+    toolbar_->ToggleTool(ID_IGNORE_NEG, doc_.req.prune);
+    toolbar_->AddSeparator();
+    add(ID_RUN, "Analyze (F5)", "Run the symbolic analysis");
+    toolbar_->Realize();
+
+    toolbar_->Bind(wxEVT_TOOL, [this](wxCommandEvent& e) {
+        switch (e.GetId()) {
+        case ID_SELECT_TOOL:
+            canvas_->set_tool(Tool::Select);
+            sync_palette();
+            break;
+        case ID_WIRE_TOOL:
+            canvas_->set_tool(Tool::Wire);
+            sync_palette();
+            SetStatusText("Wire: click a start pin, route, click the end pin.",
+                          0);
+            break;
+        case ID_NET_LABEL:
+            prompt_net_labels();
+            break;
+        case ID_IGNORE_NEG:
+            set_ignore_negligible(e.IsChecked());
+            break;
+        case ID_RUN:
+            run_analysis();
+            break;
+        default:
+            break;
+        }
+    });
+}
+
+// The "Ignore negligible terms" switch is shared by the View menu, the toolbar
+// and every analysis card, so keep them in sync.
+void MainFrame::set_ignore_negligible(bool on) {
+    doc_.req.prune = on;
+    if (mi_ignore_) mi_ignore_->Check(on);
+    if (toolbar_) toolbar_->ToggleTool(ID_IGNORE_NEG, on);
+    for (auto& c : analysis_->cards()) c.prune = on;
+    doc_.analysis_cards = analysis_->serialize();
+    analysis_->refresh(&doc_);
+    doc_.dirty = true;
+    update_title();
+    SetStatusText(on ? "Negligible terms will be ignored (low entropy)."
+                     : "Keeping every term (exact form).",
+                  0);
+}
+
+void MainFrame::on_ignore_neg(wxCommandEvent& e) {
+    set_ignore_negligible(e.IsChecked());
 }
 
 void MainFrame::build_layout() {
@@ -154,12 +238,41 @@ void MainFrame::build_layout() {
     analysis_->on_run_one = [this](int i) { run_card(i); };
     analysis_->on_results = [this] { bottom_->SetSelection(0); };
 
-    canvas_->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
-        if (handle_shortcut(e)) return;
-        if (!canvas_->handle_key(e)) e.Skip();
-    });
-
     props_->refresh(&doc_, canvas_->selection());
+}
+
+// ---------------------------------------------------------------------------
+// Application-wide key handling. This is bound at the frame level via
+// wxEVT_CHAR_HOOK, so it runs before the focused child gets the key. That is
+// what makes Escape (and Space) reliable while placing/wiring, and lets N open
+// the net-label prompt from anywhere.
+// ---------------------------------------------------------------------------
+bool MainFrame::focus_is_text_entry() const {
+    wxWindow* w = wxWindow::FindFocus();
+    if (!w) return false;
+    // wxTextCtrl / wxComboBox (with a text part) / spin text should keep their
+    // own keystrokes; everything else lets shortcuts through.
+    return dynamic_cast<wxTextCtrl*>(w) != nullptr ||
+           dynamic_cast<wxComboBox*>(w) != nullptr ||
+           dynamic_cast<wxSpinCtrl*>(w) != nullptr;
+}
+
+void MainFrame::on_char_hook(wxKeyEvent& e) {
+    // The Lua console / text fields own their keystrokes entirely (including
+    // Escape, which may close a dialog).
+    if (focus_is_text_entry()) {
+        e.Skip();
+        return;
+    }
+
+    // Always give the canvas first refusal: it owns placement, wiring and the
+    // Escape-to-cancel behaviour.
+    if (canvas_->handle_key(e)) return;
+
+    if (handle_shortcut(e)) return;
+
+    // Let menu accelerators (Ctrl+N / F5 / Del ...) run.
+    e.Skip();
 }
 
 // ---------------------------------------------------------------------------
@@ -175,11 +288,19 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     if (ctrl && !alt && code == 'Z') { on_undo_cmd(); return true; }
     if (ctrl && !alt && code == 'Y') { on_redo_cmd(); return true; }
 
-    // Space: rotate / flip the ghost (or the selection)
+    // Space: while wiring, swap the route orientation; while placing or with a
+    // selection, rotate / flip.
     if (code == WXK_SPACE) {
-        if (ctrl) canvas_->flip_ghost(false);
-        else if (shift) canvas_->flip_ghost(true);
-        else canvas_->rotate_ghost(90);
+        if (canvas_->wiring()) {
+            canvas_->toggle_wire_orient();
+            SetStatusText("Wire route: press Space again to swap.", 0);
+        } else if (ctrl) {
+            canvas_->flip_ghost(false);
+        } else if (shift) {
+            canvas_->flip_ghost(true);
+        } else {
+            canvas_->rotate_ghost(90);
+        }
         sync_palette();
         return true;
     }
@@ -212,11 +333,15 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
         sync_palette();
         SetStatusText("Wire: click a start pin, route, click the end pin.", 0);
         return true;
+    case 'N': case 'n':
+        prompt_net_labels();
+        return true;
     case 'M': {
-        // M again while placing a MOSFET toggles NMOS <-> PMOS
+        // M selects the NMOS first; pressing M again (while placing) toggles
+        // to the PMOS.
         syms::Kind cur = canvas_->tool() == Tool::Place
                              ? canvas_->place_kind()
-                             : syms::Kind::NMOS;
+                             : syms::Kind::PMOS; // first press -> NMOS
         syms::Kind nxt = (cur == syms::Kind::NMOS) ? syms::Kind::PMOS
                                                    : syms::Kind::NMOS;
         return place(nxt);
@@ -226,6 +351,19 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
         return true;
     }
     return false;
+}
+
+// Ask for one or more net names; each is placed on the next clicked net.
+void MainFrame::prompt_net_labels() {
+    wxTextEntryDialog dlg(this,
+                          "Net name(s) to place, separated by spaces:",
+                          "Place net label(s)");
+    if (dlg.ShowModal() != wxID_OK) return;
+    std::string names = dlg.GetValue().ToStdString();
+    canvas_->begin_label(names);
+    canvas_->SetFocus();
+    sync_palette();
+    SetStatusText("Net label: click a net to place the next name; Esc stops.", 0);
 }
 
 void MainFrame::sync_palette() {
@@ -452,9 +590,7 @@ void MainFrame::run_card(int index) {
         AnalysisCard def;
         def.input_ref = doc_.req.input_ref;
         def.output = doc_.req.output;
-        def.f0_hz = doc_.req.f0_hz;
-        def.threshold_db = doc_.req.threshold_db;
-        def.global_ref = doc_.req.global_ref;
+        def.sweep = doc_.req.sweep;
         def.prune = doc_.req.prune;
         def.use_parallel = doc_.req.use_parallel;
         def.approx_factor = doc_.req.approx_factor;
@@ -474,7 +610,8 @@ void MainFrame::run_card(int index) {
                                               : card.input_ref;
         sp.output = card.output.empty() ? doc_.req.output : card.output;
         sp.probe_ref = card.probe_ref;
-        sp.f0_hz = card.f0_hz;
+        sp.sweep = card.sweep;
+        sp.f0_hz = card.sweep.f_start_hz;
         sp.threshold_db = card.threshold_db;
         sp.global_ref = card.global_ref;
         sp.prune = card.prune;

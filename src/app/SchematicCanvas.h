@@ -10,7 +10,7 @@
 namespace symcirc {
 
 // Tools available on the canvas (mirrors the palette).
-enum class Tool { Select, Wire, Delete, Place };
+enum class Tool { Select, Wire, Delete, Place, Label };
 
 // What the selection currently points at.
 struct Selection {
@@ -28,6 +28,8 @@ public:
     void set_tool(Tool t, syms::Kind k = syms::Kind::R);
     Tool tool() const { return tool_; }
     syms::Kind place_kind() const { return place_kind_; }
+    bool placing() const { return placing_; }
+    bool wiring() const { return wiring_; }
 
     // Enter placement mode for a specific kind (keyboard shortcuts / menu).
     void begin_place(syms::Kind k, int rot = 0);
@@ -47,8 +49,9 @@ public:
     std::function<void()> on_push_undo; // called before any mutating op
 
     // Transform the pending ghost (Place) or the selected component.
-    void rotate_ghost(int delta);      // Space = +90
-    void flip_ghost(bool horizontal);  // Shift+Space / Ctrl+Space
+    void rotate_ghost(int delta);        // Space = +90
+    void flip_ghost(bool horizontal);    // Shift+Space / Ctrl+Space
+    void toggle_wire_orient();           // swap H-first <-> V-first routing
 
     void rotate_selection();
     void flip_selection_h();
@@ -56,6 +59,11 @@ public:
     void delete_selection();  // Delete
     void cancel_current();    // Escape
     bool handle_key(wxKeyEvent& e);
+
+    // Net-label placement: begin placing the given label names (space
+    // separated). Each click drops one label on the clicked net, in order.
+    void begin_label(const std::string& names);
+    bool labeling() const { return tool_ == Tool::Label; }
 
 private:
     Document* doc_;
@@ -71,6 +79,9 @@ private:
     double drag_dx_ = 0, drag_dy_ = 0;
     bool wiring_ = false;
     std::vector<Pt> wire_draft_;
+    bool wire_h_first_ = true; // routing preference for the rubber band
+    Pt wire_anchor_{0, 0};     // snapped point where the current wire started
+    std::vector<std::string> label_queue_; // pending net names to place
     wxPoint mouse_;
     bool has_mouse_ = false; // mouse_ has seen at least one event
     std::string hover_;
@@ -92,12 +103,17 @@ private:
     bool hit_label(Pt p, int& idx) const;
     Pt snap(Pt p) const;
 
+    // Move `ref` to a new origin, carrying any wire endpoints that were
+    // attached to its pins along with it.
+    void move_component(const std::string& ref, double nx, double ny);
+
     void notify_doc();
     void notify_sel();
 
     void on_paint(wxPaintEvent& e);
     void on_left_down(wxMouseEvent& e);
     void on_left_up(wxMouseEvent& e);
+    void on_left_dclick(wxMouseEvent& e);
     void on_motion(wxMouseEvent& e);
     void on_right_down(wxMouseEvent& e);
     void on_right_up(wxMouseEvent& e);

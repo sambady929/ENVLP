@@ -55,9 +55,7 @@ void AnalysisPanel::add_card(AnalysisKind kind) {
     if (doc_) {
         c.input_ref = doc_->req.input_ref;
         c.output = doc_->req.output;
-        c.f0_hz = doc_->req.f0_hz;
-        c.threshold_db = doc_->req.threshold_db;
-        c.global_ref = doc_->req.global_ref;
+        c.sweep = doc_->req.sweep;
         c.prune = doc_->req.prune;
         c.use_parallel = doc_->req.use_parallel;
         c.approx_factor = doc_->req.approx_factor;
@@ -173,20 +171,73 @@ void AnalysisPanel::refresh(Document* doc) {
                       [&c](const wxString& v) { c.probe_ref = v.ToStdString(); });
 
         if (c.kind != AnalysisKind::DC && c.kind != AnalysisKind::Noise) {
-            // f0, threshold, and the prune switches
-            add_field("f0", syms::eng::format_eng(c.f0_hz, 3),
-                      [&c](const wxString& v) {
-                          double f = c.f0_hz;
-                          if (syms::eng::parse_value(v.ToStdString(), f) && f > 0)
-                              c.f0_hz = f;
-                      });
-            add_field("thr(dB)", wxString::Format("%.0f", c.threshold_db),
-                      [&c](const wxString& v) {
-                          double d = std::atof(v.ToStdString().c_str());
-                          if (d >= 0 && d <= 200) c.threshold_db = d;
-                      });
+            // Frequency sweep in the usual SPICE terms: start, stop, the
+            // interval type (decade / octave / linear) and points per interval.
+            auto* sweep_row = new wxBoxSizer(wxHORIZONTAL);
+            sweep_row->Add(new wxStaticText(box, wxID_ANY, "sweep"),
+                           0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+            auto* sw = new wxTextCtrl(
+                box, wxID_ANY,
+                wxString::FromUTF8(syms::eng::format_eng(c.sweep.f_start_hz, 3) +
+                                   " " +
+                                   syms::eng::format_eng(c.sweep.f_stop_hz, 3)));
+            sweep_row->Add(sw, 1, wxRIGHT, 4);
+            wxArrayString types;
+            types.Add("decade");
+            types.Add("octave");
+            types.Add("linear");
+            auto* ty = new wxChoice(box, wxID_ANY, wxDefaultPosition,
+                                    wxDefaultSize, types);
+            ty->SetSelection(c.sweep.type == syms::SweepType::Decade
+                                 ? 0
+                                 : c.sweep.type == syms::SweepType::Octave ? 1
+                                                                           : 2);
+            sweep_row->Add(ty, 0, wxRIGHT, 4);
+            auto* ppi = new wxTextCtrl(
+                box, wxID_ANY, wxString::Format("%d", c.sweep.points_per_interval),
+                wxDefaultPosition, wxSize(46, -1));
+            sweep_row->Add(ppi, 0, wxRIGHT, 2);
+            sweep_row->Add(new wxStaticText(box, wxID_ANY, "/int"), 0,
+                           wxALIGN_CENTER_VERTICAL);
+            s->Add(sweep_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+            sw->Bind(wxEVT_TEXT, [this, &c, sw](wxCommandEvent&) {
+                if (rebuilding_) return;
+                double a = c.sweep.f_start_hz, b = c.sweep.f_stop_hz;
+                std::istringstream is(sw->GetValue().ToStdString());
+                if ((is >> a)) {
+                    // "start" and optionally "stop"
+                    double bb;
+                    if (is >> bb) {
+                        if (a > 0) c.sweep.f_start_hz = a;
+                        if (bb > c.sweep.f_start_hz) c.sweep.f_stop_hz = bb;
+                    } else if (a > 0) {
+                        // treat a single value as the start; keep the stop
+                        c.sweep.f_start_hz = a;
+                    }
+                }
+                if (doc_) doc_->dirty = true;
+                if (on_changed) on_changed();
+            });
+            ty->Bind(wxEVT_CHOICE, [this, &c, ty](wxCommandEvent&) {
+                if (rebuilding_) return;
+                int sel = ty->GetSelection();
+                c.sweep.type = sel == 1 ? syms::SweepType::Octave
+                                        : sel == 2 ? syms::SweepType::Linear
+                                                   : syms::SweepType::Decade;
+                if (doc_) doc_->dirty = true;
+                if (on_changed) on_changed();
+            });
+            ppi->Bind(wxEVT_TEXT, [this, &c, ppi](wxCommandEvent&) {
+                if (rebuilding_) return;
+                long n = c.sweep.points_per_interval;
+                if (ppi->GetValue().ToLong(&n) && n >= 1 && n <= 100000)
+                    c.sweep.points_per_interval = int(n);
+                if (doc_) doc_->dirty = true;
+                if (on_changed) on_changed();
+            });
+
             auto* opts = new wxBoxSizer(wxHORIZONTAL);
-            auto* prune = new wxCheckBox(box, wxID_ANY, "prune");
+            auto* prune = new wxCheckBox(box, wxID_ANY, "ignore negligible");
             prune->SetValue(c.prune);
             auto* par = new wxCheckBox(box, wxID_ANY, "||");
             par->SetValue(c.use_parallel);
@@ -253,7 +304,9 @@ void AnalysisPanel::refresh(Document* doc) {
 }
 
 // ---------------------------------------------------------------------------
-// serialisation ("card <kind> <in> <out> <probe> <f0> <thr> <g> <prune> <par> <en>")
+// serialisation
+//   card <kind> <in> <out> <probe> <fstart> <fstop> <stype> <npts> <prune>
+//        <par> <en> <title> <approx>
 // ---------------------------------------------------------------------------
 std::string AnalysisPanel::serialize() const {
     std::ostringstream o;
@@ -266,12 +319,18 @@ std::string AnalysisPanel::serialize() const {
         r += '"';
         return r;
     };
+    auto type_of = [](syms::SweepType t) {
+        return t == syms::SweepType::Octave
+                   ? 1
+                   : t == syms::SweepType::Linear ? 2 : 0;
+    };
     for (const auto& c : cards_) {
         std::string title = c.title;
         for (char& ch : title) if (ch == '"') ch = '\'';
         o << "card " << q(analysis_kind_name(c.kind)) << " " << q(c.input_ref)
-          << " " << q(c.output) << " " << q(c.probe_ref) << " " << c.f0_hz
-          << " " << c.threshold_db << " " << (c.global_ref ? 1 : 0) << " "
+          << " " << q(c.output) << " " << q(c.probe_ref) << " "
+          << c.sweep.f_start_hz << " " << c.sweep.f_stop_hz << " "
+          << type_of(c.sweep.type) << " " << c.sweep.points_per_interval << " "
           << (c.prune ? 1 : 0) << " " << (c.use_parallel ? 1 : 0) << " "
           << (c.gm_ro ? 1 : 0) << " " << (c.enabled ? 1 : 0) << " " << q(title)
           << " " << (c.approx_factor ? 1 : 0) << "\n";
@@ -305,16 +364,19 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         c.input_ref = unq(ls);
         c.output = unq(ls);
         c.probe_ref = unq(ls);
-        double f0 = 1e3, thr = 40;
-        int g = 0, pr = 1, par = 1, gro = 1, en = 1;
-        ls >> f0 >> thr >> g >> pr >> par >> gro >> en;
+        double fs = 1.0, fe = 1e9;
+        int ty = 0, npts = 10, pr = 1, par = 1, gro = 1, en = 1;
+        ls >> fs >> fe >> ty >> npts >> pr >> par >> gro >> en;
         std::string title = unq(ls);
         int af = 1;
         ls >> af;
         c.kind = analysis_kind_from_name(kind);
-        c.f0_hz = f0;
-        c.threshold_db = thr;
-        c.global_ref = g != 0;
+        c.sweep.f_start_hz = fs > 0 ? fs : 1.0;
+        c.sweep.f_stop_hz = fe > c.sweep.f_start_hz ? fe : c.sweep.f_start_hz * 1e3;
+        c.sweep.type = ty == 1 ? syms::SweepType::Octave
+                               : ty == 2 ? syms::SweepType::Linear
+                                         : syms::SweepType::Decade;
+        c.sweep.points_per_interval = npts > 0 ? npts : 10;
         c.prune = pr != 0;
         c.use_parallel = par != 0;
         c.gm_ro = gro != 0;

@@ -224,10 +224,11 @@ std::string Document::serialize() const {
     std::ostringstream o;
     o << "symcirc 1\n";
     o << "req " << quote(req.input_ref) << " " << quote(req.output) << " "
-      << req.f0_hz << " " << req.threshold_db << " "
-      << (req.global_ref ? 1 : 0) << " " << (req.prune ? 1 : 0) << " "
-      << (req.use_parallel ? 1 : 0) << " " << (req.gm_ro_assume ? 1 : 0)
-      << " " << (req.approx_factor ? 1 : 0) << "\n";
+      << req.sweep.f_start_hz << " " << req.sweep.f_stop_hz << " "
+      << int(req.sweep.type) << " " << req.sweep.points_per_interval << " "
+      << (req.prune ? 1 : 0) << " " << (req.use_parallel ? 1 : 0) << " "
+      << (req.gm_ro_assume ? 1 : 0) << " " << (req.approx_factor ? 1 : 0)
+      << "\n";
     for (const auto& c : circuit.comps) {
         auto pl = placements.find(c.ref);
         double x = pl == placements.end() ? 0.0 : pl->second.x;
@@ -289,20 +290,40 @@ bool Document::deserialize(const std::string& data, std::string& err) {
         if (kw == "symcirc") {
             saw_header = true;
         } else if (kw == "req") {
-            std::string a, b, c, d, e;
-            if (!need(a) || !need(b) || !need(c) || !need(d) || !need(e))
-                return fail("bad req");
+            std::string a, b;
+            if (!need(a) || !need(b)) return fail("bad req");
             req.input_ref = a;
             req.output = b;
-            req.f0_hz = std::atof(c.c_str());
-            req.threshold_db = std::atof(d.c_str());
-            req.global_ref = e != "0";
-            // optional trailing engine switches (older files omit them)
-            std::string f, g, h, i2;
-            if (next_token(line, i, f)) req.prune = f != "0";
-            if (next_token(line, i, g)) req.use_parallel = g != "0";
-            if (next_token(line, i, h)) req.gm_ro_assume = h != "0";
-            if (next_token(line, i, i2)) req.approx_factor = i2 != "0";
+            // Collect the remaining numeric tokens; interpret by count so
+            // both the old (f0/threshold/global) and the new sweep forms load.
+            std::vector<std::string> rest;
+            std::string t;
+            while (next_token(line, i, t)) rest.push_back(t);
+            if (rest.size() >= 8) {
+                // new: fstart fstop stype npts prune par gro approx
+                req.sweep.f_start_hz = std::atof(rest[0].c_str());
+                req.sweep.f_stop_hz = std::atof(rest[1].c_str());
+                int ty = std::atoi(rest[2].c_str());
+                req.sweep.type = ty == 1 ? syms::SweepType::Octave
+                                         : ty == 2 ? syms::SweepType::Linear
+                                                   : syms::SweepType::Decade;
+                req.sweep.points_per_interval = std::atoi(rest[3].c_str());
+                req.prune = rest[4] != "0";
+                req.use_parallel = rest[5] != "0";
+                req.gm_ro_assume = rest[6] != "0";
+                req.approx_factor = rest[7] != "0";
+            } else if (rest.size() >= 5) {
+                // old: f0 threshold global prune par gro approx
+                req.f0_hz = std::atof(rest[0].c_str());
+                req.threshold_db = std::atof(rest[1].c_str());
+                req.global_ref = rest[2] != "0";
+                if (rest.size() > 3) req.prune = rest[3] != "0";
+                if (rest.size() > 4) req.use_parallel = rest[4] != "0";
+                if (rest.size() > 5) req.gm_ro_assume = rest[5] != "0";
+                if (rest.size() > 6) req.approx_factor = rest[6] != "0";
+                req.sweep.f_start_hz = req.f0_hz > 0 ? req.f0_hz : 1.0;
+                req.sweep.f_stop_hz = req.sweep.f_start_hz * 1e6;
+            }
         } else if (kw == "comp") {
             std::string ref, tok, sx, sy, srot, sfh, sfv, sdb, val;
             if (!need(ref) || !need(tok) || !need(sx) || !need(sy) ||

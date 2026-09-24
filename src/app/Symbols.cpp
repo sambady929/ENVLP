@@ -107,10 +107,16 @@ struct Ctx {
     int rot;
     bool flip_h = false, flip_v = false;
     wxColour col;
+    // pen cache: drawing a symbol sets the same pen many times; skip the
+    // redundant wxDC::SetPen calls (they are surprisingly costly on GDI).
+    mutable int last_width = -1;
 
     // set the pen width for the next strokes
     void w(double width) const {
-        dc.SetPen(wxPen(col, std::max(1, int(std::lround(width)))));
+        int px = std::max(1, int(std::lround(width)));
+        if (px == last_width) return;
+        last_width = px;
+        dc.SetPen(wxPen(col, px));
     }
 
     wxPoint P(double x, double y) const {
@@ -143,6 +149,16 @@ struct Ctx {
     }
     void circle(double cx, double cy, double r) const {
         dc.DrawCircle(P(cx, cy), int(std::lround(r)));
+    }
+    // ellipse in symbol space; `rot`-flip-aware at the endpoints via P()
+    void ellipse(double cx, double cy, double rx, double ry,
+                 int steps = 32) const {
+        std::vector<Pt> pts;
+        for (int i = 0; i <= steps; ++i) {
+            double th = 2.0 * M_PI * i / steps;
+            pts.push_back({cx + rx * std::cos(th), cy + ry * std::sin(th)});
+        }
+        polyline(pts);
     }
     void arc(double cx, double cy, double r, double a0, double a1,
              int steps = 18) const {
@@ -306,13 +322,13 @@ void draw_mosfet(Ctx& t, Kind k) {
     t.w(kBody);
     t.line(-31.33, -14, -31.33, 14);
     t.line(-20.67, -16, -20.67, 16);
-    // source arrow: for the NMOS the source is at the bottom and the arrow
-    // points into the channel (right); the PMOS is upside down, so its source
-    // is at the top and the arrow points out of the channel (left)
+    // Source arrow on the source tap. The NMOS arrow points to the right
+    // (toward the drain/source pins); the PMOS is drawn mirrored so its arrow
+    // points to the left.
     if (n)
-        t.arrow(-6, 16, -19, 16, 8);
+        t.arrow(-19, 16, -4, 16, 8);    // NMOS: tip to the right
     else
-        t.arrow(-6, -16, -19, -16, 8);
+        t.arrow(-4, -16, -19, -16, 8);  // PMOS: tip to the left
 }
 
 void draw_bjt(Ctx& t, Kind k) {
@@ -415,21 +431,19 @@ void draw_transformer(Ctx& t) {
 }
 
 void draw_nullor(Ctx& t) {
-    // two ports: a nullator at the input (circle with a slash: zero volts and
-    // zero current) and a norator at the output (two bars: free current)
+    // Nullor as a two-port: the nullator on the left is a narrow, slightly
+    // tall ellipse, and the norator on the right is two overlapping vertical
+    // circles.
     t.w(kWire);
-    t.line(-40, -10, -26, -10);
-    t.line(-40, 10, -26, 10);
-    t.line(26, -10, 40, -10);
-    t.line(26, 10, 40, 10);
+    t.line(-40, -12, -24, -12);
+    t.line(-40, 12, -24, 12);
+    t.line(24, 0, 40, 0);
     t.w(kBody);
-    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
-    // nullator: circle with a diagonal slash
-    t.circle(-14, 0, 7);
-    t.line(-19.5, -5, -8.5, 5);
-    // norator: two bars
-    t.line(9, -11, 9, 11);
-    t.line(17, -11, 17, 11);
+    // nullator: tall ellipse
+    t.ellipse(-16, 0, 6, 15, 36);
+    // norator: two overlapping vertical circles
+    t.circle(10, -7, 8);
+    t.circle(10, 7, 8);
 }
 
 void draw_body(Ctx& t, Kind k) {
@@ -502,6 +516,11 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     if (c.kind == Kind::K) return; // coupling marker carries no label
 
     wxFont base = dc.GetFont();
+
+    // Ground and supply symbols are anonymous: show neither a reference nor a
+    // value, just the glyph.
+    if (c.kind == Kind::GND || c.kind == Kind::VDD) return;
+
     double lx, ly;
     label_anchor(c.kind, lx, ly);
 

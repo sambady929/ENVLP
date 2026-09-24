@@ -72,9 +72,11 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
 
     auto* hint = new wxStaticText(
         this, wxID_ANY,
-        "Keys: R C L V B M K G D T W\n"
+        "Keys: R C L V B M K G D T W N\n"
         "M again = PMOS.  Space rotates,\n"
-        "Shift/Space flips.  I = instance menu.");
+        "Space while wiring swaps route,\n"
+        "Shift/Space flips.  I = instance menu.\n"
+        "N = name one or more nets.");
     hint->SetForegroundColour(wxColour(110, 110, 115));
     root->Add(hint, 0, wxALL, 6);
 

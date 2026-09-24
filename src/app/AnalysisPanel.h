@@ -20,10 +20,13 @@ struct AnalysisCard {
     std::string input_ref;
     std::string output;
     std::string probe_ref;
-    double f0_hz = 1e3;
+    // Standard SPICE-style frequency sweep.
+    syms::SweepSpec sweep;
+    // "Ignore negligible terms": when off the exact (unpruned) form is shown.
+    bool prune = true;
+    // dB below the dominant term at which a term is considered negligible.
     double threshold_db = 40.0;
     bool global_ref = false;
-    bool prune = true;
     bool use_parallel = true;
     bool gm_ro = true;
     bool approx_factor = true;

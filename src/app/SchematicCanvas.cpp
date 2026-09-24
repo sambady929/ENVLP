@@ -13,6 +13,7 @@ wxBEGIN_EVENT_TABLE(SchematicCanvas, wxScrolledWindow)
     EVT_PAINT(SchematicCanvas::on_paint)
     EVT_LEFT_DOWN(SchematicCanvas::on_left_down)
     EVT_LEFT_UP(SchematicCanvas::on_left_up)
+    EVT_LEFT_DCLICK(SchematicCanvas::on_left_dclick)
     EVT_MOTION(SchematicCanvas::on_motion)
     EVT_RIGHT_DOWN(SchematicCanvas::on_right_down)
     EVT_RIGHT_UP(SchematicCanvas::on_right_up)
@@ -37,22 +38,17 @@ double seg_dist(Pt p, Pt a, Pt b) {
     return std::hypot(wx - t * vx, wy - t * vy);
 }
 
-// Manhattan route between two points on the grid. Horizontal-first when the
-// horizontal movement dominates, vertical-first otherwise. Returns the points
-// in between (start and end excluded).
-std::vector<Pt> ortho_route(Pt a, Pt b) {
+// Manhattan route between two points on the grid. `h_first` selects whether
+// the horizontal leg comes first (corner at {b.x, a.y}) or the vertical leg
+// (corner at {a.x, b.y}). Returns the intermediate points (start/end excluded).
+std::vector<Pt> ortho_route(Pt a, Pt b, bool h_first) {
     std::vector<Pt> mid;
     if (a == b) return mid;
     if (std::fabs(b.first - a.first) < 1e-9 ||
         std::fabs(b.second - a.second) < 1e-9)
         return mid; // already axis aligned
-    if (std::fabs(b.first - a.first) >= std::fabs(b.second - a.second)) {
-        Pt corner{b.first, a.second};
-        mid.push_back(corner);
-    } else {
-        Pt corner{a.first, b.second};
-        mid.push_back(corner);
-    }
+    Pt corner = h_first ? Pt{b.first, a.second} : Pt{a.first, b.second};
+    mid.push_back(corner);
     return mid;
 }
 } // namespace
@@ -75,6 +71,7 @@ void SchematicCanvas::set_tool(Tool t, Kind k) {
     placing_ = (t == Tool::Place);
     wiring_ = false;
     wire_draft_.clear();
+    label_queue_.clear();
     Refresh();
 }
 
@@ -84,6 +81,30 @@ void SchematicCanvas::begin_place(Kind k, int rot) {
     place_kind_ = k;
     place_rot_ = rot;
     place_flip_h_ = place_flip_v_ = false;
+    wiring_ = false;
+    label_queue_.clear();
+    SetFocus();
+    Refresh();
+}
+
+void SchematicCanvas::begin_label(const std::string& names) {
+    label_queue_.clear();
+    std::string cur;
+    for (char c : names) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == ',') {
+            if (!cur.empty()) label_queue_.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) label_queue_.push_back(cur);
+    if (label_queue_.empty()) return;
+    tool_ = Tool::Label;
+    placing_ = false;
+    wiring_ = false;
+    wire_draft_.clear();
+    SetFocus();
     Refresh();
 }
 
@@ -92,6 +113,7 @@ void SchematicCanvas::cancel_current() {
     placing_ = false;
     wiring_ = false;
     wire_draft_.clear();
+    label_queue_.clear();
     tool_ = Tool::Select;
     Refresh();
 }
@@ -127,6 +149,54 @@ void SchematicCanvas::flip_ghost(bool horizontal) {
             else pl->second.flip_v = !pl->second.flip_v;
             notify_doc();
         }
+    }
+}
+
+// Space while wiring swaps the rubber-band routing between horizontal-first
+// and vertical-first.
+void SchematicCanvas::toggle_wire_orient() {
+    if (!wiring_) return;
+    wire_h_first_ = !wire_h_first_;
+    Refresh();
+}
+
+// Move a component and any wire endpoints that were attached to its pins.
+void SchematicCanvas::move_component(const std::string& ref, double nx,
+                                     double ny) {
+    const Component* c = doc_->circuit.find(ref);
+    auto pl = doc_->placements.find(ref);
+    if (!c || pl == doc_->placements.end()) return;
+    double dx = nx - pl->second.x;
+    double dy = ny - pl->second.y;
+    if (dx == 0.0 && dy == 0.0) return;
+
+    // world positions of the pins before the move
+    std::vector<Pt> old_pins;
+    int np = int(pin_offsets(c->kind).size());
+    for (int i = 0; i < np; ++i) old_pins.push_back(pin_world(*c, pl->second, i));
+
+    pl->second.x = nx;
+    pl->second.y = ny;
+
+    // any wire vertex sitting exactly on an old pin follows the pin
+    for (auto& w : doc_->wires) {
+        for (auto& v : w.pts) {
+            for (size_t i = 0; i < old_pins.size(); ++i) {
+                if (dist(v, old_pins[i]) <= 1.0) {
+                    v.first += dx;
+                    v.second += dy;
+                    break;
+                }
+            }
+        }
+    }
+    for (auto& l : doc_->labels) {
+        for (size_t i = 0; i < old_pins.size(); ++i)
+            if (dist(l.pt, old_pins[i]) <= 1.0) {
+                l.pt.first += dx;
+                l.pt.second += dy;
+                break;
+            }
     }
 }
 
@@ -287,8 +357,9 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     DoPrepareDC(dc);
     dc.SetUserScale(zoom_, zoom_);
 
-    // grid: faint dots on white (denser as we zoom in)
-    dc.SetPen(wxPen(wxColour(226, 226, 226)));
+    // grid: faint lines on white (sparser as we zoom out). Lines are far
+    // cheaper than a dot per grid node and repaint smoothly while dragging.
+    dc.SetPen(wxPen(wxColour(232, 232, 236)));
     wxPoint tl;
     CalcUnscrolledPosition(0, 0, &tl.x, &tl.y);
     wxSize cs = GetClientSize();
@@ -297,12 +368,11 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     double x0 = tl.x / zoom_, y0 = tl.y / zoom_;
     double x1 = br.x / zoom_, y1 = br.y / zoom_;
     double step = kGrid;
-    if (zoom_ <= 1.0) step = 5 * kGrid;   // fewer dots when zoomed out
-    else if (zoom_ >= 3.0) step = 2.5 * kGrid / 2.5; // = kGrid
+    while (step * zoom_ < 24.0) step *= 2.0; // keep >= ~24 screen px between lines
     for (double x = std::floor(x0 / step) * step; x < x1 + step; x += step)
-        for (double y = std::floor(y0 / step) * step; y < y1 + step;
-             y += step)
-            dc.DrawPoint(wxPoint(int(x), int(y)));
+        dc.DrawLine(wxPoint(int(x), int(y0)), wxPoint(int(x), int(y1)));
+    for (double y = std::floor(y0 / step) * step; y < y1 + step; y += step)
+        dc.DrawLine(wxPoint(int(x0), int(y)), wxPoint(int(x1), int(y)));
 
     // wires (black); the selected segment is highlighted on its own
     Selection si = selection_info();
@@ -331,7 +401,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         if (has_mouse_) {
             Pt last = wire_draft_.back();
             Pt m = snap(to_doc(mouse_));
-            auto mids = ortho_route(last, m);
+            auto mids = ortho_route(last, m, wire_h_first_);
             Pt prev = last;
             for (const auto& q : mids) {
                 dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
@@ -363,21 +433,15 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         draw_symbol(dc, c, pl->second, sel_ == c.ref);
     }
 
-    // hover highlight while wiring onto a pin
-    if (wiring_ && has_mouse_) {
-        std::string ref;
-        Pt m = to_doc(mouse_);
-        int i = hit_any_pin(m, ref);
-        if (i >= 0) {
-            const Component* c = doc_->circuit.find(ref);
-            auto pl = doc_->placements.find(ref);
-            if (c && pl != doc_->placements.end()) {
-                Pt w = to_view(pin_world(*c, pl->second, i));
-                dc.SetPen(wxPen(wxColour(0, 120, 200), 2));
-                dc.SetBrush(*wxTRANSPARENT_BRUSH);
-                dc.DrawCircle(wxPoint(int(w.first), int(w.second)), 6);
-            }
-        }
+    // pending net-label placement: show the next name following the cursor
+    if (tool_ == Tool::Label && !label_queue_.empty() && has_mouse_) {
+        wxString txt = wxString::FromUTF8(label_queue_.front());
+        wxSize ts = dc.GetTextExtent(txt);
+        wxPoint p(mouse_.x - ts.x / 2, mouse_.y - ts.y - 8);
+        dc.SetTextForeground(wxColour(0, 92, 200));
+        dc.SetTextBackground(*wxWHITE);
+        dc.DrawText(txt, p.x, p.y);
+        dc.SetTextBackground(*wxWHITE);
     }
 
     // ghost of component being placed
@@ -440,31 +504,54 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
     }
     case Tool::Wire: {
         std::string ref;
-        Pt target = snap(p);
         int pin = hit_any_pin(p, ref);
-        if (pin >= 0) target = snap(p);
+        Pt target = snap(p);
+        if (pin >= 0) {
+            const Component* c = doc_->circuit.find(ref);
+            auto pl = doc_->placements.find(ref);
+            if (c && pl != doc_->placements.end())
+                target = pin_world(*c, pl->second, pin); // exact pin position
+        }
 
         if (!wiring_) {
+            // start a new wire at the clicked pin (or grid point)
             wiring_ = true;
+            wire_h_first_ = true;
             wire_draft_.clear();
             wire_draft_.push_back(target);
-        } else if (target == wire_draft_.back()) {
-            // same point: ignore
-        } else {
-            auto mids = ortho_route(wire_draft_.back(), target);
-            for (const auto& q : mids) wire_draft_.push_back(q);
-            wire_draft_.push_back(target);
-            if (pin >= 0 && wire_draft_.size() >= 2) {
-                if (on_push_undo) on_push_undo();
-                Wire w;
-                w.pts = wire_draft_;
-                doc_->wires.push_back(w);
-                wiring_ = false;
-                wire_draft_.clear();
-                notify_doc();
-            }
+            Refresh();
+            break;
+        }
+        if (target == wire_draft_.back()) break; // same point: ignore
+
+        // commit the orthogonal route from the last vertex to this point
+        auto mids = ortho_route(wire_draft_.back(), target, wire_h_first_);
+        for (const auto& q : mids) wire_draft_.push_back(q);
+        wire_draft_.push_back(target);
+
+        if (pin >= 0) {
+            // finishing on a pin: end the wire here
+            if (on_push_undo) on_push_undo();
+            Wire w;
+            w.pts = wire_draft_;
+            doc_->wires.push_back(w);
+            wiring_ = false;
+            wire_draft_.clear();
+            notify_doc();
         }
         Refresh();
+        break;
+    }
+    case Tool::Label: {
+        if (label_queue_.empty()) break;
+        if (on_push_undo) on_push_undo();
+        NetLabel l;
+        l.pt = snap(p);
+        l.name = label_queue_.front();
+        doc_->labels.push_back(l);
+        label_queue_.erase(label_queue_.begin());
+        if (label_queue_.empty()) tool_ = Tool::Select;
+        notify_doc();
         break;
     }
     case Tool::Select: {
@@ -493,6 +580,22 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         break;
     }
     }
+}
+
+void SchematicCanvas::on_left_dclick(wxMouseEvent& e) {
+    // A double-click finishes an in-progress wire (the first click of the
+    // pair already added the corner).
+    if (tool_ == Tool::Wire && wiring_ && wire_draft_.size() >= 2) {
+        if (on_push_undo) on_push_undo();
+        Wire w;
+        w.pts = wire_draft_;
+        doc_->wires.push_back(w);
+        wiring_ = false;
+        wire_draft_.clear();
+        notify_doc();
+        return;
+    }
+    e.Skip();
 }
 
 void SchematicCanvas::on_left_up(wxMouseEvent&) {
@@ -534,15 +637,21 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     if (dragging_ && !sel_.empty() && sel_[0] != '#') {
         auto pl = doc_->placements.find(sel_);
         if (pl != doc_->placements.end()) {
-            pl->second.x = std::round((p.first + drag_dx_) / kGrid) * kGrid;
-            pl->second.y = std::round((p.second + drag_dy_) / kGrid) * kGrid;
+            double nx = std::round((p.first + drag_dx_) / kGrid) * kGrid;
+            double ny = std::round((p.second + drag_dy_) / kGrid) * kGrid;
+            move_component(sel_, nx, ny);
             Refresh();
         }
         return;
     }
 
     std::string nh;
-    if (tool_ == Tool::Wire && wiring_) nh = "wire";    else if (tool_ == Tool::Delete) {
+    if (tool_ == Tool::Wire && wiring_) {
+        std::string ref;
+        nh = hit_any_pin(p, ref) >= 0 ? "pin:" + ref : "wire";
+    } else if (tool_ == Tool::Label) {
+        nh = "label";
+    } else if (tool_ == Tool::Delete) {
         int wi, li;
         if (!hit_component(p).empty()) nh = "del-comp";
         else if (hit_wire(p, wi)) nh = "del-wire";
@@ -557,7 +666,11 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         if (on_status) {
             std::string msg;
             if (hover_.empty()) msg = "";
-            else if (hover_ == "wire") msg = "Click a pin to finish the wire";
+            else if (hover_ == "wire")
+                msg = "Click a pin (or point) to add a corner; Space swaps the "
+                      "route; click a pin to finish";
+            else if (hover_ == "label")
+                msg = "Click a net to place the label; Esc stops";
             else if (hover_ == "del-comp") msg = "Click to delete component";
             else if (hover_ == "del-wire") msg = "Click to delete wire";
             else if (hover_ == "del-label") msg = "Click to delete label";
@@ -567,7 +680,10 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             on_status(msg);
         }
     }
-    if (wiring_ || tool_ == Tool::Place) Refresh();
+    // Repaint only when something visual actually changed. In Select mode the
+    // ghost is gone, so a plain mouse move needs no repaint (this is what made
+    // dragging/scrubbing feel choppy).
+    if (wiring_ || tool_ == Tool::Place || tool_ == Tool::Label) Refresh(false);
 }
 
 void SchematicCanvas::on_right_down(wxMouseEvent& e) {
@@ -698,11 +814,10 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
         delete_selection();
         return true;
     case WXK_ESCAPE:
-        if (wiring_ || placing_) {
-            cancel_current();
-            return true;
-        }
-        set_selection("");
+        // Always leave whatever interaction is in progress, then clear the
+        // selection. (Previously this could be missed when placing_ had been
+        // cleared but the tool was still Place.)
+        cancel_current();
         return true;
     }
     return false;
