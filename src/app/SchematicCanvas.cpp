@@ -898,17 +898,13 @@ void SchematicCanvas::on_mousewheel(wxMouseEvent& e) {
     double factor = e.GetWheelRotation() > 0 ? 1.12 : 1.0 / 1.12;
     double nz = zoom_ * factor;
 
-    // Zooming out past the point where the content still fills a reasonable
-    // part of the view snaps to "fit around the components" (#10).
-    double x0, y0, x1, y1;
-    if (factor < 1.0 && content_bounds(x0, y0, x1, y1)) {
-        wxSize cs = GetClientSize();
-        double fit = std::min((cs.x - 32) / std::max(x1 - x0, 1.0),
-                              (cs.y - 32) / std::max(y1 - y0, 1.0));
-        if (nz < fit * 0.5) {
-            zoom_to_fit();
-            return;
-        }
+    // Zooming out to (or past) the hard floor snaps once to "fit around the
+    // components" rather than leaving the user lost on an empty sheet. This is
+    // a one-shot action at the floor -- it must not fire on ordinary zoom-out
+    // steps, which is what made it feel like F was being pressed repeatedly.
+    if (factor < 1.0 && nz < kMinZoom) {
+        zoom_to_fit();
+        return;
     }
     set_zoom(nz, e.GetPosition());
 }
