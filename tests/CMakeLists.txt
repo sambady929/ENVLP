@@ -46,3 +46,11 @@ add_executable(test_cs_test_netmap test_cs_test_netmap.cpp
                ../src/app/Document.cpp ../src/app/SymbolGeom.cpp)
 target_include_directories(test_cs_test_netmap PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_cs_test_netmap PRIVATE symcore)
+
+# Regression: dragging a component re-routes connected wires to stay
+# orthogonal (Cadence Virtuoso behaviour). Pure stdlib / Document stuff.
+add_executable(test_ortho_fix test_ortho_fix.cpp
+               ../src/app/Document.cpp ../src/app/SymbolGeom.cpp)
+target_include_directories(test_ortho_fix PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_ortho_fix PRIVATE symcore)
+add_test(NAME ortho_fix COMMAND test_ortho_fix)

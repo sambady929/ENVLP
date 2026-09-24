@@ -105,7 +105,11 @@ Space / rotate / flip all work **while a component is following the cursor**,
 not only after placing. The wire tool commits an orthogonal route on a single
 click at the destination and Space swaps horizontal-first ↔ vertical-first. A
 red dot marks the snap point while wiring. Moving a placed component (or a
-multi-component selection) carries the wire endpoints attached to its pins.
+multi-component selection) carries the wire endpoints attached to its pins
+**and re-routes the wire to stay orthogonal** — Cadence Virtuoso style:
+any diagonal segment caused by the move is split into 1-2 axis-aligned legs,
+with the corner direction alternating so a run of bends doesn't stack on the
+same side.
 
 The canvas has **infinite pan**: right-drag anywhere (including past the window
 edges) to move the sheet, mouse-wheel to zoom about the cursor, `F` to frame the
@@ -196,11 +200,77 @@ schematic-entry conventions TBD with the user.
 
 ---
 
+## Phase F — Pick up later (deferred feature work)
+
+These were intentionally deferred while polishing the high-priority shipping
+surface. Listed here so a future session has a clear handoff.
+
+### F1. Python / Lua export of the engine's result tree
+
+Expose the analysis output (the same `AnalysisResult` struct the GUI uses) to
+scripting clients. Two angles:
+
+- **Lua** (in-tree, see `src/symscript`): the `LuaConsole` already evaluates
+  expressions interactively, but doesn't yet publish the result tree. Add
+  `result = run_analysis(spec)` / `result.transfer.num`, `result.transfer.den`,
+  `result.values`, `result.poles`, `result.zeros`, etc., so a script can do
+  `for _, p in ipairs(result.zeros) do print(p) end`.
+- **Python**: emit a self-contained `.py` file (or a string) containing the
+  transfer function as a SymPy expression, plus pole/zero lists. The user
+  drops the file into a Jupyter notebook and has the same factored form with
+  arbitrary-precision numerical evaluation. Same could be done with `jl` for
+  Julia's `Symbolics.jl` — pick one for the first cut, others fall out.
+
+The export format is the existing `low_entropy_latex(Pruned)` plus the raw
+`GiNaC::ex` serialized via GiNaC's own archive. A round-trip test: emit →
+parse → eval at f0 must reproduce the report's `f0 value` to within 1e-12.
+
+### F2. Large-signal (nonlinear) DC analysis
+
+Currently the engine treats DC as AC at s=0 — every MOSFET becomes a linear
+gm·vgs source. That's wrong for bias-point / quiescent-operating-point
+questions (drain current, gate-source voltage, saturation margin). The proper
+analysis is:
+
+- Square-law model (`Id = (k/2)(Vgs-Vth)^2 (1+λ·Vds)`) for MOSFETs, Ebers-Moll
+  for BJTs. Optionally a user-toggle for `gm-Id` continuous-current model.
+- Per-MOSFET Newton iteration on the nonlinear branch stamps. Converge the
+  global MNA's `I(x) = 0` residual to within `1e-12` A (user-configurable).
+- Output: the symbolic bias point *if the network has unique closed-form
+  solutions* (rare with cascoded stages), else the **numeric** bias point plus
+  the operating-point summaries (Vds,sat, Vov, gm, ro at the bias).
+- Per-component sensitivity `∂Vout/∂W` via a one-shot adjoint sweep, so a
+  designer can see which transistor widths the bias depends on.
+
+Risks: Newton iteration divergence in pathological topologies (feedback loops
+with no DC path to ground) needs a homotopy / source-stepping fallback. The
+existing singular-MNA detection in the test harness catches the obvious case;
+the obscure one needs adaptive stepping.
+
+User deferred this in favour of the orthogonal-wire polish and the small-signal
+analysis-correctness fixes. It is the single biggest missing piece for a
+"design-grade" tool.
+
+---
+
 ## Open research / risks
 
 - Symbolic nonlinear DC (square-law / gm-Id): approach spike needed before
-  promising arbitrary-topology DC.
+  promising arbitrary-topology DC. (See Phase F2 — biggest deferred item.)
 - Return-ratio element selection: T(s) = H/(H∞ − H) assumes no direct
   feedthrough at the break; a general double-injection form is future work.
 - Approximate factoring matches numeric roots to named time constants within
   ~2 %; a genuinely complex-conjugate pole pair is emitted with numeric terms.
+
+### Closed in current pass (kept here for context)
+
+- Schematic drag: wires re-route orthogonal after a component moves or
+  rotates (`ortho_fix_wire`, see `SchematicCanvas.cpp` + `tests/test_ortho_fix.cpp`).
+- Bode toolbar with axis-range spin controls + auto/manual scale.
+- Bode phase unwrap (`atan2` -> jump-detect, add/subtract 2π) for clean
+  curves across the branch-cut.
+- Math tab renders the full report (LaTeX-shaped lines typeset, plain lines
+  as text) instead of a single expression.
+- Multi-character subscripts in the math renderer (`latex_normalize`
+  wraps script args in `{}` so `ro_M1` typesets with both letters as
+  subscript).

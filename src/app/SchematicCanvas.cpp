@@ -54,6 +54,42 @@ std::vector<Pt> ortho_route(Pt a, Pt b, bool h_first) {
     mid.push_back(h_first ? Pt{b.first, a.second} : Pt{a.first, b.second});
     return mid;
 }
+
+// Orthogonalise a wire: walk its polyline and replace every diagonal
+// segment with two axis-aligned legs joined at a corner. The corner
+// direction alternates so a series of diagonals doesn't all bend the same
+// way (which would produce visible "stairs"). The wire's general shape is
+// preserved; only the leg directions are normalised. This is what schematic
+// editors (Cadence Virtuoso, KiCad, etc.) do when you drag a component
+// through its wires -- every connected wire stays rectangular.
+void ortho_fix_wire(std::vector<Pt>& pts) {
+    if (pts.size() < 2) return;
+    std::vector<Pt> out;
+    out.push_back(pts[0]);
+    bool prev_was_horizontal = false;
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        Pt a = pts[i];
+        Pt b = pts[i + 1];
+        bool horiz = std::fabs(b.second - a.second) < 1e-9;
+        bool vert = std::fabs(b.first - a.first) < 1e-9;
+        if (horiz || vert) {
+            out.push_back(b);
+            prev_was_horizontal = horiz;
+            continue;
+        }
+        // Diagonal -- insert a corner. Alternate corner placement so a run
+        // of diagonals doesn't stack the bend on the same side.
+        bool h_first = !prev_was_horizontal;
+        Pt corner = h_first ? Pt{b.first, a.second} : Pt{a.first, b.second};
+        // Skip duplicate corners (zero-length legs).
+        if (std::fabs(out.back().first - corner.first) > 1e-9 ||
+            std::fabs(out.back().second - corner.second) > 1e-9)
+            out.push_back(corner);
+        out.push_back(b);
+        prev_was_horizontal = !h_first;
+    }
+    pts = std::move(out);
+}
 } // namespace
 
 SchematicCanvas::SchematicCanvas(wxWindow* parent, Document* doc)
@@ -1300,15 +1336,23 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
     pl->second.y = ny;
 
     for (auto& w : doc_->wires) {
+        bool touched = false;
         for (auto& v : w.pts) {
             for (size_t i = 0; i < old_pins.size(); ++i) {
                 if (dist(v, old_pins[i]) <= 1.0) {
                     v.first += dx;
                     v.second += dy;
+                    touched = true;
                     break;
                 }
             }
         }
+        // Cadence-style: any wire that had a vertex dragged along with the
+        // component is re-routed so the wire stays orthogonal. Without this,
+        // a component moving perpendicular to its attached wire leaves a
+        // diagonal stub between the pin and the first un-touched corner,
+        // which looks broken and breaks the "follow the wire" intuition.
+        if (touched) ortho_fix_wire(w.pts);
     }
     for (auto& l : doc_->labels) {
         for (size_t i = 0; i < old_pins.size(); ++i)
@@ -1380,7 +1424,41 @@ void SchematicCanvas::rotate_ghost(int delta) {
         if (r.empty() || r[0] == '#') continue;
         auto pl = doc_->placements.find(r);
         if (pl == doc_->placements.end()) continue;
+        const Component* c = doc_->circuit.find(r);
+        if (!c) continue;
+        // Snapshot pin world positions BEFORE the rotation. Any wire vertex
+        // coincident with an old pin gets re-anchored to the new pin position
+        // and the whole wire is re-routed to stay orthogonal -- a 90deg
+        // rotation about a component's centre moves pins by exact grid steps
+        // in our schematic, but the user can pre-rotate at any angle and we
+        // want the same Cadence-style behaviour as a drag.
+        std::vector<Pt> old_pins;
+        int np = int(pin_offsets(c->kind).size());
+        for (int i = 0; i < np; ++i)
+            old_pins.push_back(pin_world(*c, pl->second, i));
+
         pl->second.rot = ((pl->second.rot + delta) % 360 + 360) % 360;
+        std::vector<Pt> new_pins;
+        for (int i = 0; i < np; ++i)
+            new_pins.push_back(pin_world(*c, pl->second, i));
+
+        // For each touched wire, snap every old-pin vertex to its new pin
+        // and orthogonalise the result. This is the same logic as
+        // move_component, but per-component so a multi-component selection
+        // re-routes cleanly.
+        for (auto& w : doc_->wires) {
+            bool touched = false;
+            for (auto& v : w.pts) {
+                for (size_t i = 0; i < old_pins.size(); ++i) {
+                    if (dist(v, old_pins[i]) <= 1.0) {
+                        v = new_pins[i];
+                        touched = true;
+                        break;
+                    }
+                }
+            }
+            if (touched) ortho_fix_wire(w.pts);
+        }
         any = true;
     }
     if (any) notify_doc();
