@@ -25,6 +25,10 @@ public:
 
     std::function<void()> on_edited; // any field changed
     std::function<void(const std::string&)> on_selection_changed;
+    // Set/clear the net name of a wire (creates/removes a label) and set a
+    // label's font size; both route through the canvas so undo is consistent.
+    std::function<void(int, const std::string&)> on_wire_name;
+    std::function<void(int, int)> on_label_font;
 
 private:
     Document* doc_ = nullptr;

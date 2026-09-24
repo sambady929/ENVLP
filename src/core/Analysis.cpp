@@ -22,7 +22,8 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     o.threshold_db = s.threshold_db;
     o.global_ref = s.global_ref;
     o.prune = s.prune;
-    o.use_parallel = s.use_parallel;
+    // Parallelizing terms (R1||R2) is hardcoded on for now (#6).
+    o.use_parallel = true;
     o.gm_ro_assume = s.gm_ro_assume;
     o.approx_factor = s.approx_factor;
     // Rank terms by their worst case across the sweep band.
@@ -76,13 +77,12 @@ RawTF raw_tf(const Circuit& c, const std::string& input_ref,
 }
 
 CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
-                         const std::string& title, bool use_parallel) {
+                         const std::string& title) {
     CardResult cr;
     cr.kind = s.kind;
     cr.title = title;
     cr.has_transfer = true;
-    PruneOptions o = opts_of(s);
-    o.use_parallel = use_parallel;
+    PruneOptions o = opts_of(s); // use_parallel is hardcoded on inside
 
     AnalysisRequest req = req_of(s, "V1", "V(out)");
     // Rebuild an AnalysisResult so the GUI (Bode etc.) can use it directly.
@@ -112,7 +112,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
 // ---------------------------------------------------------------------------
 CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
     RawTF t = raw_tf(c, s.input_ref, s.output);
-    CardResult cr = make_transfer(t, s, "Transfer function", s.use_parallel);
+    CardResult cr = make_transfer(t, s, "Transfer function");
     return cr;
 }
 
@@ -122,7 +122,7 @@ CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
 // ---------------------------------------------------------------------------
 CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     RawTF t = raw_tf(c, s.input_ref, s.output);
-    CardResult cr = make_transfer(t, s, "AC (small-signal)", s.use_parallel);
+    CardResult cr = make_transfer(t, s, "AC (small-signal)");
     // AC also reports numeric gain at f0
     double w0 = 2.0 * M_PI * s.f0_hz;
     double mag = eval_mag_db((t.num / t.den), t.params, w0);

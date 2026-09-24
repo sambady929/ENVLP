@@ -6,14 +6,11 @@ namespace symcirc {
 using syms::Kind;
 
 wxBEGIN_EVENT_TABLE(PalettePanel, wxPanel)
-    EVT_LISTBOX(wxID_ANY, PalettePanel::on_tool_sel)
     EVT_LIST_ITEM_SELECTED(wxID_ANY, PalettePanel::on_kind_selected)
 wxEND_EVENT_TABLE()
 
 namespace {
 struct CompEntry { const char* label; Kind kind; };
-// Common parts are listed here with glyphs; the "I" instance menu on the
-// canvas offers the same set (plus the rarer blocks) with shortcut hints.
 const CompEntry kComps[] = {
     {"Resistor",     Kind::R},
     {"Capacitor",    Kind::C},
@@ -47,23 +44,18 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
     : wxPanel(parent), doc_(doc) {
     auto* root = new wxBoxSizer(wxVERTICAL);
 
-    root->Add(new wxStaticText(this, wxID_ANY, "Tools"), 0, wxALL, 4);
-
-    tools_ = new wxListBox(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 70),
-                           wxArrayString());
-    tools_->Append("Select / Move");
-    tools_->Append("Wire (W)");
-    tools_->Append("Delete");
-    tools_->SetSelection(0);
-    root->Add(tools_, 0, wxEXPAND | wxLEFT | wxRIGHT, 4);
-
-    root->Add(new wxStaticText(this, wxID_ANY, "Components"), 0,
-              wxALL | wxTOP, 8);
+    auto* header = new wxStaticText(this, wxID_ANY, "Components");
+    wxFont hf = header->GetFont();
+    hf.SetWeight(wxFONTWEIGHT_BOLD);
+    header->SetFont(hf);
+    root->Add(header, 0, wxALL, 4);
 
     glyphs_ = new wxImageList(34, 34, true);
     for (const auto& e : kComps) glyphs_->Add(symbol_swatch(e.kind, 34, 34));
 
-    comps_ = new wxListCtrl(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 260),
+    // wxLC_ICON wraps into multiple columns, so the palette grows with the
+    // available height instead of clipping a long single column.
+    comps_ = new wxListCtrl(this, wxID_ANY, wxDefaultPosition, wxSize(190, -1),
                             wxLC_ICON | wxLC_SINGLE_SEL | wxBORDER_SIMPLE);
     comps_->AssignImageList(glyphs_, wxIMAGE_LIST_NORMAL);
     for (int i = 0; i < kCompCount; ++i)
@@ -72,11 +64,10 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
 
     auto* hint = new wxStaticText(
         this, wxID_ANY,
-        "Keys: R C L V B M K G D T W N\n"
-        "M again = PMOS.  Space rotates,\n"
-        "Space while wiring swaps route,\n"
-        "Shift/Space flips.  I = instance menu.\n"
-        "N = name one or more nets.");
+        "Place: click a glyph, then the\n"
+        "canvas. Keys: R C L V B M D T W\n"
+        "N net   I menu   F fit   Del delete\n"
+        "Space rotate, Shift+Space flip.");
     hint->SetForegroundColour(wxColour(110, 110, 115));
     root->Add(hint, 0, wxALL, 6);
 
@@ -90,13 +81,9 @@ int PalettePanel::comp_index_for(syms::Kind k) const {
 }
 
 Tool PalettePanel::tool() const {
-    if (comps_->GetNextItem(-1, wxLIST_NEXT_ALL, wxLIST_STATE_SELECTED) != -1)
-        return Tool::Place;
-    switch (tools_->GetSelection()) {
-    case 1: return Tool::Wire;
-    case 2: return Tool::Delete;
-    default: return Tool::Select;
-    }
+    // The palette only ever starts component placement; Select / Wire / Delete
+    // are set on the canvas directly (toolbar or keys).
+    return Tool::Place;
 }
 
 Kind PalettePanel::place_kind() const {
@@ -106,6 +93,7 @@ Kind PalettePanel::place_kind() const {
 }
 
 void PalettePanel::set_active(Tool t, syms::Kind k) {
+    updating_ = true;
     if (t == Tool::Place) {
         int idx = comp_index_for(k);
         comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
@@ -114,22 +102,14 @@ void PalettePanel::set_active(Tool t, syms::Kind k) {
                                  wxLIST_STATE_SELECTED);
             comps_->EnsureVisible(idx);
         }
-        tools_->SetSelection(wxNOT_FOUND);
     } else {
         comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
-        tools_->SetSelection(t == Tool::Wire ? 1 : t == Tool::Delete ? 2 : 0);
     }
+    updating_ = false;
 }
 
 void PalettePanel::on_kind_selected(wxListEvent&) {
-    tools_->SetSelection(wxNOT_FOUND);
-    if (on_tool_changed) on_tool_changed();
-}
-
-void PalettePanel::on_tool_sel(wxCommandEvent& e) {
-    if (e.GetSelection() != wxNOT_FOUND) {
-        comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
-    }
+    if (updating_) return; // programmatic selection, not a user click
     if (on_tool_changed) on_tool_changed();
 }
 

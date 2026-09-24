@@ -253,6 +253,112 @@ syms::Circuit Document::resolved(std::string& err) const {
 }
 
 // ---------------------------------------------------------------------------
+// interactive net helpers
+// ---------------------------------------------------------------------------
+namespace {
+constexpr double kNetTol = 9.0;
+double pt_dist(Pt a, Pt b) {
+    return std::hypot(a.first - b.first, a.second - b.second);
+}
+// Is point q on segment ab (within tolerance)?
+bool on_seg(Pt q, Pt a, Pt b) {
+    double vx = b.first - a.first, vy = b.second - a.second;
+    double wx = q.first - a.first, wy = q.second - a.second;
+    double L2 = vx * vx + vy * vy;
+    if (L2 < 1e-12) return std::hypot(wx, wy) <= kNetTol;
+    double t = (wx * vx + wy * vy) / L2;
+    if (t < 0.0 || t > 1.0) return false;
+    double px = a.first + t * vx, py = a.second + t * vy;
+    return std::hypot(q.first - px, q.second - py) <= kNetTol;
+}
+// Do two wires touch (shared endpoint or a segment crossing the other's point)?
+bool wires_touch(const Wire& a, const Wire& b) {
+    for (const auto& pa : a.pts) {
+        for (const auto& pb : b.pts)
+            if (pt_dist(pa, pb) <= kNetTol) return true;
+        for (size_t k = 1; k < b.pts.size(); ++k)
+            if (on_seg(pa, b.pts[k - 1], b.pts[k])) return true;
+    }
+    for (const auto& pb : b.pts)
+        for (size_t k = 1; k < a.pts.size(); ++k)
+            if (on_seg(pb, a.pts[k - 1], a.pts[k])) return true;
+    return false;
+}
+// Are two pins electrically the same net? (A label on either wire names it.)
+} // namespace
+
+std::string Document::net_name_of_wire(int wire_index, std::string& err) const {
+    err.clear();
+    if (wire_index < 0 || wire_index >= int(wires.size())) return std::string();
+    // a label anchored on this wire names it
+    const auto& w = wires[wire_index];
+    for (const auto& l : labels) {
+        bool on = false;
+        for (size_t k = 1; k < w.pts.size() && !on; ++k)
+            on = on_seg(l.pt, w.pts[k - 1], w.pts[k]);
+        if (on) return l.name;
+    }
+    // otherwise a label on any touching wire
+    for (size_t i = 0; i < wires.size(); ++i) {
+        if (int(i) == wire_index) continue;
+        if (!wires_touch(w, wires[i])) continue;
+        for (const auto& l : labels) {
+            bool on = false;
+            for (size_t k = 1; k < wires[i].pts.size() && !on; ++k)
+                on = on_seg(l.pt, wires[i].pts[k - 1], wires[i].pts[k]);
+            if (on) return l.name;
+        }
+    }
+    return std::string();
+}
+
+int Document::label_index_on_wire(int wire_index, std::string& err) const {
+    err.clear();
+    if (wire_index < 0 || wire_index >= int(wires.size())) return -1;
+    const auto& w = wires[wire_index];
+    for (size_t k = 0; k < labels.size(); ++k) {
+        bool on = false;
+        for (size_t s = 1; s < w.pts.size() && !on; ++s)
+            on = on_seg(labels[k].pt, w.pts[s - 1], w.pts[s]);
+        if (on) return int(k);
+    }
+    for (size_t i = 0; i < wires.size(); ++i) {
+        if (int(i) == wire_index) continue;
+        if (!wires_touch(w, wires[i])) continue;
+        const auto& wi = wires[i];
+        for (size_t k = 0; k < labels.size(); ++k) {
+            bool on = false;
+            for (size_t s = 1; s < wi.pts.size() && !on; ++s)
+                on = on_seg(labels[k].pt, wi.pts[s - 1], wi.pts[s]);
+            if (on) return int(k);
+        }
+    }
+    return -1;
+}
+
+int Document::ensure_label_on_wire(int wire_index, std::string& err) {
+    int existing = label_index_on_wire(wire_index, err);
+    if (existing >= 0) return existing;
+    if (wire_index < 0 || wire_index >= int(wires.size())) return -1;
+    const auto& w = wires[wire_index];
+    if (w.pts.size() < 2) return -1;
+    // anchor at the midpoint of the longest segment
+    size_t best = 0;
+    double bestlen = -1.0;
+    for (size_t k = 1; k < w.pts.size(); ++k) {
+        double d = pt_dist(w.pts[k - 1], w.pts[k]);
+        if (d > bestlen) { bestlen = d; best = k; }
+    }
+    NetLabel l;
+    l.pt = {(w.pts[best - 1].first + w.pts[best].first) / 2,
+            (w.pts[best - 1].second + w.pts[best].second) / 2};
+    l.name = ""; // unnamed until the user types one
+    l.font_size = 14;
+    labels.push_back(l);
+    return int(labels.size()) - 1;
+}
+
+// ---------------------------------------------------------------------------
 // serialization
 // ---------------------------------------------------------------------------
 std::string Document::serialize() const {
@@ -293,7 +399,7 @@ std::string Document::serialize() const {
     }
     for (const auto& l : labels)
         o << "netlabel " << l.pt.first << "," << l.pt.second << " "
-          << quote(l.name) << "\n";
+          << quote(l.name) << " " << l.font_size << "\n";
     if (!analysis_cards.empty()) o << analysis_cards;
     return o.str();
 }
@@ -412,6 +518,12 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             if (std::sscanf(sp.c_str(), "%lf,%lf", &l.pt.first, &l.pt.second) != 2)
                 return fail("bad netlabel point");
             l.name = name;
+            // optional trailing font size (older files omit it)
+            std::string fs;
+            if (next_token(line, i, fs)) {
+                int n = std::atoi(fs.c_str());
+                if (n > 0) l.font_size = n;
+            }
             labels.push_back(l);
         } else if (kw == "card") {
             // analysis card line: keep it verbatim in analysis_cards

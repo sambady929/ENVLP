@@ -299,6 +299,20 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                                  if (i < int(doc_->labels.size()))
                                      doc_->labels[i].name = v.ToStdString();
                              });
+                    // font size (#7)
+                    auto* row = new wxBoxSizer(wxHORIZONTAL);
+                    row->Add(new wxStaticText(this, wxID_ANY, "Font size"), 0,
+                             wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+                    auto* sc = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
+                                              wxDefaultPosition, wxDefaultSize,
+                                              wxSP_ARROW_KEYS, 6, 96,
+                                              doc_->labels[i].font_size);
+                    row->Add(sc, 1);
+                    sizer->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+                    sc->Bind(wxEVT_SPINCTRL, [this, i, sc](wxSpinEvent&) {
+                        if (rebuilding_) return;
+                        if (on_label_font) on_label_font(i, sc->GetValue());
+                    });
                 }
             } else if (sel_.rfind("#wire", 0) == 0) {
                 int colon = int(sel_.find(':'));
@@ -308,6 +322,22 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                     bool whole = colon < 0;
                     int seg = colon < 0 ? -1 : std::atoi(sel_.c_str() + colon + 1);
                     add_header(whole ? "Wire" : "Wire segment");
+                    // net name (#9): type a name and a label is created on the
+                    // wire; clear it to remove the label.
+                    std::string err;
+                    std::string net = doc_->net_name_of_wire(i, err);
+                    add_text("Net name", wxString::FromUTF8(net),
+                             [this, i](const wxString& v) {
+                                 if (on_wire_name)
+                                     on_wire_name(i, v.ToStdString());
+                             });
+                    auto* hint = new wxStaticText(
+                        this, wxID_ANY,
+                        net.empty()
+                            ? "Type a name to create a net label above the wire."
+                            : "A label on this net: " + wxString::FromUTF8(net));
+                    hint->SetForegroundColour(wxColour(115, 115, 120));
+                    sizer->Add(hint, 0, wxALL, 4);
                     auto* info = new wxStaticText(
                         this, wxID_ANY,
                         wxString::Format("%d point(s)",

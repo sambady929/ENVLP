@@ -239,24 +239,16 @@ void AnalysisPanel::refresh(Document* doc) {
             auto* opts = new wxBoxSizer(wxHORIZONTAL);
             auto* prune = new wxCheckBox(box, wxID_ANY, "ignore negligible");
             prune->SetValue(c.prune);
-            auto* par = new wxCheckBox(box, wxID_ANY, "||");
-            par->SetValue(c.use_parallel);
             auto* gro = new wxCheckBox(box, wxID_ANY, "gm*ro>>1");
             gro->SetValue(c.gm_ro);
             auto* af = new wxCheckBox(box, wxID_ANY, "approx roots");
             af->SetValue(c.approx_factor);
             opts->Add(prune, 0, wxRIGHT, 8);
-            opts->Add(par, 0, wxRIGHT, 8);
             opts->Add(gro, 0, wxRIGHT, 8);
             opts->Add(af, 0);
             s->Add(opts, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
             prune->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
                 c.prune = e.IsChecked();
-                if (doc_) doc_->dirty = true;
-                if (on_changed) on_changed();
-            });
-            par->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
-                c.use_parallel = e.IsChecked();
                 if (doc_) doc_->dirty = true;
                 if (on_changed) on_changed();
             });
@@ -297,8 +289,9 @@ void AnalysisPanel::refresh(Document* doc) {
         root->Add(t, 0, wxALL, 8);
     }
 
-    root->AddStretchSpacer();
-    FitInside();
+    root->AddSpacer(6);
+    FitInside(); // sets the virtual size to the full content height so the
+                 // panel scrolls instead of clipping added cards (#5)
     Layout();
     rebuilding_ = false;
 }

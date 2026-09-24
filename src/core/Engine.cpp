@@ -22,7 +22,7 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.threshold_db = req.threshold_db;
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
-    r.opts.use_parallel = req.use_parallel;
+    r.opts.use_parallel = true; // hardcoded on (#6)
     r.opts.gm_ro_assume = req.gm_ro_assume;
     r.opts.approx_factor = req.approx_factor;
     r.opts.normalize = req.normalize;

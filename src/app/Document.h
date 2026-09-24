@@ -29,6 +29,7 @@ struct Wire {
 struct NetLabel {
     Pt pt{0, 0};
     std::string name;
+    int font_size = 14; // points; user-adjustable
 };
 
 // The schematic: circuit data + graphical data + analysis request.
@@ -56,6 +57,15 @@ public:
     // wire topology. Fills `err` (instead of throwing) on structural
     // problems; returns an empty circuit in that case.
     syms::Circuit resolved(std::string& err) const;
+
+    // Net name resolution for editing: the name currently assigned to the net
+    // a wire belongs to ("" if unnamed), and the index of a label on that net
+    // (-1 if none). `resolved()` is the authoritative analyzer path; these are
+    // the interactive helpers.
+    std::string net_name_of_wire(int wire_index, std::string& err) const;
+    int label_index_on_wire(int wire_index, std::string& err) const;
+    // Find or create a label anchored on the given wire; returns its index.
+    int ensure_label_on_wire(int wire_index, std::string& err);
 
     bool save(const std::string& p, std::string& err);
     bool load(const std::string& p, std::string& err);

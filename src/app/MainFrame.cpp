@@ -32,6 +32,7 @@ enum {
     ID_WIRE_TOOL,
     ID_SELECT_TOOL,
     ID_NET_LABEL,
+    ID_ZOOM_FIT,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -47,6 +48,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_REDO, MainFrame::on_redo)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
     EVT_MENU(ID_IGNORE_NEG, MainFrame::on_ignore_neg)
+    EVT_MENU(ID_ZOOM_FIT, MainFrame::on_zoom_fit)
     EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
 
@@ -86,6 +88,9 @@ void MainFrame::build_menu() {
                  "Name one or more nets");
 
     auto* view = new wxMenu;
+    view->Append(ID_ZOOM_FIT, "&Fit components\tF",
+                 "Zoom to frame every component");
+    view->AppendSeparator();
     mi_ignore_ = view->AppendCheckItem(
         ID_IGNORE_NEG, "&Ignore negligible terms",
         "Drop terms that are far below the dominant one (low entropy)");
@@ -111,10 +116,11 @@ void MainFrame::build_toolbar() {
     auto add = [&](int id, const wxString& label, const wxString& help) {
         toolbar_->AddTool(id, label, wxBitmapBundle(), help);
     };
-    add(ID_SELECT_TOOL, "Select", "Select / move");
+    add(ID_SELECT_TOOL, "Select", "Box-select and drag components");
     add(ID_WIRE_TOOL, "Wire (W)", "Draw a wire");
     toolbar_->AddSeparator();
     add(ID_NET_LABEL, "Net label (N)", "Name one or more nets");
+    add(ID_ZOOM_FIT, "Fit (F)", "Zoom to frame every component");
     toolbar_->AddSeparator();
     toolbar_->AddCheckTool(ID_IGNORE_NEG, "Ignore negligible",
                            wxBitmapBundle(), wxBitmapBundle(),
@@ -133,11 +139,15 @@ void MainFrame::build_toolbar() {
         case ID_WIRE_TOOL:
             canvas_->set_tool(Tool::Wire);
             sync_palette();
-            SetStatusText("Wire: click a start pin, route, click the end pin.",
+            SetStatusText("Wire: click to start, click again to finish; Space "
+                          "swaps the route; Esc cancels.",
                           0);
             break;
         case ID_NET_LABEL:
             prompt_net_labels();
+            break;
+        case ID_ZOOM_FIT:
+            canvas_->zoom_to_fit();
             break;
         case ID_IGNORE_NEG:
             set_ignore_negligible(e.IsChecked());
@@ -149,6 +159,11 @@ void MainFrame::build_toolbar() {
             break;
         }
     });
+}
+
+void MainFrame::on_zoom_fit(wxCommandEvent&) {
+    canvas_->zoom_to_fit();
+    SetStatusText("Zoomed to fit the components.", 0);
 }
 
 // The "Ignore negligible terms" switch is shared by the View menu, the toolbar
@@ -193,20 +208,28 @@ void MainFrame::build_layout() {
 
     root->Add(mid, 1, wxEXPAND);
 
+    // Right-hand column: properties on top, analysis cards below. Both are
+    // scrolled windows that stretch to the frame height, so added cards are
+    // reachable by scrolling instead of being clipped (#5).
+    auto* right = new wxBoxSizer(wxVERTICAL);
     props_ = new PropertiesPanel(this);
-    root->Add(props_, 0, wxEXPAND | wxALL, 4);
+    props_->SetMinSize(wxSize(250, -1));
+    right->Add(props_, 1, wxEXPAND | wxALL, 4);
 
     analysis_ = new AnalysisPanel(this);
-    root->Add(analysis_, 0, wxEXPAND | wxALL, 4);
+    analysis_->SetMinSize(wxSize(300, -1));
+    right->Add(analysis_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+
+    root->Add(right, 0, wxEXPAND);
 
     SetSizer(root);
 
     // ---- plumbing ----
     palette_->on_tool_changed = [this] {
-        canvas_->set_tool(palette_->tool(), palette_->place_kind());
-        if (palette_->tool() == Tool::Place)
-            SetStatusText("Click the canvas to place. R rotates, Esc leaves.",
-                          0);
+        // Clicking a component glyph starts placement of that kind.
+        canvas_->begin_place(palette_->place_kind(), 0);
+        SetStatusText("Click the canvas to place. Space rotates, Esc leaves.",
+                      0);
     };
 
     canvas_->on_document_changed = [this] { document_changed(); };
@@ -217,6 +240,16 @@ void MainFrame::build_layout() {
         SetStatusText(wxString::FromUTF8(s), 0);
     };
     canvas_->on_push_undo = [this] { doc_.push_undo(); };
+    canvas_->on_wire_selected = [this](int wi, std::string name) {
+        // Selecting a wire lets the properties panel name its net (#9).
+        props_->refresh(&doc_, "#wire" + std::to_string(wi));
+        if (name.empty())
+            SetStatusText("Wire selected -- name its net on the right (a "
+                          "label is created above it).",
+                          0);
+        else
+            SetStatusText("Net: " + name, 0);
+    };
 
     props_->on_edited = [this] {
         canvas_->Refresh();
@@ -225,6 +258,12 @@ void MainFrame::build_layout() {
     props_->on_selection_changed = [this](const std::string& s) {
         canvas_->set_selection(s);
         selection_changed(s);
+    };
+    props_->on_wire_name = [this](int wi, const std::string& name) {
+        canvas_->set_wire_net_name(wi, name);
+    };
+    props_->on_label_font = [this](int li, int size) {
+        canvas_->set_label_font_size(li, size);
     };
 
     // ---- analysis cards ----
@@ -258,17 +297,15 @@ bool MainFrame::focus_is_text_entry() const {
 }
 
 void MainFrame::on_char_hook(wxKeyEvent& e) {
-    // The Lua console / text fields own their keystrokes entirely (including
-    // Escape, which may close a dialog).
+    // The Lua console / text fields own ordinary typing.
     if (focus_is_text_entry()) {
         e.Skip();
         return;
     }
 
-    // Always give the canvas first refusal: it owns placement, wiring and the
-    // Escape-to-cancel behaviour.
+    // Otherwise the canvas owns Space / Escape / single-letter keys while a
+    // ghost or wire is in progress, and the app shortcuts run everywhere else.
     if (canvas_->handle_key(e)) return;
-
     if (handle_shortcut(e)) return;
 
     // Let menu accelerators (Ctrl+N / F5 / Del ...) run.
@@ -325,16 +362,21 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     case 'T': return place(syms::Kind::T);
     case 'K': return place(syms::Kind::K);
     case 'Y': return place(syms::Kind::D); // common alternate for diode
-    case 'H': case 'h': return place(syms::Kind::CCVS);
-    case 'F': case 'f': return place(syms::Kind::CCCS);
     case 'O': case 'o': return place(syms::Kind::OPAMP);
     case 'W': case 'w':
         canvas_->set_tool(Tool::Wire);
         sync_palette();
-        SetStatusText("Wire: click a start pin, route, click the end pin.", 0);
+        SetStatusText("Wire: click to start, click again to finish; Space "
+                      "swaps the route; Esc cancels.",
+                      0);
         return true;
     case 'N': case 'n':
         prompt_net_labels();
+        return true;
+    case 'F': case 'f':
+        // F frames all components (repeated F toggles fit / back).
+        canvas_->zoom_to_fit();
+        SetStatusText("Zoomed to fit the components.", 0);
         return true;
     case 'M': {
         // M selects the NMOS first; pressing M again (while placing) toggles
@@ -465,6 +507,7 @@ void MainFrame::on_new(wxCommandEvent&) {
     lua_->set_result(nullptr);
     results_->clear();
     canvas_->set_selection("");
+    canvas_->zoom_to_fit();
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     update_title();
@@ -492,6 +535,7 @@ void MainFrame::open_path(const wxString& p) {
     lua_->set_result(nullptr);
     results_->clear();
     canvas_->set_selection("");
+    canvas_->zoom_to_fit();
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     if (analysis_) {

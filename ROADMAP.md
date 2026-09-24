@@ -95,15 +95,26 @@ independent, so exact-but-unfactored output is also available.
 | T | transformer |
 | W | wire tool |
 | N | net label(s) — type space-separated names, click each net |
+| F | zoom to fit all components |
 | I | instance menu (all components: R C L V B M K G D T, E VCVS, G VCCS, nullor, op-amp, FD op-amp, amplifier, 1/s block, s block, VDD, …) |
-| Space | rotate CCW (while placing); swaps wire route while wiring; rotates a selected component |
+| Space | rotate CCW (while placing); swaps wire route while wiring; rotates a selection |
 | Shift+Space | flip horizontal |
 | Ctrl+Space | flip vertical |
 
 Space / rotate / flip all work **while a component is following the cursor**,
-not only after placing. The wire tool commits an orthogonal route and Space
-swaps horizontal-first ↔ vertical-first. Moving a placed component carries the
-wire endpoints attached to its pins.
+not only after placing. The wire tool commits an orthogonal route on a single
+click at the destination and Space swaps horizontal-first ↔ vertical-first. A
+red dot marks the snap point while wiring. Moving a placed component (or a
+multi-component selection) carries the wire endpoints attached to its pins.
+
+The canvas has **infinite pan**: right-drag anywhere (including past the window
+edges) to move the sheet, mouse-wheel to zoom about the cursor, `F` to frame the
+components (and to snap back if you scroll/pan away). The upper-left "Tools"
+list was replaced by the toolbar's Select / Wire buttons.
+
+**Box select**: with the Select tool, drag on empty canvas to rubber-band
+several components; Shift-click toggles one in/out of the selection; the whole
+group drags and rotates together.
 
 ### New components (netlist `Kind` + symbols + MNA stamps)
 - diode D (small-signal: gm diode + optional non-idealities),
@@ -126,12 +137,18 @@ wire endpoints attached to its pins.
 - Analysis panel: **cards** — add-analysis dropdown, one card per analysis,
   options edited inside the card, cards run in listed order. Each transfer-like
   card carries the SPICE-style sweep (start, stop, decade/octave/linear, points
-  per interval), which drives both the plots and the term ranking.
+  per interval), which drives both the plots and the term ranking. The panel
+  scrolls so added cards are always reachable.
 - Toolbar + **View** menu: **Ignore negligible terms** toggle (replaces the old
-  per-document "prune" checkbox); Select / Wire / Net-label / Analyze tools.
-  The old "Analysis defaults" block was removed — everything is per card.
+  per-document "prune" checkbox); Select / Wire / Net-label / Analyze tools
+  and **Fit components (F)**. The old "Analysis defaults" block and the
+  standalone "Tools" list were removed — tools live on the toolbar, and
+  everything analysis-related is per card.
 - Ground / supply symbols are anonymous: they show no reference and several
   share the `GND` / `VDD` ref.
+- Selecting a **wire** reveals a **Net name** field; typing one creates a label
+  anchored above the wire (clearing it removes the label). Selecting a **label**
+  lets you edit its text and **font size**.
 
 ---
 

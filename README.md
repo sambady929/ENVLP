@@ -83,21 +83,25 @@ ctest --test-dir build --output-on-failure   # run the engine tests
    canvas to place it. While the ghost is following the cursor, **Space**
    rotates, **Shift+Space / Ctrl+Space** flip, **Esc** cancels. A click places
    one component and returns to Select, so keys and Space work at any time.
-2. **Wire (W)**: click a start pin, then click points/pins to route. **Space**
-   while wiring swaps the route between horizontal-first and
-   vertical-first; click a second pin (or double-click) to finish. Moving a
-   component drags the wires attached to its pins along with it.
-3. **Net labels (N)**: type one or more names separated by spaces
-   (e.g. `out in`); press Enter, then click each net in turn to drop the labels.
-   **Esc** stops.
+2. **Wire (W)**: click to start (a red dot marks the snap point), then click
+   the destination — a pin or any grid point — to finish in one click. **Space**
+   while wiring swaps the route between horizontal-first and vertical-first;
+   **Esc** cancels. Moving a component drags the wires attached to its pins.
+3. **Net labels**: select a wire and type its **Net name** in the properties
+   panel (a label is created above the wire), or press **N** to place several
+   labels at once — type space-separated names (`out in`) and click each net.
+   Click a label to edit its text and font size.
 4. Place at least one **Ground** symbol.
 5. Configure analyses with the cards on the right: pick the input source,
    output (`V(out)` or `I(R2)`), the **sweep** (start / stop / decade·octave·
-   linear / points per interval), and the `ignore negligible` / `||` /
-   `gm·ro≫1` / `approx roots` switches. Run one card or **Run all**, or press
-   **F5**.
-6. Read the report in **Results**, the plot in **Bode** (switch to Nyquist /
-   Nichols), or post-process in **Lua**.
+   linear / points per interval), and the `ignore negligible` / `gm·ro≫1` /
+   `approx roots` switches. Run one card or **Run all**, or press **F5**.
+6. Pan with a right-drag (works even past the window edges) and zoom with the
+   wheel; **F** frames all components. Read the report in **Results**, the plot
+   in **Bode** (switch to Nyquist / Nichols), or post-process in **Lua**.
+
+To select several components, drag a box on empty canvas with the Select tool
+(or Shift-click to add/remove); the group moves and rotates together.
 
 `examples/common_source_amp.scx` is a common-source amplifier with a resistor
 load and an output capacitor, pre-loaded with TF / AC / DC / Zin / Zout /
@@ -153,7 +157,7 @@ dropped()         -- { {location=, term=, db=}, ... }
 `comp`, `param`, `wire`, `netlabel`, `req`, `card`). Net topology is derived
 from wire geometry at analyze time, so files stay geometry-based and diffable.
 The `req` line ends with the engine switches and the sweep
-(`fstart fstop type points prune || gm*ro approx`); `card` lines configure the
+(`fstart fstop type points prune gm*ro approx`); `card` lines configure the
 analysis stack and round-trip verbatim.
 
 ## Repository layout
