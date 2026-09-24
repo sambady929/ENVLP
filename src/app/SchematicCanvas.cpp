@@ -83,6 +83,7 @@ void SchematicCanvas::set_tool(Tool t, Kind k) {
     wire_draft_.clear();
     label_queue_.clear();
     box_selecting_ = false;
+    SetFocus();
     Refresh();
 }
 
