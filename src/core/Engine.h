@@ -2,7 +2,6 @@
 #include "core/Netlist.h"
 #include "core/Prune.h"
 #include "core/Solver.h"
-
 #include <ginac/ginac.h>
 
 // CLN's As() macro corrupts wxWidgets' wxAny::As<T>(); undo it.
@@ -22,6 +21,7 @@ struct AnalysisResult {
     Pruned pruned;
     ParamTable params;
     PruneOptions opts;
+    SweepSpec sweep;          // plotting / ranking sweep
     std::string report;       // full human-readable report (results panel)
 };
 
@@ -32,8 +32,11 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req);
 double mag_db_at(const AnalysisResult& r, double omega);
 double phase_deg_at(const AnalysisResult& r, double omega);
 
-// Log-spaced frequencies in Hz.
+// Log-spaced frequencies in Hz (legacy helper).
 std::vector<double> sweep_hz(double f0, double f1, int npoints);
+
+// Frequencies in Hz for a SPICE-style sweep (decade / octave / linear).
+std::vector<double> sweep_points(const SweepSpec& s);
 
 std::string format_report(const AnalysisResult& r);
 

@@ -166,6 +166,9 @@ struct Entry {
 };
 
 // Rank and drop negligible terms of `poly` (a polynomial in s). Mutates poly.
+// Terms are ranked by their peak magnitude over the sweep band when a sweep is
+// configured, otherwise at the single frequency f0. The ranking reference can
+// be global (whole polynomial) or per s-coefficient.
 void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
                 const LowEntropyOptions& o, const std::string& what,
                 std::vector<Dropped>& dropped) {
@@ -179,9 +182,26 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
         }
         if (deg < 0 || deg > 64) return;
     }
-    double f0 = o.f0_hz > 1e-12 ? o.f0_hz : 1e-12;
-    double w0 = 2.0 * M_PI * f0;
-    double db_per_decade = 20.0 * std::log10(w0);
+
+    // Frequency band over which each term's contribution is taken to be its
+    // worst case. For a term t*s^k the magnitude at w is |t|*w^k, which is
+    // monotone in w for k >= 0, so the peak is at one end of the band.
+    double w_lo, w_hi;
+    if (o.band_hi_hz > 0 && o.band_hi_hz >= o.band_lo_hz) {
+        w_lo = 2.0 * M_PI * std::max(o.band_lo_hz, 1e-9);
+        w_hi = 2.0 * M_PI * std::max(o.band_hi_hz, 1e-9);
+    } else {
+        double f0 = o.f0_hz > 1e-12 ? o.f0_hz : 1e-12;
+        w_lo = w_hi = 2.0 * M_PI * f0;
+    }
+    auto term_db = [&](const ex& t, int k) {
+        std::complex<double> z = eval_complex(t, pt, 0.0);
+        double mag = std::hypot(z.real(), z.imag());
+        if (!(mag > 0.0) || !std::isfinite(mag))
+            return std::numeric_limits<double>::quiet_NaN();
+        double w = k == 0 ? w_lo : std::max(w_lo, w_hi);
+        return 20.0 * std::log10(mag) + k * 20.0 * std::log10(w);
+    };
 
     std::vector<Entry> entries;
     for (int k = 0; k <= deg; ++k) {
@@ -192,14 +212,8 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
             for (size_t i = 0; i < c.nops(); ++i) terms.push_back(c.op(i));
         else
             terms.push_back(c);
-        for (const ex& t : terms) {
-            std::complex<double> z = eval_complex(t, pt, 0.0);
-            double mag = std::hypot(z.real(), z.imag());
-            double db = (mag > 0.0 && std::isfinite(mag))
-                            ? 20.0 * std::log10(mag) + k * db_per_decade
-                            : std::numeric_limits<double>::quiet_NaN();
-            entries.push_back({k, t, db});
-        }
+        for (const ex& t : terms)
+            entries.push_back({k, t, term_db(t, k)});
     }
     if (entries.empty()) return;
 

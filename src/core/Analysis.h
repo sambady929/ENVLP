@@ -33,7 +33,7 @@ struct AnalysisSpec {
     std::string input_ref;   // excitation source (Vin)
     std::string output;      // "V(node)" or "I(ref)"
     std::string probe_ref;   // reference element for loop gain
-    double f0_hz = 1e3;
+    double f0_hz = 1e3;      // legacy tuning frequency (kept for compatibility)
     double threshold_db = 40.0;
     bool global_ref = false;
     bool prune = true;
@@ -41,6 +41,11 @@ struct AnalysisSpec {
     bool gm_ro_assume = true; // assume gm*ro >> 1 when idealizing
     bool approx_factor = true; // numeric factoring when exact factoring fails
     bool normalize = true; // normalize denominator DC term to 1 (TFs only)
+
+    // Standard SPICE-style frequency sweep: start/stop, interval type
+    // (decade / octave / linear) and points per interval. Used for the plots
+    // and for term ranking.
+    SweepSpec sweep;
 
     // DC model selection for MOSFETs.
     enum class MosDc { SquareLaw, GmOverId } mos_dc = MosDc::SquareLaw;

@@ -330,7 +330,10 @@ bool Circuit::validate(std::string& err) const {
             err = "component with empty reference";
             return false;
         }
-        if (!refs.insert(c.ref).second) {
+        // Ground and supply symbols are anonymous: several may share the ref
+        // "GND" / "VDD" without being duplicates.
+        bool anonymous = (c.kind == Kind::GND || c.kind == Kind::VDD);
+        if (!anonymous && !refs.insert(c.ref).second) {
             err = "duplicate reference: " + c.ref;
             return false;
         }
@@ -370,11 +373,6 @@ bool Circuit::validate(std::string& err) const {
 std::string next_ref(const Circuit& c, Kind k) {
     std::string prefix = ref_prefix(k);
     int n = 1;
-    if (k == Kind::GND) {
-        // grounds are usually anonymous; still give unique refs
-        while (c.find(prefix + std::to_string(n))) ++n;
-        return prefix + std::to_string(n);
-    }
     while (c.find(prefix + std::to_string(n))) ++n;
     return prefix + std::to_string(n);
 }

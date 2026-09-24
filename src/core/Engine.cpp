@@ -26,6 +26,9 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.gm_ro_assume = req.gm_ro_assume;
     r.opts.approx_factor = req.approx_factor;
     r.opts.normalize = req.normalize;
+    r.opts.band_lo_hz = req.sweep.f_start_hz;
+    r.opts.band_hi_hz = req.sweep.f_stop_hz;
+    r.sweep = req.sweep;
     r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
     r.report = format_report(r);
     return r;
@@ -51,6 +54,32 @@ std::vector<double> sweep_hz(double f0, double f1, int npoints) {
         double t = static_cast<double>(i) / (npoints - 1);
         out.push_back(std::pow(10.0, log0 + t * (log1 - log0)));
     }
+    return out;
+}
+
+std::vector<double> sweep_points(const SweepSpec& s) {
+    std::vector<double> out;
+    int ppi = s.points_per_interval > 0 ? s.points_per_interval : 10;
+    if (s.type == SweepType::Linear) {
+        double f0 = s.f_start_hz;
+        double f1 = s.f_stop_hz > f0 ? s.f_stop_hz : f0 + 1.0;
+        int n = ppi > 1 ? ppi : 2;
+        for (int i = 0; i < n; ++i)
+            out.push_back(f0 + (f1 - f0) * double(i) / double(n - 1));
+        return out;
+    }
+    double f0 = s.f_start_hz > 0 ? s.f_start_hz : 1.0;
+    double f1 = s.f_stop_hz > f0 ? s.f_stop_hz : f0 * 1000.0;
+    // log-spaced: one interval per decade (or octave); SPICE-style total is
+    // intervals * points_per_interval + 1.
+    double per = (s.type == SweepType::Octave) ? std::log2(f1 / f0)
+                                               : std::log10(f1 / f0);
+    int total = int(std::lround(per * ppi)) + 1;
+    if (total < 2) total = 2;
+    double logf0 = std::log(f0), logf1 = std::log(f1);
+    for (int i = 0; i < total; ++i)
+        out.push_back(std::exp(logf0 + (logf1 - logf0) * double(i) /
+                                            double(total - 1)));
     return out;
 }
 
@@ -107,12 +136,18 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
 std::string format_report(const AnalysisResult& r) {
     std::string out;
     out += "SymCirc analysis -- " + r.output_desc + " per " + r.input_desc + "\n";
-    char hdr[256];
+    // frequency-sweep line, in the same terms the analysis card uses
+    const char* typ = r.sweep.type == SweepType::Linear
+                          ? "linear"
+                          : r.sweep.type == SweepType::Octave ? "octave"
+                                                              : "decade";
+    char hdr[320];
     std::snprintf(hdr, sizeof(hdr),
-                  "f0 = %s   threshold = %.0f dB   ranking = %s\n",
-                  fmt_hz(r.opts.f0_hz).c_str(), r.opts.threshold_db,
-                  r.opts.global_ref ? "global (frequency-weighted)"
-                                    : "per-coefficient");
+                  "sweep: %s .. %s, %s, %d pts/interval   "
+                  "(ignore terms below %.0f dB)\n",
+                  fmt_hz(r.sweep.f_start_hz).c_str(),
+                  fmt_hz(r.sweep.f_stop_hz).c_str(), typ,
+                  r.sweep.points_per_interval, r.opts.threshold_db);
     out += hdr;
     out += "----------------------------------------------------------------\n";
     out += "Low-entropy transfer function:\n";
@@ -130,7 +165,7 @@ std::string format_report(const AnalysisResult& r) {
     out += "Zeros:\n";
     out += poles_zeros_text(r.pruned.zeros, false);
     if (!r.pruned.dropped.empty()) {
-        out += "\nDropped terms (" + std::to_string(r.pruned.dropped.size()) +
+        out += "\nIgnored terms (" + std::to_string(r.pruned.dropped.size()) +
                "), each below the dominant term by more than " +
                std::to_string(static_cast<int>(r.opts.threshold_db)) + " dB:\n";
         for (const auto& d : r.pruned.dropped) {
@@ -139,7 +174,7 @@ std::string format_report(const AnalysisResult& r) {
             out += "    [" + d.location + "]  " + d.term + "   " + dbbuf + "\n";
         }
     } else {
-        out += "\nNo terms dropped (nothing below the threshold).\n";
+        out += "\nNo terms ignored (everything is within the margin).\n";
     }
     return out;
 }

@@ -20,6 +20,8 @@ Pruned prune_low_entropy(const ex& num, const ex& den, ParamTable& params,
     lo.gm_ro_assume = opts.gm_ro_assume;
     lo.approx_factor = opts.approx_factor;
     lo.normalize = opts.normalize;
+    lo.band_lo_hz = opts.band_lo_hz;
+    lo.band_hi_hz = opts.band_hi_hz;
 
     LowEntropy le = low_entropy(num, den, params, lo);
 

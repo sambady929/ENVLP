@@ -25,6 +25,9 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     o.use_parallel = s.use_parallel;
     o.gm_ro_assume = s.gm_ro_assume;
     o.approx_factor = s.approx_factor;
+    // Rank terms by their worst case across the sweep band.
+    o.band_lo_hz = s.sweep.f_start_hz;
+    o.band_hi_hz = s.sweep.f_stop_hz;
     // Impedance analyses: the denominator's DC value can be a symbolic sum,
     // and normalizing by it would push that sum into the numerator as nested
     // fractions. Transfer-like analyses keep normalization (it is what yields
@@ -47,6 +50,7 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     r.gm_ro_assume = s.gm_ro_assume;
     r.approx_factor = s.approx_factor;
     r.normalize = s.normalize;
+    r.sweep = s.sweep;
     return r;
 }
 
@@ -89,6 +93,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     res.den_raw = t.den;
     res.params = t.params;
     res.opts = o;
+    res.sweep = s.sweep;
     res.pruned = prune_low_entropy(t.num, t.den, res.params, o);
     res.report = format_report(res);
 

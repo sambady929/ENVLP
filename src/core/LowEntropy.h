@@ -76,6 +76,11 @@ struct LowEntropyOptions {
     // denominator constant is itself a symbolic sum it would turn the numerator
     // into nested fractions, so it is disabled for those analyses.
     bool normalize = true;
+    // Term ranking band. When band_hi_hz >= band_lo_hz > 0 each term is ranked
+    // by its peak magnitude across the band (the standard SPICE sweep range);
+    // otherwise the single frequency f0_hz is used.
+    double band_lo_hz = 1.0;
+    double band_hi_hz = 0.0; // 0 = unset -> use f0_hz
 };
 
 // The low-entropy engine. This is the heart of SymCirc: it turns a raw
