@@ -66,7 +66,8 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
         this, wxID_ANY,
         "Place: click a glyph, then the\n"
         "canvas. Keys: R C L V B M D T W\n"
-        "N net   I menu   F fit   Del delete\n"
+        "N net   I menu   F fit\n"
+        "U undo   Shift+U redo   Del delete\n"
         "Space rotate, Shift+Space flip.");
     hint->SetForegroundColour(wxColour(110, 110, 115));
     root->Add(hint, 0, wxALL, 6);

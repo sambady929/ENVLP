@@ -66,6 +66,11 @@ public:
     void cancel_current();    // Escape
     bool handle_key(wxKeyEvent& e);
 
+    // Wiring control (used by keys from the frame): commit the current segment
+    // (Enter) or leave the mode, dropping only the uncommitted segment (Esc).
+    void wire_commit_segment();
+    void wire_finish();
+
     // Net-label placement: begin placing the given label names (space
     // separated). Each click drops one label on the clicked net, in order.
     void begin_label(const std::string& names);
@@ -97,9 +102,15 @@ private:
     Pt drag_anchor_{0, 0}; // doc point where the drag began
     bool box_selecting_ = false;
     Pt box_a_{0, 0}, box_b_{0, 0};
+    // Wiring (Cadence-style): `wiring_` is the mode, `wire_pts_` holds the
+    // committed vertices of the wire being drawn (kept in sync with the doc
+    // wire at `wire_idx_`). The "current segment" is the rubber band from
+    // wire_pts_.back() to the snapped cursor; it is committed on each click
+    // or on Enter, and dropped by Esc.
     bool wiring_ = false;
-    std::vector<Pt> wire_draft_;
-    bool wire_h_first_ = true; // routing preference for the rubber band
+    std::vector<Pt> wire_pts_;
+    int wire_idx_ = -1; // index of the in-progress wire in doc_->wires, or -1
+    bool wire_h_first_ = true; // routing preference
     std::vector<std::string> label_queue_; // pending net names to place
     wxPoint mouse_;
     bool has_mouse_ = false; // mouse_ has seen at least one event

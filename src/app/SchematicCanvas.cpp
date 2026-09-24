@@ -79,8 +79,7 @@ void SchematicCanvas::set_tool(Tool t, Kind k) {
     place_rot_ = 0;
     place_flip_h_ = place_flip_v_ = false;
     placing_ = (t == Tool::Place);
-    wiring_ = false;
-    wire_draft_.clear();
+    wire_finish();
     label_queue_.clear();
     box_selecting_ = false;
     SetFocus();
@@ -98,7 +97,7 @@ void SchematicCanvas::begin_place(Kind k, int rot) {
         place_rot_ = rot;
         place_flip_h_ = place_flip_v_ = false;
     }
-    wiring_ = false;
+    wire_finish();
     box_selecting_ = false;
     label_queue_.clear();
     SetFocus();
@@ -120,20 +119,52 @@ void SchematicCanvas::begin_label(const std::string& names) {
     if (label_queue_.empty()) return;
     tool_ = Tool::Label;
     placing_ = false;
-    wiring_ = false;
-    wire_draft_.clear();
+    wire_finish();
     SetFocus();
     Refresh();
 }
 
 void SchematicCanvas::cancel_current() {
     placing_ = false;
-    wiring_ = false;
-    wire_draft_.clear();
+    wire_finish(); // Esc: drop only the uncommitted segment
     label_queue_.clear();
     box_selecting_ = false;
     tool_ = Tool::Select;
     Refresh();
+}
+
+// Leave wiring mode. Any wire already committed to the document stays; only
+// the in-progress (uncommitted) segment is discarded.
+void SchematicCanvas::wire_finish() {
+    wiring_ = false;
+    wire_pts_.clear();
+    wire_idx_ = -1;
+}
+
+// Commit the current segment (from the last vertex to the snapped cursor) as a
+// real wire vertex. Used by Enter; clicking does the same thing.
+void SchematicCanvas::wire_commit_segment() {
+    if (!wiring_ || wire_pts_.empty()) return;
+    Pt target = snap(to_doc(mouse_));
+    Pt last = wire_pts_.back();
+    if (target == last) return;
+
+    std::vector<Pt> seg = wire_pts_;
+    auto mids = ortho_route(last, target, wire_h_first_);
+    for (const auto& q : mids) seg.push_back(q);
+    seg.push_back(target);
+
+    if (on_push_undo) on_push_undo();
+    if (wire_idx_ < 0) {
+        Wire w;
+        w.pts = seg;
+        doc_->wires.push_back(w);
+        wire_idx_ = int(doc_->wires.size()) - 1;
+    } else {
+        doc_->wires[wire_idx_].pts = seg;
+    }
+    wire_pts_ = seg;
+    notify_doc();
 }
 
 // ---------------------------------------------------------------------------
@@ -443,9 +474,10 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         }
     }
 
-    // wire in progress: orthogonal route from the anchor to the cursor
-    if (wiring_ && !wire_draft_.empty()) {
-        Pt last = wire_draft_.back();
+    // wire in progress: the current (uncommitted) segment, from the last
+    // vertex to the snapped cursor
+    if (wiring_ && !wire_pts_.empty()) {
+        Pt last = wire_pts_.back();
         Pt m = snap(to_doc(mouse_));
         auto mids = ortho_route(last, m, wire_h_first_);
         Pt prev = last;
@@ -526,10 +558,11 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         dc.SetTextForeground(*wxBLACK);
     }
 
-    // red dot at the cursor while wiring (#8): follows the pointer exactly
+    // red dot while in wiring mode: jumps to the nearest valid grid point so
+    // it shows exactly where the segment/vertex will land
     if (tool_ == Tool::Wire && has_mouse_) {
-        Pt cursor = to_doc(mouse_);
-        doc_circle(cursor, 4, wxColour(210, 30, 30), true);
+        Pt g = snap(to_doc(mouse_));
+        doc_circle(g, 4, wxColour(210, 30, 30), true);
     }
 
     // ghost of component being placed
@@ -605,43 +638,51 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
                 target = pin_world(*c, pl->second, pin); // exact pin position
         }
 
+        // Entering wiring mode: the first click sets the start point (a pin or
+        // a grid point). Each later click commits a segment, so what you drew
+        // stays visible, and terminating on a pin ends the mode.
         if (!wiring_) {
-            // first click: anchor the wire at a pin (or the clicked point)
             wiring_ = true;
             wire_h_first_ = true;
-            wire_draft_.clear();
-            wire_draft_.push_back(target);
+            wire_pts_.clear();
+            wire_pts_.push_back(target);
+            wire_idx_ = -1;
             Refresh(false);
             break;
         }
-        if (target == wire_draft_.back()) break;
 
-        // add the orthogonal route to this point as a new corner
-        auto mids = ortho_route(wire_draft_.back(), target, wire_h_first_);
-        for (const auto& q : mids) wire_draft_.push_back(q);
-        wire_draft_.push_back(target);
+        Pt last = wire_pts_.back();
+        if (target == last) break;
 
-        // Terminate on a component pin, or on an existing wire vertex (a tap);
-        // otherwise keep the wire open so the user can add more corners.
-        bool on_wire_node = false;
-        if (pin < 0) {
-            for (const auto& w : doc_->wires) {
-                for (const auto& v : w.pts)
-                    if (dist(v, target) < 1.0) { on_wire_node = true; break; }
-                if (on_wire_node) break;
-            }
-        }
-        if (pin >= 0 || on_wire_node) {
-            // terminating: commit the wire here
-            if (on_push_undo) on_push_undo();
+        // commit the segment (visible from now on)
+        std::vector<Pt> seg = wire_pts_;
+        auto mids = ortho_route(last, target, wire_h_first_);
+        for (const auto& q : mids) seg.push_back(q);
+        seg.push_back(target);
+        if (on_push_undo) on_push_undo();
+        if (wire_idx_ < 0) {
             Wire w;
-            w.pts = wire_draft_;
+            w.pts = seg;
             doc_->wires.push_back(w);
-            wiring_ = false;
-            wire_draft_.clear();
-            notify_doc();
+            wire_idx_ = int(doc_->wires.size()) - 1;
         } else {
-            // not a terminal: keep wiring from this corner
+            doc_->wires[wire_idx_].pts = seg;
+        }
+        wire_pts_ = seg;
+
+        bool on_wire_node = false;
+        for (size_t wi = 0; wi < doc_->wires.size() && !on_wire_node; ++wi) {
+            if (int(wi) == wire_idx_) continue;
+            for (const auto& v : doc_->wires[wi].pts)
+                if (dist(v, target) < 1.0) { on_wire_node = true; break; }
+        }
+
+        notify_doc();
+        if (pin >= 0 || on_wire_node) {
+            // terminated: leave wiring mode (the committed wire stays)
+            wire_finish();
+            Refresh();
+        } else {
             Refresh(false);
         }
         break;
@@ -776,17 +817,11 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
 }
 
 void SchematicCanvas::on_left_dclick(wxMouseEvent& e) {
-    // Double-click finishes an in-progress wire at the current corner (the
-    // single click has already added the point). This is the way to end a wire
-    // that does not terminate on a pin.
-    if (tool_ == Tool::Wire && wiring_ && wire_draft_.size() >= 2) {
-        if (on_push_undo) on_push_undo();
-        Wire w;
-        w.pts = wire_draft_;
-        doc_->wires.push_back(w);
-        wiring_ = false;
-        wire_draft_.clear();
+    // Double-click ends wiring mode; the segments already committed stay.
+    if (tool_ == Tool::Wire && wiring_) {
         notify_doc();
+        wire_finish();
+        Refresh();
         return;
     }
     e.Skip();
@@ -856,10 +891,10 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             std::string msg;
             if (hover_.empty()) msg = "";
             else if (hover_ == "wire")
-                msg = wiring_ ? "Click to add a corner; click a pin or wire to "
-                                "finish (Space swaps the route)"
-                              : "Click to start a wire; the red dot is the "
-                                "snap point";
+                msg = wiring_ ? "Click to place a segment; click a pin to "
+                                "terminate; Enter ends, Esc cancels"
+                              : "Click to start a wire; the red dot snaps to "
+                                "the grid";
             else if (hover_ == "label")
                 msg = "Click a net to place the label; Esc stops";
             else if (hover_ == "del-comp") msg = "Click to delete component";
@@ -1112,6 +1147,17 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
     case WXK_ESCAPE:
         cancel_current();
         return true;
+    case WXK_RETURN:
+    case WXK_NUMPAD_ENTER:
+        // Enter commits the current wire segment and leaves wiring mode; the
+        // segments already placed stay on the canvas.
+        if (wiring_) {
+            wire_commit_segment();
+            wire_finish();
+            Refresh();
+            return true;
+        }
+        return false;
     }
     return false;
 }

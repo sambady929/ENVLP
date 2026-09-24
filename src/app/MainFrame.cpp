@@ -78,8 +78,9 @@ void MainFrame::build_menu() {
     file->Append(wxID_EXIT, "E&xit\tAlt+F4");
 
     auto* edit = new wxMenu;
-    edit->Append(ID_UNDO, "&Undo\tCtrl+Z", "Undo the last edit");
-    edit->Append(ID_REDO, "&Redo\tCtrl+Y", "Redo the last undone edit");
+    edit->Append(ID_UNDO, "&Undo\tCtrl+Z", "Undo the last edit  (also U)");
+    edit->Append(ID_REDO, "&Redo\tCtrl+Y",
+                 "Redo the last undone edit  (also Shift+U)");
     edit->AppendSeparator();
     edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection 90 deg");
     edit->Append(ID_DELETE, "&Delete\tDel", "Delete the selection");
@@ -321,9 +322,14 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     const bool ctrl = e.ControlDown();
     const bool alt = e.AltDown();
 
-    // undo / redo
+    // undo / redo: Ctrl+Z/Y plus Virtuoso-style U / Shift+U
     if (ctrl && !alt && code == 'Z') { on_undo_cmd(); return true; }
     if (ctrl && !alt && code == 'Y') { on_redo_cmd(); return true; }
+    if (!ctrl && !alt && (code == 'U' || code == 'u')) {
+        if (shift) on_redo_cmd();
+        else on_undo_cmd();
+        return true;
+    }
 
     // Space: while wiring, swap the route orientation; while placing or with a
     // selection, rotate / flip.
@@ -366,8 +372,8 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     case 'W': case 'w':
         canvas_->set_tool(Tool::Wire);
         sync_palette();
-        SetStatusText("Wire: click to start, click again to finish; Space "
-                      "swaps the route; Esc cancels.",
+        SetStatusText("Wire: click to place a segment; click a pin to "
+                      "terminate; Enter ends, Esc cancels.",
                       0);
         return true;
     case 'N': case 'n':
