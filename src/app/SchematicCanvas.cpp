@@ -526,10 +526,10 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         dc.SetTextForeground(*wxBLACK);
     }
 
-    // red dot at the cursor while wiring (#8)
+    // red dot at the cursor while wiring (#8): follows the pointer exactly
     if (tool_ == Tool::Wire && has_mouse_) {
-        Pt m = snap(to_doc(mouse_));
-        doc_circle(m, 4, wxColour(210, 30, 30), true);
+        Pt cursor = to_doc(mouse_);
+        doc_circle(cursor, 4, wxColour(210, 30, 30), true);
     }
 
     // ghost of component being placed
@@ -614,18 +614,36 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             Refresh(false);
             break;
         }
-        // second click finalises the wire here (a random point works too)
         if (target == wire_draft_.back()) break;
+
+        // add the orthogonal route to this point as a new corner
         auto mids = ortho_route(wire_draft_.back(), target, wire_h_first_);
         for (const auto& q : mids) wire_draft_.push_back(q);
         wire_draft_.push_back(target);
-        if (on_push_undo) on_push_undo();
-        Wire w;
-        w.pts = wire_draft_;
-        doc_->wires.push_back(w);
-        wiring_ = false;
-        wire_draft_.clear();
-        notify_doc();
+
+        // Terminate on a component pin, or on an existing wire vertex (a tap);
+        // otherwise keep the wire open so the user can add more corners.
+        bool on_wire_node = false;
+        if (pin < 0) {
+            for (const auto& w : doc_->wires) {
+                for (const auto& v : w.pts)
+                    if (dist(v, target) < 1.0) { on_wire_node = true; break; }
+                if (on_wire_node) break;
+            }
+        }
+        if (pin >= 0 || on_wire_node) {
+            // terminating: commit the wire here
+            if (on_push_undo) on_push_undo();
+            Wire w;
+            w.pts = wire_draft_;
+            doc_->wires.push_back(w);
+            wiring_ = false;
+            wire_draft_.clear();
+            notify_doc();
+        } else {
+            // not a terminal: keep wiring from this corner
+            Refresh(false);
+        }
         break;
     }
     case Tool::Label: {
@@ -758,8 +776,9 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
 }
 
 void SchematicCanvas::on_left_dclick(wxMouseEvent& e) {
-    // Double-click finishes an in-progress wire (the click already added the
-    // final point).
+    // Double-click finishes an in-progress wire at the current corner (the
+    // single click has already added the point). This is the way to end a wire
+    // that does not terminate on a pin.
     if (tool_ == Tool::Wire && wiring_ && wire_draft_.size() >= 2) {
         if (on_push_undo) on_push_undo();
         Wire w;
@@ -837,8 +856,8 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             std::string msg;
             if (hover_.empty()) msg = "";
             else if (hover_ == "wire")
-                msg = wiring_ ? "Click again to finish the wire (Space swaps "
-                                "the route)"
+                msg = wiring_ ? "Click to add a corner; click a pin or wire to "
+                                "finish (Space swaps the route)"
                               : "Click to start a wire; the red dot is the "
                                 "snap point";
             else if (hover_ == "label")
@@ -852,7 +871,12 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             on_status(msg);
         }
     }
-    if (wiring_ || tool_ == Tool::Place || tool_ == Tool::Label) Refresh(false);
+    // Repaint whenever something follows the cursor: the placement ghost, the
+    // wire rubber band / red cursor dot (both before and after the first
+    // click), or the pending net label.
+    if (wiring_ || tool_ == Tool::Place || tool_ == Tool::Label ||
+        tool_ == Tool::Wire)
+        Refresh(false);
 }
 
 void SchematicCanvas::on_right_down(wxMouseEvent& e) {
