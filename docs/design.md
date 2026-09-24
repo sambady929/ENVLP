@@ -81,9 +81,13 @@ labels.
 - `SchematicCanvas` — drawing and interaction (place/wire/select/drag/
   rotate/delete); grid snapped; selection strings (`ref`, `#wireN`,
   `#labelN`) shared with the properties panel.
-- `PalettePanel` (tools + components), `PropertiesPanel` (analysis request +
-  selection editor), `ResultsPanel` (report), `BodePanel` (mag/phase paint),
-  `LuaConsole` (REPL with history), all orchestrated by `MainFrame`.
+- `PalettePanel` (tools + components), `PropertiesPanel` (selection editor),
+  `AnalysisPanel` (runcards), `ResultsPanel` (report), `BodePanel` (mag/phase
+  paint), `LuaConsole` (REPL with history), all orchestrated by `MainFrame`.
+  The frame uses three nested `wxSplitterWindow`s (palette | centre |
+  analysis; canvas | props) so every pane is sash-resizable; the
+  Results/Bode/Lua trio lives in a separate `AnalysisResultsFrame` popup that
+  appears when an analysis runs.
 - UTF-8 everywhere internally; conversion to `wxString` at the UI boundary
   (`wxString::FromUTF8`), ASCII literals in GUI-authored strings.
 

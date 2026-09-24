@@ -594,19 +594,15 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
     }
 }
 
-// Idealization pass: with gm*ro >> 1 the "+1" next to a gm*ro product is
-// negligible. Rewrite sums where one term is (gm*ro)-like and another is
-// small: (gm*ro + x) -> gm*ro. Only applies to sums, never products.
 // gm*ro >> 1 idealization pass: inside a sum, if exactly one term is a
 // gm*ro product (or a multiple of one) and it dominates, drop the rest.
 // This is deliberately conservative -- it only fires on sums that contain an
 // explicit gm*ro term, so ordinary polynomials are untouched.
 bool looks_like_gm_ro(const ex& e, const ParamTable& pt) {
-    // numeric value must be >> 1
-    std::complex<double> z = eval_complex(e, pt, 0.0);
-    double mag = std::hypot(z.real(), z.imag());
-    if (!(mag > 100.0)) return false;
-    // and it must contain a gm symbol (Siemens) and an ro symbol (Ohm)
+    // The term must contain at least one gm-class and one ro-class symbol --
+    // that's the structural signature of "a transconductance times an output
+    // resistance", regardless of magnitude. The numerical gate below is a
+    // separate check on whether this term actually dominates its siblings.
     bool has_gm = false, has_ro = false;
     for (const auto& kv : pt.cls) {
         auto sit = pt.syms.find(kv.first);
@@ -618,6 +614,15 @@ bool looks_like_gm_ro(const ex& e, const ParamTable& pt) {
     return has_gm && has_ro;
 }
 
+// Magnitude helper: |e| at s = 0 with the user's parameter estimates, with a
+// floor to keep log10 sane when a summand has zero numeric value (a bare
+// parameter or a term that simplifies to 0).
+static double num_mag(const ex& e, const ParamTable& pt) {
+    std::complex<double> z = eval_complex(e, pt, 0.0);
+    double mag = std::hypot(z.real(), z.imag());
+    return mag > 0.0 ? mag : 1e-30;
+}
+
 ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
     if (is_a<GiNaC::add>(e)) {
         // recurse first
@@ -625,7 +630,9 @@ ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
         for (size_t i = 0; i < e.nops(); ++i)
             ops.push_back(gm_ro_idealize(e.op(i), pt));
         ex sum = GiNaC::add(ops);
-        // find gm*ro-like terms
+        // find gm*ro-like terms; if exactly one, drop the rest provided it
+        // dominates them by a wide margin (a factor of ~30 = 30 dB, the same
+        // magnitude the magnitude-pruning pass uses).
         std::vector<ex> terms;
         if (is_a<GiNaC::add>(sum))
             for (size_t i = 0; i < sum.nops(); ++i) terms.push_back(sum.op(i));
@@ -636,8 +643,13 @@ ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
         for (const ex& t : terms)
             if (looks_like_gm_ro(t, pt)) { dom = t; ++ndom; }
         if (ndom == 1) {
-            // drop the other terms (they are the "+1" of gm*ro+1)
-            return dom;
+            double d = num_mag(dom, pt);
+            bool dominates = true;
+            for (const ex& t : terms) {
+                if (t.is_equal(dom)) continue;
+                if (num_mag(t, pt) > d / 31.6) { dominates = false; break; }
+            }
+            if (dominates) return dom;
         }
         return sum;
     }

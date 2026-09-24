@@ -1,5 +1,5 @@
 #include "Document.h"
-#include "Symbols.h"
+#include "SymbolGeom.h"
 
 #include <algorithm>
 #include <cmath>
@@ -98,13 +98,38 @@ void Document::remove(const std::string& ref) {
 // ---------------------------------------------------------------------------
 // net resolution
 // ---------------------------------------------------------------------------
-syms::Circuit Document::resolved(std::string& err) const {
-    err.clear();
+namespace {
+// Is point q on segment ab (within tolerance)?
+bool point_on_seg(Pt p, Pt a, Pt b, double tol) {
+    double vx = b.first - a.first, vy = b.second - a.second;
+    double wx = p.first - a.first, wy = p.second - a.second;
+    double L2 = vx * vx + vy * vy;
+    if (L2 < 1e-12) return std::hypot(wx, wy) <= tol;
+    double t = (wx * vx + wy * vy) / L2;
+    if (t < 0.0 || t > 1.0) return false;
+    double px = a.first + t * vx, py = a.second + t * vy;
+    return std::hypot(p.first - px, p.second - py) <= tol;
+}
+bool is_gnd_name(std::string s) {
+    for (auto& ch : s) ch = char(std::tolower(ch));
+    return s == "0" || s == "gnd" || s == "ground";
+}
+bool is_vdd_name(std::string s) {
+    for (auto& ch : s) ch = char(std::tolower(ch));
+    return s == "vdd" || s == "vcc" || s == "v+";
+}
+} // namespace
 
-    // Collect anchors: pins (id -> comp/pin), wire points, label points.
-    struct PinRef { int comp; int pin; Pt pt; };
-    std::vector<PinRef> pins;
-    for (size_t ci = 0; ci < circuit.comps.size(); ++ci) {
+int NetMap::root_of_pin(int comp, int pin) const {
+    for (size_t i = 0; i < pin_comp.size(); ++i)
+        if (pin_comp[i] == comp && pin_index[i] == pin) return pin_root[i];
+    return -1;
+}
+
+NetMap Document::net_map() const {
+    NetMap nm;
+
+    auto pin_pt = [&](int ci, int pi) {
         const auto& c = circuit.comps[ci];
         auto pl = placements.find(c.ref);
         double ox = pl == placements.end() ? 0.0 : pl->second.x;
@@ -112,24 +137,31 @@ syms::Circuit Document::resolved(std::string& err) const {
         int rot = pl == placements.end() ? 0 : pl->second.rot;
         bool fh = pl != placements.end() && pl->second.flip_h;
         bool fv = pl != placements.end() && pl->second.flip_v;
-        auto offs = pin_offsets(c.kind);
-        for (size_t pi = 0; pi < offs.size(); ++pi) {
-            Pt p = offs[pi];
-            if (fh) p.first = -p.first;
-            if (fv) p.second = -p.second;
-            Pt rp = rotate_pt(p, rot);
-            pins.push_back({int(ci), int(pi), {ox + rp.first, oy + rp.second}});
+        Pt p = pin_offsets(c.kind)[pi];
+        if (fh) p.first = -p.first;
+        if (fv) p.second = -p.second;
+        Pt rp = rotate_pt(p, rot);
+        return Pt{ox + rp.first, oy + rp.second};
+    };
+
+    // Record every pin.
+    for (size_t ci = 0; ci < circuit.comps.size(); ++ci) {
+        int np = int(pin_offsets(circuit.comps[ci].kind).size());
+        for (int pi = 0; pi < np; ++pi) {
+            nm.pin_comp.push_back(int(ci));
+            nm.pin_index.push_back(pi);
         }
     }
 
-    // Flat point list: [0 .. nPins) pins, then wire pts, then labels.
+    // Flat point list: [0 .. nPins) pins, then wire pts, then label anchors.
     std::vector<Pt> pts;
-    for (auto& pr : pins) pts.push_back(pr.pt);
+    for (size_t i = 0; i < nm.pin_comp.size(); ++i)
+        pts.push_back(pin_pt(nm.pin_comp[i], nm.pin_index[i]));
     size_t wire_base = pts.size();
     for (const auto& w : wires)
         for (auto& p : w.pts) pts.push_back(p);
     size_t label_base = pts.size();
-    for (const auto& l : labels) pts.push_back(l.pt);
+    for (const auto& l : labels) pts.push_back(l.anchor);
 
     int n = int(pts.size());
     UnionFind uf(n);
@@ -144,7 +176,7 @@ syms::Circuit Document::resolved(std::string& err) const {
         }
     }
 
-    // Coincident points join (O(n^2), fine for schematic sizes).
+    // Coincident points join.
     for (int i = 0; i < n; ++i)
         for (int j = i + 1; j < n; ++j) {
             double dx = pts[i].first - pts[j].first;
@@ -152,43 +184,50 @@ syms::Circuit Document::resolved(std::string& err) const {
             if (dx * dx + dy * dy <= kJoinTol * kJoinTol) uf.join(i, j);
         }
 
-    // A label sitting *on* a wire segment (not just its endpoints) joins that
-    // wire. Pins likewise attach to a segment they lie on.
-    auto point_on_seg = [](Pt p, Pt a, Pt b) {
-        double vx = b.first - a.first, vy = b.second - a.second;
-        double wx = p.first - a.first, wy = p.second - a.second;
-        double L2 = vx * vx + vy * vy;
-        if (L2 < 1e-12) return std::hypot(wx, wy) <= kJoinTol;
-        double t = (wx * vx + wy * vy) / L2;
-        if (t < 0.0 || t > 1.0) return false;
-        double px = a.first + t * vx, py = a.second + t * vy;
-        return std::hypot(p.first - px, p.second - py) <= kJoinTol;
-    };
+    // A point lying on a wire segment joins that wire. This covers pins,
+    // label anchors, *and* other wires' vertices -- so a wire drawn
+    // perpendicular into the middle of another (a T-junction) merges the two
+    // nets, which is what makes the connection real in SPICE terms.
     {
-        // wire vertex indices, per wire
         std::vector<std::pair<size_t, size_t>> spans;
         size_t idx = wire_base;
         for (const auto& w : wires) {
             spans.push_back({idx, w.pts.size()});
             idx += w.pts.size();
         }
-        auto attach = [&](int pi) {
-            for (const auto& sp : spans) {
-                for (size_t k = 1; k < sp.second; ++k) {
+        auto attach_point = [&](int pi) {
+            for (const auto& sp : spans)
+                for (size_t k = 1; k < sp.second; ++k)
                     if (point_on_seg(pts[pi], pts[sp.first + k - 1],
-                                     pts[sp.first + k])) {
+                                     pts[sp.first + k], kJoinTol)) {
                         uf.join(pi, int(sp.first + k));
                         uf.join(pi, int(sp.first + k - 1));
                     }
-                }
-            }
         };
-        for (size_t i = 0; i < pins.size(); ++i) attach(int(i));
-        for (size_t k = 0; k < labels.size(); ++k) attach(int(label_base + k));
+        for (size_t i = 0; i < nm.pin_comp.size(); ++i) attach_point(int(i));
+        for (size_t k = 0; k < labels.size(); ++k)
+            attach_point(int(label_base + k));
+        for (size_t wi = 0; wi < wires.size(); ++wi) {
+            size_t base = wire_base;
+            for (size_t j = 0; j < wi; ++j) base += wires[j].pts.size();
+            for (size_t v = 0; v < wires[wi].pts.size(); ++v)
+                attach_point(int(base + v));
+        }
     }
 
-    // Net naming: ground wins, then user labels, else auto n1, n2, ...
-    std::map<int, std::string> net_name;
+    nm.pin_root.resize(nm.pin_comp.size(), -1);
+    for (size_t i = 0; i < nm.pin_comp.size(); ++i)
+        nm.pin_root[i] = uf.find(int(i));
+    nm.wire_root.resize(wires.size(), -1);
+    {
+        size_t idx = wire_base;
+        for (size_t i = 0; i < wires.size(); ++i) {
+            nm.wire_root[i] = uf.find(int(idx));
+            idx += wires[i].pts.size();
+        }
+    }
+
+    // Collect roots.
     std::vector<int> roots;
     for (int i = 0; i < n; ++i) {
         int r = uf.find(i);
@@ -196,52 +235,64 @@ syms::Circuit Document::resolved(std::string& err) const {
             roots.push_back(r);
     }
 
-    auto is_gnd_name = [](std::string s) {
-        for (auto& ch : s) ch = char(tolower(ch));
-        return s == "0" || s == "gnd" || s == "ground";
-    };
-    auto is_vdd_name = [](std::string s) {
-        for (auto& ch : s) ch = char(tolower(ch));
-        return s == "vdd" || s == "vcc" || s == "v+";
-    };
-
-    int auto_n = 1;
+    // Naming: ground wins, then VDD, then the first user label on the net.
     for (int r : roots) {
         std::string name;
-        // any GND/VDD component pin here?
-        for (size_t i = 0; i < pins.size(); ++i) {
-            if (uf.find(int(i)) != r) continue;
-            if (circuit.comps[pins[i].comp].kind == syms::Kind::GND) {
-                name = "0";
-                break;
-            }
-            if (circuit.comps[pins[i].comp].kind == syms::Kind::VDD) {
-                name = "VDD";
-                break;
-            }
+        for (size_t i = 0; i < nm.pin_comp.size(); ++i) {
+            if (nm.pin_root[i] != r) continue;
+            auto k = circuit.comps[nm.pin_comp[i]].kind;
+            if (k == syms::Kind::GND) { name = "0"; break; }
+            if (k == syms::Kind::VDD) { name = "VDD"; break; }
         }
         if (name.empty()) {
-            for (size_t k = 0; k < labels.size(); ++k) {
-                if (uf.find(int(label_base + int(k))) != r) {
-                    if (is_gnd_name(labels[k].name)) name = "0";
-                    else if (is_vdd_name(labels[k].name)) name = "VDD";
-                    else name = labels[k].name;
-                    break;
+            // Priority: a GND-style label ("0", "gnd", "ground") wins over
+            // anything else, then a VDD-style label ("VDD", "VCC"), then any
+            // other user label. Earlier iterations might have set `name` to a
+            // less-canonical label that happened to be on the wire first.
+            if (name.empty() || (!is_gnd_name(name) && !is_vdd_name(name))) {
+                for (size_t k = 0; k < labels.size(); ++k) {
+                    if (uf.find(int(label_base + int(k))) != r) continue;
+                    if (labels[k].name.empty()) continue;
+                    if (is_gnd_name(labels[k].name)) {
+                        name = "0";
+                        break;
+                    }
+                    if (is_vdd_name(labels[k].name)) {
+                        if (!is_gnd_name(name)) {
+                            name = "VDD";
+                            continue; // keep scanning: a GND label on this
+                                     // same net would still win
+                        }
+                    }
+                    if (name.empty()) {
+                        name = labels[k].name;
+                    }
                 }
             }
         }
-        if (name.empty()) {
-            do {
-                name = "n" + std::to_string(auto_n++);
-            } while (name == "0");
-        }
-        net_name[r] = name;
+        nm.name[r] = name;
     }
+    // Auto-name the still-unnamed nets, deterministically.
+    int auto_n = 1;
+    for (int r : roots) {
+        if (!nm.name[r].empty()) continue;
+        std::string name;
+        do {
+            name = "n" + std::to_string(auto_n++);
+        } while (name == "0");
+        nm.name[r] = name;
+    }
+    return nm;
+}
+
+syms::Circuit Document::resolved(std::string& err) const {
+    err.clear();
+    NetMap nm = net_map();
 
     syms::Circuit out = circuit;
-    for (auto& pr : pins) {
-        int r = uf.find(int(&pr - &pins[0]));
-        out.comps[pr.comp].nodes[pr.pin] = net_name[r];
+    for (size_t i = 0; i < nm.pin_comp.size(); ++i) {
+        const std::string& name = nm.name[nm.pin_root[i]];
+        out.comps[nm.pin_comp[i]].nodes[nm.pin_index[i]] = name;
     }
 
     // Duplicate references can't happen (next_ref), but validate anyway.
@@ -256,106 +307,166 @@ syms::Circuit Document::resolved(std::string& err) const {
 // interactive net helpers
 // ---------------------------------------------------------------------------
 namespace {
-constexpr double kNetTol = 9.0;
 double pt_dist(Pt a, Pt b) {
     return std::hypot(a.first - b.first, a.second - b.second);
 }
-// Is point q on segment ab (within tolerance)?
-bool on_seg(Pt q, Pt a, Pt b) {
+// Nearest point to `q` on segment ab.
+Pt nearest_on_seg(Pt q, Pt a, Pt b) {
     double vx = b.first - a.first, vy = b.second - a.second;
     double wx = q.first - a.first, wy = q.second - a.second;
     double L2 = vx * vx + vy * vy;
-    if (L2 < 1e-12) return std::hypot(wx, wy) <= kNetTol;
+    if (L2 < 1e-12) return a;
     double t = (wx * vx + wy * vy) / L2;
-    if (t < 0.0 || t > 1.0) return false;
-    double px = a.first + t * vx, py = a.second + t * vy;
-    return std::hypot(q.first - px, q.second - py) <= kNetTol;
+    t = std::max(0.0, std::min(1.0, t));
+    return {a.first + t * vx, a.second + t * vy};
 }
-// Do two wires touch (shared endpoint or a segment crossing the other's point)?
-bool wires_touch(const Wire& a, const Wire& b) {
-    for (const auto& pa : a.pts) {
-        for (const auto& pb : b.pts)
-            if (pt_dist(pa, pb) <= kNetTol) return true;
-        for (size_t k = 1; k < b.pts.size(); ++k)
-            if (on_seg(pa, b.pts[k - 1], b.pts[k])) return true;
-    }
-    for (const auto& pb : b.pts)
-        for (size_t k = 1; k < a.pts.size(); ++k)
-            if (on_seg(pb, a.pts[k - 1], a.pts[k])) return true;
-    return false;
-}
-// Are two pins electrically the same net? (A label on either wire names it.)
 } // namespace
 
-std::string Document::net_name_of_wire(int wire_index, std::string& err) const {
-    err.clear();
+std::string Document::net_name_of_wire(int wire_index) const {
     if (wire_index < 0 || wire_index >= int(wires.size())) return std::string();
-    // a label anchored on this wire names it
-    const auto& w = wires[wire_index];
-    for (const auto& l : labels) {
-        bool on = false;
-        for (size_t k = 1; k < w.pts.size() && !on; ++k)
-            on = on_seg(l.pt, w.pts[k - 1], w.pts[k]);
-        if (on) return l.name;
-    }
-    // otherwise a label on any touching wire
-    for (size_t i = 0; i < wires.size(); ++i) {
-        if (int(i) == wire_index) continue;
-        if (!wires_touch(w, wires[i])) continue;
-        for (const auto& l : labels) {
-            bool on = false;
-            for (size_t k = 1; k < wires[i].pts.size() && !on; ++k)
-                on = on_seg(l.pt, wires[i].pts[k - 1], wires[i].pts[k]);
-            if (on) return l.name;
-        }
-    }
-    return std::string();
+    NetMap nm = net_map();
+    int r = nm.wire_root[wire_index];
+    auto it = nm.name.find(r);
+    return it == nm.name.end() ? std::string() : it->second;
 }
 
-int Document::label_index_on_wire(int wire_index, std::string& err) const {
-    err.clear();
-    if (wire_index < 0 || wire_index >= int(wires.size())) return -1;
-    const auto& w = wires[wire_index];
-    for (size_t k = 0; k < labels.size(); ++k) {
-        bool on = false;
-        for (size_t s = 1; s < w.pts.size() && !on; ++s)
-            on = on_seg(labels[k].pt, w.pts[s - 1], w.pts[s]);
-        if (on) return int(k);
-    }
-    for (size_t i = 0; i < wires.size(); ++i) {
-        if (int(i) == wire_index) continue;
-        if (!wires_touch(w, wires[i])) continue;
-        const auto& wi = wires[i];
-        for (size_t k = 0; k < labels.size(); ++k) {
-            bool on = false;
-            for (size_t s = 1; s < wi.pts.size() && !on; ++s)
-                on = on_seg(labels[k].pt, wi.pts[s - 1], wi.pts[s]);
-            if (on) return int(k);
-        }
-    }
-    return -1;
+std::string Document::net_name_of_pin(const std::string& ref, int pin) const {
+    int ci = -1;
+    for (size_t i = 0; i < circuit.comps.size(); ++i)
+        if (circuit.comps[i].ref == ref) { ci = int(i); break; }
+    if (ci < 0) return std::string();
+    NetMap nm = net_map();
+    int r = nm.root_of_pin(ci, pin);
+    auto it = nm.name.find(r);
+    return it == nm.name.end() ? std::string() : it->second;
 }
 
-int Document::ensure_label_on_wire(int wire_index, std::string& err) {
-    int existing = label_index_on_wire(wire_index, err);
-    if (existing >= 0) return existing;
+Pt Document::net_anchor_near(const std::string& ref, int pin, Pt near) const {
+    // The anchor for a pin is simply the pin's world position; snap it onto the
+    // nearest point of any wire on the same net, if such a wire exists.
+    int ci = -1;
+    for (size_t i = 0; i < circuit.comps.size(); ++i)
+        if (circuit.comps[i].ref == ref) { ci = int(i); break; }
+    if (ci < 0) return near;
+    Pt pin_world;
+    {
+        const auto& c = circuit.comps[ci];
+        auto pl = placements.find(c.ref);
+        double ox = pl == placements.end() ? 0.0 : pl->second.x;
+        double oy = pl == placements.end() ? 0.0 : pl->second.y;
+        int rot = pl == placements.end() ? 0 : pl->second.rot;
+        bool fh = pl != placements.end() && pl->second.flip_h;
+        bool fv = pl != placements.end() && pl->second.flip_v;
+        Pt p = pin_offsets(c.kind)[pin];
+        if (fh) p.first = -p.first;
+        if (fv) p.second = -p.second;
+        Pt rp = rotate_pt(p, rot);
+        pin_world = {ox + rp.first, oy + rp.second};
+    }
+    NetMap nm = net_map();
+    int r = nm.root_of_pin(ci, pin);
+    if (r < 0) return pin_world;
+    Pt best = pin_world;
+    double bestd = 1e300;
+    for (size_t wi = 0; wi < wires.size(); ++wi) {
+        if (nm.wire_root[wi] != r) continue;
+        Pt q = net_anchor_near_wire(int(wi), pin_world);
+        double d = pt_dist(q, pin_world);
+        if (d < bestd) { bestd = d; best = q; }
+    }
+    (void)near;
+    return best;
+}
+
+Pt Document::net_anchor_near_wire(int wire_index, Pt near) const {
+    if (wire_index < 0 || wire_index >= int(wires.size())) return near;
+    const auto& w = wires[wire_index];
+    Pt best = near;
+    double bestd = 1e300;
+    for (size_t k = 1; k < w.pts.size(); ++k) {
+        Pt q = nearest_on_seg(near, w.pts[k - 1], w.pts[k]);
+        double d = pt_dist(q, near);
+        if (d < bestd) { bestd = d; best = q; }
+    }
+    return best;
+}
+
+Pt Document::label_display_pt(int wire_index, Pt anchor, int name_len) const {
+    // Decide the offset from the local wire direction: a label beside a
+    // vertical wire (to the right), above a horizontal one, and up-right at a
+    // corner. This keeps the text clear of the wire instead of straddling it.
+    bool vertical = false, horizontal = false;
+    if (wire_index >= 0 && wire_index < int(wires.size())) {
+        const auto& w = wires[wire_index];
+        for (size_t k = 1; k < w.pts.size(); ++k) {
+            Pt a = w.pts[k - 1], b = w.pts[k];
+            if (std::fabs(b.first - a.first) < 1e-6 &&
+                std::fabs(b.second - a.second) > 1e-6)
+                vertical = true;
+            if (std::fabs(b.second - a.second) < 1e-6 &&
+                std::fabs(b.first - a.first) > 1e-6)
+                horizontal = true;
+        }
+    }
+    // The renderer draws the text *centred* on `pt`, so compute the centre of
+    // the box we want the text to occupy.
+    const double fs = 9.0;                 // default label font size (pts)
+    const double line_h = fs * 1.5;        // rough text line height
+    const double text_w = std::max(1, name_len) * fs * 0.62; // rough width
+    const double gap = 4.0;                // clearance from the wire
+    if (vertical && !horizontal) {
+        // to the right of the wire, vertically centred on the anchor
+        return {anchor.first + gap + text_w / 2, anchor.second};
+    }
+    if (horizontal && !vertical) {
+        // above the wire, horizontally centred on the anchor
+        return {anchor.first, anchor.second - gap - line_h / 2};
+    }
+    // corner / mixed wire: up and to the right, clear of both segments
+    return {anchor.first + gap + text_w / 2, anchor.second - gap - line_h / 2};
+}
+
+int Document::ensure_label_on_wire(int wire_index, Pt at) {
     if (wire_index < 0 || wire_index >= int(wires.size())) return -1;
+    // Reuse a label already anchored on this net: find every wire sharing the
+    // target net's union-find root, then scan labels for one whose anchor lies
+    // on any of those wires.
+    NetMap nm = net_map();
+    int r = nm.wire_root[wire_index];
+    for (size_t li = 0; li < labels.size(); ++li) {
+        const Pt& a = labels[li].anchor;
+        for (size_t wi = 0; wi < wires.size(); ++wi) {
+            if (nm.wire_root[wi] != r) continue;
+            for (size_t k = 1; k < wires[wi].pts.size(); ++k)
+                if (point_on_seg(a, wires[wi].pts[k - 1], wires[wi].pts[k],
+                                 kJoinTol)) {
+                    return int(li);
+                }
+        }
+    }
     const auto& w = wires[wire_index];
     if (w.pts.size() < 2) return -1;
-    // anchor at the midpoint of the longest segment
-    size_t best = 0;
-    double bestlen = -1.0;
-    for (size_t k = 1; k < w.pts.size(); ++k) {
-        double d = pt_dist(w.pts[k - 1], w.pts[k]);
-        if (d > bestlen) { bestlen = d; best = k; }
-    }
     NetLabel l;
-    l.pt = {(w.pts[best - 1].first + w.pts[best].first) / 2,
-            (w.pts[best - 1].second + w.pts[best].second) / 2};
+    l.anchor = net_anchor_near_wire(wire_index, at);
+    // default display point: offset to the readable side of the wire
+    l.pt = label_display_pt(wire_index, l.anchor, 4);
     l.name = ""; // unnamed until the user types one
-    l.font_size = 14;
+    l.font_size = 9;
+    l.rot = 0;
     labels.push_back(l);
     return int(labels.size()) - 1;
+}
+
+bool Document::label_attached(int label_index, const NetMap& nm) const {
+    if (label_index < 0 || label_index >= int(labels.size())) return false;
+    // A label is attached if its anchor coincides with (or lies on) some wire
+    // or pin. Recomputed on demand from geometry.
+    Pt a = labels[label_index].anchor;
+    for (const auto& w : wires)
+        for (size_t k = 1; k < w.pts.size(); ++k)
+            if (point_on_seg(a, w.pts[k - 1], w.pts[k], kJoinTol)) return true;
+    (void)nm;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,9 +508,16 @@ std::string Document::serialize() const {
             o << " " << p.first << "," << p.second;
         o << "\n";
     }
-    for (const auto& l : labels)
-        o << "netlabel " << l.pt.first << "," << l.pt.second << " "
-          << quote(l.name) << " " << l.font_size << "\n";
+    for (const auto& l : labels) {
+        // Format: "netlabel ax,ay [x,y] \"name\" [fs] [rot]"
+        // The display point is omitted when equal to the anchor (typical case).
+        o << "netlabel " << l.anchor.first << "," << l.anchor.second;
+        if (l.pt.first != l.anchor.first || l.pt.second != l.anchor.second)
+            o << " " << l.pt.first << "," << l.pt.second;
+        o << " " << quote(l.name) << " " << l.font_size;
+        if (l.rot != 0) o << " " << l.rot;
+        o << "\n";
+    }
     if (!analysis_cards.empty()) o << analysis_cards;
     return o.str();
 }
@@ -512,18 +630,37 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             if (w.pts.size() < 2) return fail("wire needs 2+ points");
             wires.push_back(w);
         } else if (kw == "netlabel") {
-            std::string sp, name;
-            if (!need(sp) || !need(name)) return fail("bad netlabel");
+            std::string sa, sp, name;
+            if (!need(sa)) return fail("bad netlabel");
             NetLabel l;
-            if (std::sscanf(sp.c_str(), "%lf,%lf", &l.pt.first, &l.pt.second) != 2)
-                return fail("bad netlabel point");
-            l.name = name;
-            // optional trailing font size (older files omit it)
+            if (std::sscanf(sa.c_str(), "%lf,%lf", &l.anchor.first,
+                            &l.anchor.second) != 2)
+                return fail("bad netlabel anchor");
+            l.pt = l.anchor;
+            // The next token may be the display point "x,y" or the name. A
+            // display point contains a comma and no spaces; a name may contain
+            // any characters but is unlikely to have a comma without a space.
+            // Try to sscanf as x,y; on failure it must be the name.
+            std::string nxt;
+            if (!next_token(line, i, nxt)) return fail("netlabel missing name");
+            double dx, dy;
+            if (std::sscanf(nxt.c_str(), "%lf,%lf", &dx, &dy) == 2 &&
+                nxt.find(' ') == std::string::npos) {
+                l.pt = {dx, dy};
+                if (!need(name)) return fail("netlabel missing name");
+                l.name = name;
+            } else {
+                l.name = nxt;
+            }
+            // Optional font size; older files omit it.
             std::string fs;
             if (next_token(line, i, fs)) {
                 int n = std::atoi(fs.c_str());
                 if (n > 0) l.font_size = n;
             }
+            // Optional rotation (degrees, multiples of 90).
+            std::string srot;
+            if (next_token(line, i, srot)) l.rot = std::atoi(srot.c_str());
             labels.push_back(l);
         } else if (kw == "card") {
             // analysis card line: keep it verbatim in analysis_cards

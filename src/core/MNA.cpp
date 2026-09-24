@@ -242,6 +242,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             ex ro = reg_param(sys.params, c, "ro");
             ex cgs = reg_param(sys.params, c, "Cgs");
             ex cgd = reg_param(sys.params, c, "Cgd");
+            ex cds = reg_param(sys.params, c, "Cds");
             ex cdb = reg_param(sys.params, c, "Cdb");
             ex csb = reg_param(sys.params, c, "Csb");
             // no body terminal: the body is tied to the source
@@ -249,6 +250,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
             if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
             if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
+            if (c.param_enabled("Cds")) stamp_cap(D, S, cds);
             if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
             if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
             break;

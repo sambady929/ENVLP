@@ -262,6 +262,9 @@ static void test_cs_amp_parasitics() {
         m.param_on["ro"] = ro_on;
         m.param_on["Cgd"] = cgd_on;
         m.param_on["Cgs"] = cgs_on;
+        // Cds now defaults on (following Cgd); these cases predate it, so turn
+        // it off explicitly to keep the expected expressions unchanged.
+        m.param_on["Cds"] = false;
         c.comps.push_back(m);
         c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
         return ground(c);

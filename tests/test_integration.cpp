@@ -80,6 +80,10 @@ static void test_tf_low_entropy() {
     req.input_ref = "V1";
     req.output = "V(out)";
     req.f0_hz = 1e5;
+    // Turn off the gm*ro idealization so the RHP zero (1 - Cgd*s/gm) survives
+    // in the count -- with gm*ro >> 1 the idealization correctly drops it,
+    // but for this test we want to assert the zero is there.
+    req.gm_ro_assume = false;
     AnalysisResult r = analyze(c, req);
 
     // low-entropy form is factored, with || and a labelled pole

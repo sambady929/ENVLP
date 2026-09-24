@@ -1,11 +1,9 @@
 #include "MainFrame.h"
 
 #include "AnalysisPanel.h"
-#include "BodePanel.h"
-#include "LuaConsole.h"
+#include "AnalysisResultsFrame.h"
 #include "PalettePanel.h"
 #include "PropertiesPanel.h"
-#include "ResultsPanel.h"
 #include "SchematicCanvas.h"
 #include "core/Analysis.h"
 
@@ -188,42 +186,50 @@ void MainFrame::on_ignore_neg(wxCommandEvent& e) {
 }
 
 void MainFrame::build_layout() {
-    auto* root = new wxBoxSizer(wxHORIZONTAL);
+    // Three nested splitters, giving a draggable sash between every pane:
+    //   sp_main:   palette  | sp_right            (vertical sash)
+    //   sp_right:  sp_bottom | analysis           (vertical sash)
+    //   sp_bottom: canvas   | props               (horizontal sash)
+    // Sash gravity routes the frame's resize to the canvas: palette and the
+    // analysis column keep their width, the props strip keeps its height, and
+    // the canvas soaks up the rest.
+    sp_main_ = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition,
+                                    wxDefaultSize,
+                                    wxSP_3D | wxSP_LIVE_UPDATE);
+    sp_main_->SetMinimumPaneSize(60);
+    sp_main_->SetSashGravity(1.0); // pane 2 (rest) absorbs frame resize
 
-    palette_ = new PalettePanel(this, &doc_);
-    root->Add(palette_, 0, wxEXPAND | wxALL, 4);
+    palette_ = new PalettePanel(sp_main_, &doc_);
 
-    auto* mid = new wxBoxSizer(wxVERTICAL);
+    sp_right_ = new wxSplitterWindow(sp_main_, wxID_ANY, wxDefaultPosition,
+                                     wxDefaultSize,
+                                     wxSP_3D | wxSP_LIVE_UPDATE);
+    sp_right_->SetMinimumPaneSize(120);
+    sp_right_->SetSashGravity(0.0); // pane 1 (centre) absorbs frame resize
 
-    canvas_ = new SchematicCanvas(this, &doc_);
-    mid->Add(canvas_, 1, wxEXPAND | wxLEFT | wxRIGHT, 2);
+    sp_bottom_ = new wxSplitterWindow(sp_right_, wxID_ANY, wxDefaultPosition,
+                                      wxDefaultSize,
+                                      wxSP_3D | wxSP_LIVE_UPDATE);
+    sp_bottom_->SetMinimumPaneSize(80);
+    sp_bottom_->SetSashGravity(0.0); // pane 1 (canvas) absorbs frame resize
 
-    bottom_ = new wxNotebook(this, wxID_ANY);
-    results_ = new ResultsPanel(bottom_);
-    bode_ = new BodePanel(bottom_);
-    lua_ = new LuaConsole(bottom_);
-    bottom_->AddPage(results_, "Results", true);
-    bottom_->AddPage(bode_, "Bode");
-    bottom_->AddPage(lua_, "Lua");
-    mid->Add(bottom_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 2);
+    canvas_ = new SchematicCanvas(sp_bottom_, &doc_);
+    props_ = new PropertiesPanel(sp_bottom_);
+    sp_bottom_->SplitHorizontally(canvas_, props_);
 
-    root->Add(mid, 1, wxEXPAND);
+    analysis_ = new AnalysisPanel(sp_right_);
+    sp_right_->SplitVertically(sp_bottom_, analysis_);
 
-    // Right-hand column: properties on top, analysis cards below. Both are
-    // scrolled windows that stretch to the frame height, so added cards are
-    // reachable by scrolling instead of being clipped (#5).
-    auto* right = new wxBoxSizer(wxVERTICAL);
-    props_ = new PropertiesPanel(this);
-    props_->SetMinSize(wxSize(250, -1));
-    right->Add(props_, 1, wxEXPAND | wxALL, 4);
+    sp_main_->SplitVertically(palette_, sp_right_);
 
-    analysis_ = new AnalysisPanel(this);
-    analysis_->SetMinSize(wxSize(300, -1));
-    right->Add(analysis_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
-
-    root->Add(right, 0, wxEXPAND);
-
-    SetSizer(root);
+    // Park the sashes once the frame has a real client size (before Show the
+    // splitter panes are 0-sized and SetSashPosition would clamp to nothing).
+    CallAfter([this] {
+        wxSize cs = GetClientSize();
+        sp_main_->SetSashPosition(200);
+        sp_right_->SetSashPosition(std::max(120, cs.x - 200 - 380));
+        sp_bottom_->SetSashPosition(std::max(80, cs.y - 190));
+    });
 
     // ---- plumbing ----
     palette_->on_tool_changed = [this] {
@@ -240,6 +246,11 @@ void MainFrame::build_layout() {
     canvas_->on_status = [this](const std::string& s) {
         SetStatusText(wxString::FromUTF8(s), 0);
     };
+    canvas_->on_view_changed = [this](double z, double vx, double vy) {
+        SetStatusText(wxString::Format("zoom=%.2f  view=(%.0f, %.0f)", z, vx,
+                                       vy),
+                      1);
+    };
     canvas_->on_push_undo = [this] { doc_.push_undo(); };
     canvas_->on_wire_selected = [this](int wi, std::string name) {
         // Selecting a wire lets the properties panel name its net (#9).
@@ -253,6 +264,9 @@ void MainFrame::build_layout() {
     };
 
     props_->on_edited = [this] {
+        canvas_->invalidate_nets(); // the props-panel delete button can
+                                    // remove wires without going through the
+                                    // canvas's notify_doc()
         canvas_->Refresh();
         SetStatusText("Settings changed -- press F5 to (re)analyze.", 0);
     };
@@ -276,9 +290,17 @@ void MainFrame::build_layout() {
     };
     analysis_->on_run_all = [this](int) { run_card(-1); };
     analysis_->on_run_one = [this](int i) { run_card(i); };
-    analysis_->on_results = [this] { bottom_->SetSelection(0); };
+    analysis_->on_results = [this] {
+        if (auto* f = ensure_results_frame()) {
+            f->popup();
+            f->select_page(0);
+        }
+    };
 
     props_->refresh(&doc_, canvas_->selection());
+    // prime the status-bar view readout (zoom/view origin) before the first
+    // paint, so it appears even if the user never pans or zooms.
+    canvas_->report_view();
 }
 
 // ---------------------------------------------------------------------------
@@ -475,8 +497,13 @@ void MainFrame::update_title() {
                               doc_.dirty ? wxString(" *") : wxString("")));
 }
 
+// Document changed via the canvas (component moved, wire/label placed, etc.).
+// The selection didn't necessarily change, so the props panel is *not*
+// refreshed here -- that would tear down and rebuild all its widgets, causing
+// visible re-layout of the canvas (the props panel's height affects the
+// canvas's height). The props panel refreshes on selection changes, which is
+// what it actually depends on; this handler only updates the title and status.
 void MainFrame::document_changed() {
-    props_->refresh(&doc_, canvas_->selection());
     update_title();
     SetStatusText("Circuit changed -- press F5 to (re)analyze.", 0);
 }
@@ -509,11 +536,16 @@ void MainFrame::on_new(wxCommandEvent&) {
     doc_.req.output = "V(out)";
     doc_.dirty = false;
     result_.reset();
-    bode_->set_result(nullptr);
-    lua_->set_result(nullptr);
-    results_->clear();
+    if (results_frame_) {
+        results_frame_->bode()->set_result(nullptr);
+        results_frame_->lua()->set_result(nullptr);
+        results_frame_->results()->clear();
+    }
     canvas_->set_selection("");
-    canvas_->zoom_to_fit();
+    canvas_->invalidate_nets();
+    // Defer the fit until after the layout has settled (this event finishes
+    // first), so the canvas has its real client size.
+    CallAfter([this] { canvas_->zoom_to_fit(); });
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     update_title();
@@ -537,11 +569,17 @@ void MainFrame::open_path(const wxString& p) {
     }
     doc_ = std::move(nd);
     result_.reset();
-    bode_->set_result(nullptr);
-    lua_->set_result(nullptr);
-    results_->clear();
+    if (results_frame_) {
+        results_frame_->bode()->set_result(nullptr);
+        results_frame_->lua()->set_result(nullptr);
+        results_frame_->results()->clear();
+    }
     canvas_->set_selection("");
-    canvas_->zoom_to_fit();
+    canvas_->invalidate_nets();
+    // Defer the fit until after the sash positions from build_layout have been
+    // applied (CallAfter order is FIFO, so this runs after the parking block
+    // that was queued first) and after any pending frame resize.
+    CallAfter([this] { canvas_->zoom_to_fit(); });
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     if (analysis_) {
@@ -585,6 +623,11 @@ void MainFrame::on_save_as(wxCommandEvent&) { do_save_as(); }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+AnalysisResultsFrame* MainFrame::ensure_results_frame() {
+    if (!results_frame_) results_frame_ = new AnalysisResultsFrame(this);
+    return results_frame_;
+}
+
 void MainFrame::on_undo(wxCommandEvent&) { on_undo_cmd(); }
 void MainFrame::on_redo(wxCommandEvent&) { on_redo_cmd(); }
 
@@ -611,6 +654,7 @@ void MainFrame::on_redo_cmd() {
 void MainFrame::after_undo_redo() {
     // the selection may point at something that no longer exists
     canvas_->set_selection("");
+    canvas_->invalidate_nets(); // Document::undo/redo bypass the canvas
     canvas_->Refresh();
     props_->refresh(&doc_, "");
     update_title();
@@ -705,13 +749,35 @@ void MainFrame::run_card(int index) {
         return;
     }
 
-    results_->set_text(report);
-    results_->set_latex(latex);
+    auto* rf = ensure_results_frame();
+    rf->results()->set_text(report);
+    rf->results()->set_latex(latex);
+    // Typeset the result in the Math tab: render the report line by line
+    // (LaTeX-shaped lines as typeset math, plain lines as text) so the
+    // output reads as math equations rather than a plaintext dump.
+    rf->set_report(report, latex);
     result_ = std::move(keep);
-    bode_->set_result(result_.get());
-    lua_->set_result(result_.get());
-    bottom_->SetSelection(0);
-    SetStatusText("Analysis OK -- see Results / Bode.", 0);
+    // The bode tab shows the most recent card's title so the user can tell
+    // what each plot represents when they switch back to it. Run-all uses
+    // the last enabled card so the title matches whatever transfer function
+    // is sitting in `keep`.
+    std::string last_title;
+    if (index >= 0 && index < int(cards.size())) {
+        last_title = cards[index].title;
+    } else {
+        for (int i = int(cards.size()) - 1; i >= 0; --i) {
+            if (cards[i].enabled && !cards[i].title.empty()) {
+                last_title = cards[i].title;
+                break;
+            }
+        }
+    }
+    rf->bode()->set_title(last_title);
+    rf->bode()->set_result(result_.get());
+    rf->lua()->set_result(result_.get());
+    rf->popup();
+    rf->select_page(1); // land on the Math tab: that's the readable output
+    SetStatusText("Analysis OK -- see the results window.", 0);
 }
 
 // ---------------------------------------------------------------------------

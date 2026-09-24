@@ -3,7 +3,7 @@
 #include "core/Engine.h"
 
 #include <wx/wx.h>
-#include <wx/notebook.h>
+#include <wx/splitter.h>
 
 #include <memory>
 
@@ -12,10 +12,8 @@ namespace symcirc {
 class SchematicCanvas;
 class PalettePanel;
 class PropertiesPanel;
-class ResultsPanel;
-class BodePanel;
-class LuaConsole;
 class AnalysisPanel;
+class AnalysisResultsFrame;
 
 class MainFrame : public wxFrame {
 public:
@@ -36,13 +34,18 @@ private:
     SchematicCanvas* canvas_ = nullptr;
     PalettePanel* palette_ = nullptr;
     PropertiesPanel* props_ = nullptr;
-    ResultsPanel* results_ = nullptr;
-    BodePanel* bode_ = nullptr;
-    LuaConsole* lua_ = nullptr;
     AnalysisPanel* analysis_ = nullptr;
-    wxNotebook* bottom_ = nullptr;
+    AnalysisResultsFrame* results_frame_ = nullptr;
     wxToolBar* toolbar_ = nullptr;
     wxMenuItem* mi_ignore_ = nullptr;
+
+    // Resizable layout: three nested splitters.
+    //  sp_main:   palette (left)  | sp_right (rest)
+    //  sp_right:  sp_bottom (canvas+props) | analysis (right, fixed width)
+    //  sp_bottom: canvas (top) | props (bottom)
+    wxSplitterWindow* sp_main_ = nullptr;
+    wxSplitterWindow* sp_right_ = nullptr;
+    wxSplitterWindow* sp_bottom_ = nullptr;
 
     void build_menu();
     void build_toolbar();
@@ -89,6 +92,10 @@ private:
 
     // Is the focused control a text-entry widget (so shortcuts must not fire)?
     bool focus_is_text_entry() const;
+
+    // Lazily build the floating analysis-results window the first time an
+    // analysis runs (and re-show it if the user closed it).
+    AnalysisResultsFrame* ensure_results_frame();
 
     wxDECLARE_EVENT_TABLE();
 };

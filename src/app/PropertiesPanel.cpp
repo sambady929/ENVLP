@@ -24,11 +24,47 @@ const wxArrayString kMantissas = [] {
         a.Add(s);
     return a;
 }();
+// Exponent dropdown entries. Each row shows the power-of-ten *and* the SI
+// prefix letter it maps to (e.g. "-3" -> "m" for milli). The numeric part is
+// what we store / parse; the suffix is a hint, so the dropdown doubles as a
+// cheat-sheet for which letter to expect on the schematic.
 const wxArrayString kExponents = [] {
     wxArrayString a;
-    for (int e = 18; e >= -21; e -= 3) a.Add(wxString::Format("%d", e));
+    struct E { int p; const char* suf; };
+    static const E table[] = {
+        { 18, "E"}, { 15, "P"}, { 12, "T"}, { 9, "G"}, { 6, "M"},
+        {  3, "k"}, {  0, ""  }, {-3, "m"}, {-6, "u"}, {-9, "n"},
+        {-12, "p"}, {-15, "f"}, {-18, "a"}, {-21, "z"},
+    };
+    for (const auto& e : table) {
+        if (e.suf[0])
+            a.Add(wxString::Format("%d (%s)", e.p, e.suf));
+        else
+            a.Add(wxString::Format("%d", e.p));
+    }
     return a;
 }();
+
+// SI prefix letter for a power-of-ten exponent, or '\0' when none matches.
+char si_letter_for_exp(int e) {
+    switch (e) {
+        case  18: return 'E';
+        case  15: return 'P';
+        case  12: return 'T';
+        case   9: return 'G';
+        case   6: return 'M';
+        case   3: return 'k';
+        case   0: return '\0';
+        case  -3: return 'm';
+        case  -6: return 'u';
+        case  -9: return 'n';
+        case -12: return 'p';
+        case -15: return 'f';
+        case -18: return 'a';
+        case -21: return 'z';
+    }
+    return '\0';
+}
 
 void decompose(double v, double& mant, int& exp) {
     if (!(v > 0.0) || !std::isfinite(v)) {
@@ -37,6 +73,9 @@ void decompose(double v, double& mant, int& exp) {
         return;
     }
     exp = 3 * int(std::floor(std::log10(v) / 3.0));
+    // clamp to the dropdown's range (-21 .. +18 in steps of 3)
+    if (exp > 18) exp = 18;
+    if (exp < -21) exp = -21;
     mant = v / std::pow(10.0, exp);
     // snap to the nearest preset mantissa (also keeps values tidy)
     static const double ms[] = {1, 3.3, 10, 33, 100, 330, 1000};
@@ -55,9 +94,42 @@ wxString fmt_num(double m) {
     return s;
 }
 
+// The exponent combo's current text: the plain exponent, with the SI letter
+// in parentheses when one exists ("-3 (m)"). parse_exp_string reads either.
+wxString exp_display(int exp) {
+    char l = si_letter_for_exp(exp);
+    if (l) return wxString::Format("%d (%c)", exp, l);
+    return wxString::Format("%d", exp);
+}
+
+// Compose the value_text written back into the schematic: the bare mantissa,
+// then the SI letter for the chosen exponent. e.g. mant=10 exp=-9 -> "10n".
+// exp==0 has no suffix, so it reads back as the bare number (no unit).
 wxString fmt_value(double mant, int exp) {
     if (exp == 0) return fmt_num(mant);
+    char l = si_letter_for_exp(exp);
+    if (l) return fmt_num(mant) + wxString(l);
     return fmt_num(mant) + "e" + wxString::Format("%d", exp);
+}
+
+// Parse the leading integer out of an exponent combo string ("-9" or
+// "-9 (n)"). Returns true on success; out holds the exponent value.
+bool parse_exp_string(const wxString& s, long& out) {
+    wxString t = s;
+    t = t.Trim(true).Trim(false);
+    long sign = 1;
+    if (!t.IsEmpty() && t[0] == '-') { sign = -1; t = t.Mid(1); }
+    else if (!t.IsEmpty() && t[0] == '+') { t = t.Mid(1); }
+    long v = 0;
+    bool any = false;
+    for (size_t i = 0; i < t.Length(); ++i) {
+        wxChar ch = t[i];
+        if (ch >= '0' && ch <= '9') { v = v * 10 + (ch - '0'); any = true; }
+        else break;
+    }
+    if (!any) return false;
+    out = sign * v;
+    return true;
 }
 } // namespace
 
@@ -137,7 +209,7 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
         sizer->Add(cb, 0, wxLEFT | wxTOP, 6);
         man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
                              wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-        ex = new wxComboBox(this, wxID_ANY, wxString::Format("%d", exp),
+        ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
                             wxDefaultPosition, wxSize(60, -1), kExponents,
                             wxCB_DROPDOWN);
         man->Enable(cb->GetValue());
@@ -156,7 +228,7 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
         sizer->Add(lbl, 0, wxLEFT | wxTOP, 6);
         man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
                              wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-        ex = new wxComboBox(this, wxID_ANY, wxString::Format("%d", exp),
+        ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
                             wxDefaultPosition, wxSize(60, -1), kExponents,
                             wxCB_DROPDOWN);
     }
@@ -172,7 +244,7 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
         double m = 0.0;
         if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
         long e = 0;
-        ex->GetValue().ToLong(&e);
+        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
         comp->param_text[name] = fmt_value(m, int(e)).ToStdString();
         doc_->dirty = true;
         if (on_edited) on_edited();
@@ -214,7 +286,7 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
     auto* man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
                                wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-    auto* ex = new wxComboBox(this, wxID_ANY, wxString::Format("%d", exp),
+    auto* ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
                               wxDefaultPosition, wxSize(60, -1), kExponents,
                               wxCB_DROPDOWN);
     sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
@@ -232,7 +304,7 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
         double m = 1.0;
         if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
         long e = 0;
-        ex->GetValue().ToLong(&e);
+        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
         comp->value_text = fmt_value(m, int(e)).ToStdString();
         doc_->dirty = true;
         if (on_edited) on_edited();
@@ -322,21 +394,27 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                     bool whole = colon < 0;
                     int seg = colon < 0 ? -1 : std::atoi(sel_.c_str() + colon + 1);
                     add_header(whole ? "Wire" : "Wire segment");
-                    // net name (#9): type a name and a label is created on the
-                    // wire; clear it to remove the label.
-                    std::string err;
-                    std::string net = doc_->net_name_of_wire(i, err);
-                    add_text("Net name", wxString::FromUTF8(net),
-                             [this, i](const wxString& v) {
-                                 if (on_wire_name)
-                                     on_wire_name(i, v.ToStdString());
-                             });
+                    // Net name is read-only: wires are SPICE nodes and get a
+                    // default name (n1, n2, ...); the only way to override is
+                    // to place a net label on the wire (N key). Clicking the
+                    // resulting label selects *it* for editing.
+                    std::string net = doc_->net_name_of_wire(i);
+                    {
+                        auto* sizer2 = GetSizer();
+                        sizer2->Add(new wxStaticText(this, wxID_ANY, "Net name"),
+                                    0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+                        auto* nm = new wxTextCtrl(this, wxID_ANY,
+                                                  wxString::FromUTF8(net));
+                        nm->SetEditable(false);
+                        nm->SetBackgroundColour(wxColour(235, 235, 232));
+                        sizer2->Add(nm, 1, wxEXPAND | wxRIGHT, 6);
+                    }
                     auto* hint = new wxStaticText(
                         this, wxID_ANY,
-                        net.empty()
-                            ? "Type a name to create a net label above the wire."
-                            : "A label on this net: " + wxString::FromUTF8(net));
+                        "Auto-assigned node name. Place a net label (N) on the "
+                        "wire to override it.");
                     hint->SetForegroundColour(wxColour(115, 115, 120));
+                    hint->Wrap(220);
                     sizer->Add(hint, 0, wxALL, 4);
                     auto* info = new wxStaticText(
                         this, wxID_ANY,

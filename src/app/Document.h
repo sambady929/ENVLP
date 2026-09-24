@@ -25,11 +25,27 @@ struct Wire {
     std::vector<Pt> pts;
 };
 
-// A user-assigned net name placed at a point that belongs to a net.
+// A user-assigned net name placed near a net. `anchor` is the point that
+// actually attaches to the net (a point on a wire / a pin); `pt` is where the
+// text is drawn. Moving or rotating the label changes only `pt`, so the label
+// stays attached to the same net.
 struct NetLabel {
-    Pt pt{0, 0};
+    Pt anchor{0, 0};  // attachment point on the net
+    Pt pt{0, 0};      // text position (defaults to the anchor)
     std::string name;
-    int font_size = 14; // points; user-adjustable
+    int font_size = 9; // points; matches the component ref/value text size
+    int rot = 0;       // text rotation, degrees (multiples of 90)
+};
+
+// Resolved net identity for the interactive helpers: the union-find root of
+// each pin / wire / label, plus the resolved name of each root.
+struct NetMap {
+    std::vector<int> pin_root;   // one per pin, in circuit/comp-pin order
+    std::vector<int> pin_comp;   // component index of each pin
+    std::vector<int> pin_index;  // pin index within the component
+    std::vector<int> wire_root;  // one per wire
+    std::map<int, std::string> name; // root -> resolved net name
+    int root_of_pin(int comp, int pin) const;
 };
 
 // The schematic: circuit data + graphical data + analysis request.
@@ -58,14 +74,31 @@ public:
     // problems; returns an empty circuit in that case.
     syms::Circuit resolved(std::string& err) const;
 
-    // Net name resolution for editing: the name currently assigned to the net
-    // a wire belongs to ("" if unnamed), and the index of a label on that net
-    // (-1 if none). `resolved()` is the authoritative analyzer path; these are
-    // the interactive helpers.
-    std::string net_name_of_wire(int wire_index, std::string& err) const;
-    int label_index_on_wire(int wire_index, std::string& err) const;
-    // Find or create a label anchored on the given wire; returns its index.
-    int ensure_label_on_wire(int wire_index, std::string& err);
+    // Union-find net topology at a point in time: which pins/wires share a net
+    // and what each net is called. Used by the interactive helpers below and by
+    // resolved() itself, so hit-testing and analysis always agree.
+    NetMap net_map() const;
+
+    // Resolved net name of a wire / a component pin (auto "n1"/"0"/"VDD" or a
+    // user label). Empty string if the index is invalid.
+    std::string net_name_of_wire(int wire_index) const;
+    std::string net_name_of_pin(const std::string& ref, int pin) const;
+    // Anchor point on the net nearest `near` (for attaching a label).
+    Pt net_anchor_near(const std::string& ref, int pin, Pt near) const;
+    Pt net_anchor_near_wire(int wire_index, Pt near) const;
+
+    // Suggested *display* point for a net label whose anchor lies on
+    // `wire_index`. The text is drawn centred on this point, so it is offset
+    // to whichever side of the wire keeps it readable: to the right of a
+    // vertical wire, above a horizontal one. `name_len` sizes the offset so
+    // the text clears the wire; pass the label's character count.
+    Pt label_display_pt(int wire_index, Pt anchor, int name_len) const;
+
+    // Find or create a label attached to the net a wire belongs to; the text
+    // is drawn at `at` (defaults to the anchor). Returns the label index.
+    int ensure_label_on_wire(int wire_index, Pt at);
+    // True if the label still sits on the net it names.
+    bool label_attached(int label_index, const NetMap& nm) const;
 
     bool save(const std::string& p, std::string& err);
     bool load(const std::string& p, std::string& err);

@@ -51,6 +51,13 @@ public:
     std::function<void(const std::string&)> on_selection_changed;
     std::function<void(const std::string&)> on_status; // hover hint
     std::function<void()> on_push_undo; // called before any mutating op
+    // Fires whenever the view (zoom / pan origin) changes; the frame mirrors
+    // it into the second status-bar field so the current "zoom=.. view=.." is
+    // always on screen. Doubles as a debugging hook.
+    std::function<void(double, double, double)> on_view_changed;
+    double view_x() const { return view_x_; }
+    double view_y() const { return view_y_; }
+    void report_view(); // emit on_view_changed with the current view
     // A wire was selected; the panel may want to offer a net name.
     std::function<void(int, std::string)> on_wire_selected;
 
@@ -86,6 +93,12 @@ public:
     void set_wire_net_name(int wire_index, const std::string& name);
     void set_label_font_size(int label_index, int size);
 
+    // Invalidate the cached net map; called by the frame when the document is
+    // edited outside the canvas (props-panel delete button, undo/redo via the
+    // frame, file open/new). The canvas's own edits invalidate via
+    // notify_doc().
+    void invalidate_nets() { net_cache_valid_ = false; }
+
 private:
     Document* doc_;
     Tool tool_ = Tool::Select;
@@ -100,6 +113,15 @@ private:
     bool dragging_ = false;
     std::vector<std::pair<std::string, Pt>> drag_start_; // ref -> original origin
     Pt drag_anchor_{0, 0}; // doc point where the drag began
+    // Wire/segment drag: the indices of every wire being dragged, plus the
+    // original vertex positions, so we can compute the drag delta in doc
+    // units and translate "tributary" geometry (other wires sharing a vertex,
+    // labels anchored on a moved vertex) accordingly.
+    int drag_wire_ = -1;
+    std::vector<Pt> drag_wire_pts_backup_;
+    int drag_label_ = -1;
+    Pt drag_label_pt_backup_;
+    Pt drag_label_anchor_backup_;
     bool box_selecting_ = false;
     Pt box_a_{0, 0}, box_b_{0, 0};
     // Wiring (Cadence-style): `wiring_` is the mode, `wire_pts_` holds the
@@ -115,6 +137,17 @@ private:
     wxPoint mouse_;
     bool has_mouse_ = false; // mouse_ has seen at least one event
     std::string hover_;
+    std::string hover_net_; // resolved net name at the cursor, "" if none
+    std::string hover_net_pos_; // "wire" or "pin:REF" for tooltip anchor
+
+    // Cached union-find net map, rebuilt lazily and invalidated on edits.
+    // The hover tooltip needs the resolved net name on *every* mouse move, and
+    // Document::net_map() is O(n^2) -- far too slow to call in on_motion.
+    NetMap net_cache_;
+    bool net_cache_valid_ = false;
+    const NetMap& nets();
+    std::string net_name_wire_cached(int wi);
+    std::string net_name_pin_cached(const std::string& ref, int pin);
 
     // view: an origin + zoom, giving effectively infinite panning
     double zoom_ = 1.0;
@@ -137,6 +170,10 @@ private:
     // content bounds (components / wires / labels) in document units
     bool content_bounds(double& x0, double& y0, double& x1, double& y1) const;
     void set_zoom(double z, wxPoint anchor);
+
+    // Document points where three or more wire segments meet (or a wire
+    // endpoint lands mid-segment on another wire) -- drawn as solder dots.
+    std::vector<Pt> junction_pts() const;
 
     // Move `ref` to a new origin, carrying any wire endpoints that were
     // attached to its pins along with it.

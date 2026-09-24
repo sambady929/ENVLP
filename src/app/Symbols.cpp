@@ -1,4 +1,5 @@
 #include "Symbols.h"
+#include "SymbolGeom.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,85 +8,6 @@
 namespace symcirc {
 
 using syms::Kind;
-
-// ---------------------------------------------------------------------------
-// pin geometry
-// ---------------------------------------------------------------------------
-std::vector<Pt> pin_offsets(Kind k) {
-    switch (k) {
-    case Kind::R:
-    case Kind::C:
-    case Kind::L:
-        return {{-30, 0}, {30, 0}};
-    // V and I are drawn vertical (rotated 90 deg CCW): +/head up, -/tail down
-    case Kind::V:
-        return {{0, -30}, {0, 30}}; // + , -
-    case Kind::I:
-        return {{0, -30}, {0, 30}}; // head , tail
-    case Kind::D:
-        return {{-30, 0}, {30, 0}}; // A , K
-    case Kind::IS:
-    case Kind::SBLK:
-    case Kind::AMP:
-        return {{-30, 0}, {30, 0}}; // in , out
-    case Kind::E:
-    case Kind::G:
-    case Kind::CCCS:
-    case Kind::CCVS:
-        // out+ , out- , ctrl+ , ctrl-
-        return {{40, -10}, {40, 10}, {-40, -10}, {-40, 10}};
-    case Kind::NMOS:
-        // D , G , S  (D top, S bottom)
-        return {{0, -40}, {-40, 0}, {0, 40}};
-    case Kind::PMOS:
-        // flipped vertically: S (with the arrow) on top, D on the bottom
-        return {{0, 40}, {-40, 0}, {0, -40}};
-    case Kind::NPN:
-        // C , B , E  (C top, E bottom)
-        return {{0, -40}, {-40, 0}, {0, 40}};
-    case Kind::PNP:
-        // flipped vertically: E (with the arrow) on top, C on the bottom
-        return {{0, 40}, {-40, 0}, {0, -40}};
-    case Kind::GND:
-    case Kind::VDD:
-        return {{0, 0}};
-    case Kind::T:
-        // p+ , p- , s+ , s-
-        return {{-40, -20}, {-40, 20}, {40, -20}, {40, 20}};
-    case Kind::NULLOR:
-    case Kind::OPAMP:
-        // in+ , in- , out
-        return {{-40, -12}, {-40, 12}, {40, 0}};
-    case Kind::FDOPAMP:
-        // in+ , in- , out+ , out-
-        return {{-40, -14}, {-40, 14}, {34, -14}, {34, 14}};
-    case Kind::K:
-        return {};
-    }
-    return {};
-}
-
-Pt rotate_pt(Pt p, int rot) {
-    switch (((rot % 360) + 360) % 360) {
-    case 90:  return {p.second, -p.first};
-    case 180: return {-p.first, -p.second};
-    case 270: return {-p.second, p.first};
-    default:  return p;
-    }
-}
-
-Pt transform_pt(Pt p, const Placement& pl) {
-    if (pl.flip_h) p.first = -p.first;
-    if (pl.flip_v) p.second = -p.second;
-    return rotate_pt(p, pl.rot);
-}
-
-Pt pin_world(const syms::Component& c, const Placement& pl, int pin_index) {
-    auto offs = pin_offsets(c.kind);
-    if (pin_index < 0 || pin_index >= int(offs.size())) return {pl.x, pl.y};
-    Pt r = transform_pt(offs[pin_index], pl);
-    return {pl.x + r.first, pl.y + r.second};
-}
 
 // ---------------------------------------------------------------------------
 // drawing helpers
@@ -475,32 +397,6 @@ void draw_body(Ctx& t, Kind k) {
     }
 }
 
-void label_anchor(Kind k, double& lx, double& ly) {
-    lx = 22;
-    ly = -22;
-    switch (k) {
-    case Kind::GND: lx = 16; ly = 4; break;
-    case Kind::VDD: lx = 18; ly = -26; break;
-    case Kind::E:
-    case Kind::G:
-    case Kind::CCCS:
-    case Kind::CCVS: lx = 28; ly = -24; break;
-    case Kind::NMOS:
-    case Kind::PMOS: lx = 12; ly = -34; break;
-    case Kind::NPN:
-    case Kind::PNP: lx = 8; ly = -36; break;
-    case Kind::OPAMP:
-    case Kind::FDOPAMP:
-    case Kind::AMP:
-    case Kind::NULLOR: lx = 10; ly = -34; break;
-    case Kind::T: lx = -34; ly = -34; break;
-    case Kind::K: lx = 16; ly = -4; break;
-    case Kind::IS:
-    case Kind::SBLK: lx = 24; ly = -24; break;
-    default: break;
-    }
-}
-
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -521,59 +417,69 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     // value, just the glyph.
     if (c.kind == Kind::GND || c.kind == Kind::VDD) return;
 
-    double lx, ly;
-    label_anchor(c.kind, lx, ly);
+    // Text placement: the ref + value sit centred vertically on the right
+    // edge of the symbol, drawn horizontally in world space. Using the
+    // symbol's axis-aligned bbox (post-rotation) keeps the label clear of
+    // the body for any rotation; placing it centred means the label is
+    // always near the middle of the symbol, not floating above it.
+    double bx0, by0, bx1, by1;
+    symbol_bbox(c, pl, bx0, by0, bx1, by1, 2.0);
+
+    // Use a slightly smaller font for the labels than the canvas default so
+    // they read as annotations rather than primary content.
+    double fs = 9.0;
 
     wxFont ref_font = base;
+    ref_font.SetPointSize(int(fs));
     ref_font.SetStyle(wxFONTSTYLE_ITALIC);
     ref_font.SetWeight(wxFONTWEIGHT_BOLD);
     dc.SetFont(ref_font);
     dc.SetTextForeground(kRefInk);
-    t.text(c.ref, lx, ly, false);
+    wxString ref_text = wxString::FromUTF8(c.ref);
+    wxSize ref_ts = dc.GetTextExtent(ref_text);
+    double lh = ref_ts.y;
 
-    if (!c.value_text.empty() && c.kind != Kind::GND && c.kind != Kind::VDD) {
+    wxString val_text = (!c.value_text.empty() && c.kind != Kind::GND &&
+                         c.kind != Kind::VDD)
+                            ? wxString::FromUTF8(c.value_text)
+                            : wxString();
+    wxSize val_ts = val_text.IsEmpty() ? wxSize(0, 0)
+                                       : dc.GetTextExtent(val_text);
+    // Two rows -> 2*lh; one row -> lh.
+    double total_h = val_text.IsEmpty() ? lh : 2 * lh;
+    // Stack: ref on top, value below. Anchor at the right edge of the
+    // symbol, vertically centred on its bbox.
+    double stack_y = (by0 + by1) / 2.0 - total_h / 2.0;
+    double tx = bx1 + 3.0;
+
+    dc.DrawText(ref_text, wxPoint(int(tx), int(stack_y)));
+    if (!val_text.IsEmpty()) {
         wxFont val_font = base;
+        val_font.SetPointSize(int(fs));
         val_font.SetStyle(wxFONTSTYLE_ITALIC);
         dc.SetFont(val_font);
         dc.SetTextForeground(kValInk);
-        t.text(c.value_text, lx, ly + 14, false);
+        dc.DrawText(val_text, wxPoint(int(tx), int(stack_y + lh)));
+        dc.SetTextForeground(kRefInk);
     }
     dc.SetFont(base);
 
-    // device non-ideality marker: only when at least one parasitic is on
+    // device non-ideality marker (¶): sits to the right of the value text,
+    // one row below the ref, when at least one parasitic is enabled.
     if (syms::is_device(c.kind)) {
         bool any = false;
         for (const auto& kv : c.param_on)
             if (kv.second) any = true;
         if (any) {
             dc.SetTextForeground(wxColour(170, 60, 20));
-            t.text("\u00b6", lx, ly + 26, false);
+            double my = stack_y + (val_text.IsEmpty() ? 0 : lh) + lh;
+            dc.DrawText("\u00b6", wxPoint(int(tx), int(my)));
         }
     }
 }
 
 void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
-                 double& y0, double& x1, double& y1) {
-    auto offs = pin_offsets(c.kind);
-    x0 = y0 = 1e18;
-    x1 = y1 = -1e18;
-    auto acc = [&](Pt w) {
-        x0 = std::min(x0, w.first);
-        y0 = std::min(y0, w.second);
-        x1 = std::max(x1, w.first);
-        y1 = std::max(y1, w.second);
-    };
-    acc({pl.x, pl.y});
-    for (size_t i = 0; i < offs.size(); ++i) {
-        Pt r = transform_pt(offs[i], pl);
-        acc({pl.x + r.first, pl.y + r.second});
-    }
-    double m = 18;
-    x0 -= m;
-    y0 -= m;
-    x1 += m;
-    y1 += m;
-}
+                 double& y0, double& x1, double& y1); // in SymbolGeom.cpp
 
 wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     wxBitmap bmp(w, h);

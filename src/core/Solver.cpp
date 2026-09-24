@@ -104,8 +104,20 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
         std::string key = (raw == "GND") ? "0" : raw;
         if (key == "0") return ex(0);
         auto it = sys.node_idx.find(key);
-        if (it == sys.node_idx.end())
-            throw std::runtime_error("unknown node: " + key);
+        if (it == sys.node_idx.end()) {
+            // List the nets that DO exist; auto-assigned nets are "n1"/"n2"/..
+            // when no net label names them, so "V(out)" with no "out" label is
+            // the common failure mode.
+            std::string avail;
+            for (const auto& kv : sys.node_idx) {
+                if (!avail.empty()) avail += ", ";
+                avail += kv.first;
+            }
+            throw std::runtime_error(
+                "unknown node: " + key + " -- no net has that name. Existing "
+                "nets: " + (avail.empty() ? std::string("(none)") : avail) +
+                ". Place a net label (N) on the wire you want to measure.");
+        }
         return solution(it->second);
     };
 

@@ -1,0 +1,24 @@
+symcirc 1
+req "V1" "V(out)" 5 5 0 10 1 1 1 1
+comp "V1" "V" 160 320 0 0 0 0 "1"
+comp "M1" "NMOS" 440 240 0 0 0 0 ""
+param "M1" "ro" 1 "100k" 0
+comp "R1" "R" 600 90 90 0 0 0 "1k"
+comp "VDD" "V" 100 60 0 0 0 0 "5"
+comp "GND1" "GND" 100 380 0 0 0 0 ""
+wire 160,290 160,240 400,240
+wire 440,280 440,380
+wire 160,350 160,380 440,380
+wire 100,380 440,380
+wire 440,200 600,200
+wire 600,200 600,160
+wire 600,160 600,120
+wire 100,90 100,380
+wire 100,30 100,60
+wire 100,60 600,60
+netlabel 160,240 "in"
+netlabel 600,160 "out"
+netlabel 100,30 "VDD"
+netlabel 100,90 "0"
+card "Transfer function (H(s))" "V1" "V(out)" "" 5 5 0 10 1 1 1 1 "Transfer function (H(s))" 1
+card "Output impedance" "V1" "V(out)" "" 5 5 0 10 1 1 1 1 "Output impedance" 1

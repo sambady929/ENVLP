@@ -1,3 +1,5 @@
+// BodePanel: Bode (magnitude & phase), Nyquist, and Nichols plot canvas +
+// toolbar with axis-range spin controls and major/minor decade + dB grid.
 #include "BodePanel.h"
 #include "core/Eng.h"
 #include "core/Engine.h"
@@ -12,6 +14,11 @@
 #include <wx/filedlg.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
+#include <wx/spinctrl.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace symcirc {
 
@@ -19,14 +26,31 @@ wxBEGIN_EVENT_TABLE(BodeCanvas, wxPanel)
     EVT_PAINT(BodeCanvas::on_paint)
 wxEND_EVENT_TABLE()
 
-wxBEGIN_EVENT_TABLE(BodePanel, wxPanel)
-wxEND_EVENT_TABLE()
-
 namespace {
 // Default sweep when no result is loaded yet.
 constexpr double kFstart = 1.0;
 constexpr double kFend = 1e8;
 constexpr int kMaxPoints = 4000;
+
+// Continuous phase unwrap: if successive phase samples jump by more than
+// pi radians, add/subtract multiples of 2pi to keep the curve continuous.
+// Returns a vector the same length as `phase_in` with the same starting
+// value but jumps removed.
+std::vector<double> unwrap_phase(const std::vector<double>& phase_in) {
+    std::vector<double> out(phase_in.size(), 0.0);
+    if (phase_in.empty()) return out;
+    out[0] = phase_in[0];
+    double prev = phase_in[0];
+    for (size_t i = 1; i < phase_in.size(); ++i) {
+        double cur = phase_in[i];
+        double d = cur - prev;
+        if (d > M_PI) cur -= 2 * M_PI * std::floor((d + M_PI) / (2 * M_PI));
+        else if (d < -M_PI) cur += 2 * M_PI * std::floor((-d + M_PI) / (2 * M_PI));
+        out[i] = cur;
+        prev = cur;
+    }
+    return out;
+}
 } // namespace
 
 // The frequency band to plot: the analysis result's sweep, or a default.
@@ -34,7 +58,6 @@ void BodeCanvas::band(double& f0, double& f1, int& n) const {
     if (res_ && res_->sweep.f_stop_hz > res_->sweep.f_start_hz) {
         f0 = res_->sweep.f_start_hz;
         f1 = res_->sweep.f_stop_hz;
-        // keep the on-screen point count bounded for responsiveness
         n = std::min(kMaxPoints, std::max(50, res_->sweep.points_per_interval * 10));
     } else {
         f0 = kFstart;
@@ -58,6 +81,20 @@ void BodeCanvas::set_mode(PlotMode m) {
     Refresh();
 }
 
+void BodeCanvas::set_x_range(double lo, double hi) {
+    x_lo_ = std::max(1e-12, lo);
+    x_hi_ = std::max(x_lo_ * 1.0001, hi);
+    auto_range_ = false;
+    Refresh();
+}
+
+void BodeCanvas::set_y_range(double lo, double hi) {
+    y_lo_ = lo;
+    y_hi_ = std::max(y_lo_ + 0.1, hi);
+    auto_range_ = false;
+    Refresh();
+}
+
 void BodeCanvas::sample(std::vector<double>& f, std::vector<double>& mag,
                         std::vector<double>& ph) const {
     f.clear();
@@ -68,12 +105,15 @@ void BodeCanvas::sample(std::vector<double>& f, std::vector<double>& mag,
     int n;
     band(f0, f1, n);
     std::vector<double> freqs = syms::sweep_hz(f0, f1, n);
+    std::vector<double> raw_ph;
+    raw_ph.reserve(freqs.size());
     for (double fr : freqs) {
         double w = 2 * M_PI * fr;
         f.push_back(fr);
         mag.push_back(syms::mag_db_at(*res_, w));
-        ph.push_back(syms::phase_deg_at(*res_, w));
+        raw_ph.push_back(syms::phase_deg_at(*res_, w));
     }
+    ph = unwrap_phase(raw_ph);
 }
 
 bool BodeCanvas::save_csv(const std::string& path) const {
@@ -103,7 +143,14 @@ bool BodeCanvas::save_svg(const std::string& path) const {
     double span = std::max(mag_hi - mag_lo, 1.0);
     mag_lo -= span * 0.08;
     mag_hi += span * 0.08;
-    const double ph_lo = -200, ph_hi = 200;
+    double ph_lo = -200, ph_hi = 200;
+    if (!ph.empty()) {
+        double pmin = 1e300, pmax = -1e300;
+        for (double p : ph) if (std::isfinite(p)) {
+            pmin = std::min(pmin, p); pmax = std::max(pmax, p);
+        }
+        if (pmin <= pmax) { ph_lo = pmin - 10; ph_hi = pmax + 10; }
+    }
     double f0, f1;
     int npts;
     band(f0, f1, npts);
@@ -119,12 +166,14 @@ bool BodeCanvas::save_svg(const std::string& path) const {
       << "\" height=\"" << totalH << "\" viewBox=\"0 0 " << W << " " << totalH << "\">\n";
     s << "<rect width=\"100%\" height=\"100%\" fill=\"#fff\"/>\n";
     s << "<g font-family=\"Arial\" font-size=\"11\">\n";
-    // frames
+    if (!title_.empty())
+        s << "<text x=\"" << mL << "\" y=\"" << (mT - 4) << "\" font-size=\"13\" fill=\"#222\">"
+          << escape_xml(title_) << "</text>\n";
     s << "<rect x=\"" << mL << "\" y=\"" << mT << "\" width=\"" << (W - mL - mR)
       << "\" height=\"" << Hh << "\" fill=\"none\" stroke=\"#c8c8cf\"/>\n";
     s << "<rect x=\"" << mL << "\" y=\"" << (mT + Hh + gap) << "\" width=\""
       << (W - mL - mR) << "\" height=\"" << Hp << "\" fill=\"none\" stroke=\"#c8c8cf\"/>\n";
-    // decade grid lines within the band
+    // Major + minor decade lines
     {
         int e0 = int(std::floor(std::log10(f0) - 1e-9));
         int e1 = int(std::ceil(std::log10(f1) + 1e-9));
@@ -133,25 +182,55 @@ bool BodeCanvas::save_svg(const std::string& path) const {
             if (fr < f0 * 0.999 || fr > f1 * 1.001) continue;
             double x = X(fr);
             s << "<line x1=\"" << x << "\" y1=\"" << mT << "\" x2=\"" << x << "\" y2=\""
-              << (mT + Hh) << "\" stroke=\"#eeeef2\"/>\n";
+              << (mT + Hh) << "\" stroke=\"#d8d8e0\"/>\n";
             s << "<text x=\"" << (x + 2) << "\" y=\"" << (mT + Hh + gap + Hp + 14)
-              << "\" fill=\"#8a8a90\">" << syms::eng::format_eng(fr, 1) << "</text>\n";
+              << "\" fill=\"#666\">" << syms::eng::format_eng(fr, 1) << "</text>\n";
+            // minor lines at 2..9 within this decade
+            for (int k = 2; k <= 9; ++k) {
+                double fr2 = fr * k;
+                if (fr2 < f0 || fr2 > f1) continue;
+                double x2 = X(fr2);
+                s << "<line x1=\"" << x2 << "\" y1=\"" << mT << "\" x2=\"" << x2 << "\" y2=\""
+                  << (mT + Hh) << "\" stroke=\"#eeeef2\"/>\n";
+            }
         }
     }
-    // magnitude curve
+    // magnitude horizontal grid
+    {
+        double step = 10.0;
+        if (mag_hi - mag_lo > 200) step = 50;
+        else if (mag_hi - mag_lo > 80) step = 20;
+        int db = int(std::floor(mag_lo / step) * int(step));
+        for (; db <= mag_hi; db += int(step)) {
+            double y = Ym(db);
+            s << "<line x1=\"" << mL << "\" y1=\"" << y << "\" x2=\"" << (W - mR) << "\" y2=\""
+              << y << "\" stroke=\"#eeeef2\"/>\n";
+            s << "<text x=\"" << 4 << "\" y=\"" << (y - 2) << "\" fill=\"#8a8a90\">"
+              << db << " dB</text>\n";
+        }
+    }
+    // phase horizontal grid
+    {
+        int step = 45;
+        int deg = int(std::ceil(ph_lo / step)) * step;
+        for (; deg <= ph_hi; deg += step) {
+            double y = Yp(deg);
+            s << "<line x1=\"" << mL << "\" y1=\"" << y << "\" x2=\"" << (W - mR) << "\" y2=\""
+              << y << "\" stroke=\"#eeeef2\"/>\n";
+            s << "<text x=\"" << 4 << "\" y=\"" << (y - 2) << "\" fill=\"#8a8a90\">"
+              << deg << "\u00b0</text>\n";
+        }
+    }
     s << "<polyline fill=\"none\" stroke=\"#c82828\" stroke-width=\"1.6\" points=\"";
     for (size_t i = 0; i < f.size(); ++i)
         if (std::isfinite(mag[i])) s << X(f[i]) << "," << Ym(mag[i]) << " ";
     s << "\"/>\n";
-    // phase curve
     s << "<polyline fill=\"none\" stroke=\"#285ac8\" stroke-width=\"1.6\" points=\"";
     for (size_t i = 0; i < f.size(); ++i)
         if (std::isfinite(ph[i])) s << X(f[i]) << "," << Yp(ph[i]) << " ";
     s << "\"/>\n";
     s << "<text x=\"" << (mL + 6) << "\" y=\"" << (mT + 16) << "\" fill=\"#c82828\">Magnitude (dB)</text>\n";
     s << "<text x=\"" << (mL + 6) << "\" y=\"" << (mT + Hh + gap + 16) << "\" fill=\"#285ac8\">Phase (deg)</text>\n";
-    s << "<text x=\"" << (mL + 6) << "\" y=\"" << (mT + Hh + gap - 6) << "\" fill=\"#666\">"
-      << "H(s) = " << escape_xml(res_ ? res_->pruned.text : std::string()) << "</text>\n";
     s << "</g></svg>\n";
 
     std::ofstream o(path, std::ios::binary);
@@ -211,7 +290,8 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
 }
 
 namespace {
-// shared: sample magnitude/phase then give the caller the raw re/im too
+// shared: sample magnitude/phase then give the caller the raw re/im too,
+// with phase unwrapped so the curve is continuous across +/-pi boundaries.
 struct Curve {
     std::vector<double> f, mag, ph, re, im;
 };
@@ -221,6 +301,8 @@ void sample_curve(const syms::AnalysisResult* r, Curve& c,
     int n;
     cv.band(f0, f1, n);
     std::vector<double> freqs = syms::sweep_hz(f0, f1, n);
+    std::vector<double> raw_ph;
+    raw_ph.reserve(freqs.size());
     for (double fr : freqs) {
         double w = 2 * M_PI * fr;
         auto z = syms::eval_complex((r->num_raw / r->den_raw).normal(),
@@ -229,12 +311,52 @@ void sample_curve(const syms::AnalysisResult* r, Curve& c,
         c.mag.push_back(std::isfinite(z.real())
                             ? 20.0 * std::log10(std::hypot(z.real(), z.imag()))
                             : -1e300);
-        c.ph.push_back(std::atan2(z.imag(), z.real()) * 180.0 / M_PI);
+        raw_ph.push_back(std::atan2(z.imag(), z.real()) * 180.0 / M_PI);
         c.re.push_back(z.real());
         c.im.push_back(z.imag());
     }
+    c.ph = unwrap_phase(raw_ph);
 }
 } // namespace
+
+// Compute the data limits for Bode (and Nichols) given the canvas's
+// auto/manual range settings. Pulls from the data unless `auto_range_`
+// is false, in which case the manual range is honoured.
+void compute_axes(const syms::AnalysisResult& res, const Curve& c,
+                  bool auto_range, double x_lo_in, double x_hi_in,
+                  double y_lo_in, double y_hi_in,
+                  double& f_lo, double& f_hi, double& mag_lo,
+                  double& mag_hi, double& ph_lo, double& ph_hi) {
+    if (auto_range) {
+        // X = frequency band of the result.
+        if (res.sweep.f_stop_hz > res.sweep.f_start_hz) {
+            f_lo = res.sweep.f_start_hz;
+            f_hi = res.sweep.f_stop_hz;
+        } else {
+            f_lo = 1.0; f_hi = 1e8;
+        }
+        // Y magnitude auto.
+        double mlo = 1e300, mhi = -1e300;
+        for (double m : c.mag)
+            if (std::isfinite(m)) { mlo = std::min(mlo, m); mhi = std::max(mhi, m); }
+        if (mlo > mhi) { mlo = -20; mhi = 20; }
+        double sp = std::max(mhi - mlo, 1.0);
+        mlo -= sp * 0.08; mhi += sp * 0.08;
+        mag_lo = mlo; mag_hi = mhi;
+        // Phase auto from unwrapped samples.
+        double plo = 1e300, phi = -1e300;
+        for (double p : c.ph)
+            if (std::isfinite(p)) { plo = std::min(plo, p); phi = std::max(phi, p); }
+        if (plo > phi) { plo = -180; phi = 180; }
+        ph_lo = plo - 10; ph_hi = phi + 10;
+    } else {
+        f_lo = std::max(1e-12, x_lo_in);
+        f_hi = std::max(f_lo * 1.0001, x_hi_in);
+        mag_lo = y_lo_in; mag_hi = y_hi_in;
+        // Phase keeps a sensible default; user can't set it directly yet.
+        ph_lo = -200; ph_hi = 200;
+    }
+}
 
 void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     const int mL = 56, mR = 12, mT = 12, mB = 42;
@@ -243,107 +365,128 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     const int Hp = sz.y - mT - mB - 14;
     if (W < 50 || Hh < 30) return;
 
-    double f_lo, f_hi;
-    int npts;
-    band(f_lo, f_hi, npts);
-    std::vector<double> mag, ph;
-    std::vector<double> freqs = syms::sweep_hz(f_lo, f_hi, npts);
-    double mag_min = 1e300, mag_max = -1e300;
-    for (size_t i = 0; i < freqs.size(); ++i) {
-        double w = 2 * M_PI * freqs[i];
-        double m = syms::mag_db_at(*res_, w);
-        double p = syms::phase_deg_at(*res_, w);
-        mag.push_back(m);
-        ph.push_back(p);
-        if (std::isfinite(m)) {
-            mag_min = std::min(mag_min, m);
-            mag_max = std::max(mag_max, m);
-        }
+    Curve c;
+    sample_curve(res_, c, *this);
+    if (c.f.empty()) return;
+
+    double f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi;
+    compute_axes(*res_, c, auto_range_, x_lo_, x_hi_, y_lo_, y_hi_,
+                 f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi);
+
+    if (!title_.empty()) {
+        dc.SetTextForeground(wxColour(40, 40, 45));
+        wxFont bold = dc.GetFont(); bold.SetWeight(wxFONTWEIGHT_BOLD);
+        dc.SetFont(bold);
+        dc.DrawText(wxString::FromUTF8(title_), mL, mT - 2);
+        dc.SetFont(wxNullFont);
     }
-    if (mag_min > mag_max) return;
-    double msp = std::max(mag_max - mag_min, 1.0);
-    mag_min -= msp * 0.08;
-    mag_max += msp * 0.08;
-    const double ph_min = -200, ph_max = 200;
 
     double loglo = std::log10(f_lo), loghi = std::log10(f_hi);
     auto x_of = [&](double f) {
         double t = (std::log10(f) - loglo) / (loghi - loglo);
         return mL + t * W;
     };
+    auto y_mag = [&](double db) {
+        return mT + Hh - (db - mag_lo) / (mag_hi - mag_lo) * Hh;
+    };
+    auto y_ph = [&](double deg) {
+        return mT + Hh + 14 + Hp - (deg - ph_lo) / (ph_hi - ph_lo) * Hp;
+    };
 
-    dc.SetPen(wxPen(wxColour(232, 232, 236)));
-    dc.SetTextForeground(wxColour(140, 140, 145));
+    // major + minor decade vertical grid lines
     {
+        dc.SetPen(wxPen(wxColour(225, 225, 230)));
         int e0 = int(std::floor(loglo - 1e-9));
         int e1 = int(std::ceil(loghi + 1e-9));
         for (int e = e0; e <= e1; ++e) {
             double f = std::pow(10.0, e);
             if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
             int x = int(x_of(f));
+            dc.SetPen(wxPen(wxColour(210, 210, 215)));
             dc.DrawLine(x, mT, x, mT + Hh);
             dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
+            dc.SetTextForeground(wxColour(110, 110, 118));
             wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
             dc.DrawText(lbl, x + 2, mT + Hh + 14 + Hp + 4);
+            // minor at 2..9 in this decade
+            dc.SetPen(wxPen(wxColour(240, 240, 244)));
+            for (int k = 2; k <= 9; ++k) {
+                double f2 = f * k;
+                if (f2 < f_lo || f2 > f_hi) continue;
+                int x2 = int(x_of(f2));
+                dc.DrawLine(x2, mT, x2, mT + Hh);
+                dc.DrawLine(x2, mT + Hh + 14, x2, mT + Hh + 14 + Hp);
+            }
         }
     }
 
-    auto y_mag = [&](double db) {
-        return mT + Hh - (db - mag_min) / (mag_max - mag_min) * Hh;
-    };
-    dc.SetPen(wxPen(wxColour(210, 210, 215)));
+    // magnitude horizontal grid
+    dc.SetPen(wxPen(wxColour(225, 225, 230)));
     dc.DrawRectangle(mL, mT, W, Hh);
-    int db_step = int(std::max(10.0, std::ceil((mag_max - mag_min) / 5)));
-    for (int db = int(std::floor(mag_min / db_step) * db_step); db <= mag_max;
-         db += db_step) {
+    double db_step = 20.0;
+    if (mag_hi - mag_lo > 200) db_step = 50;
+    else if (mag_hi - mag_lo > 80) db_step = 20;
+    else db_step = 10;
+    int db = int(std::floor(mag_lo / db_step) * int(db_step));
+    for (; db <= mag_hi; db += int(db_step)) {
         int y = int(y_mag(db));
         if (y < mT || y > mT + Hh) continue;
         dc.SetPen(wxPen(wxColour(240, 240, 244)));
         dc.DrawLine(mL, y, mL + W, y);
-        dc.SetTextForeground(wxColour(140, 140, 145));
-        dc.DrawText(wxString::Format("%d dB", db), 4, y - 6);
+        dc.SetTextForeground(wxColour(110, 110, 118));
+        dc.DrawText(wxString::Format("%+d dB", db), 4, y - 6);
     }
 
-    auto y_ph = [&](double deg) {
-        return mT + Hh + 14 + Hp - (deg - ph_min) / (ph_max - ph_min) * Hp;
-    };
-    dc.SetPen(wxPen(wxColour(210, 210, 215)));
+    // phase horizontal grid
+    dc.SetPen(wxPen(wxColour(225, 225, 230)));
     dc.DrawRectangle(mL, mT + Hh + 14, W, Hp);
-    for (int deg : {-180, -90, 0, 90, 180}) {
+    int ph_step = 45;
+    if (ph_hi - ph_lo > 720) ph_step = 90;
+    else if (ph_hi - ph_lo > 240) ph_step = 60;
+    else ph_step = 30;
+    int deg = int(std::ceil(ph_lo / ph_step)) * ph_step;
+    for (; deg <= ph_hi; deg += ph_step) {
         int y = int(y_ph(deg));
         if (y < mT + Hh + 14 || y > mT + Hh + 14 + Hp) continue;
         dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
                                  : wxColour(240, 240, 244)));
         dc.DrawLine(mL, y, mL + W, y);
-        dc.SetTextForeground(wxColour(140, 140, 145));
+        dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%d\u00b0", deg), 6, y - 6);
     }
 
+    // magnitude curve
     dc.SetPen(wxPen(wxColour(200, 40, 40), 2));
-    bool started = false;
-    wxPoint prev(0, 0);
-    for (size_t i = 0; i < freqs.size(); ++i) {
-        if (!std::isfinite(mag[i])) { started = false; continue; }
-        wxPoint p(int(x_of(freqs[i])), int(y_mag(mag[i])));
-        if (started) dc.DrawLine(prev, p);
-        prev = p;
-        started = true;
+    {
+        bool started = false;
+        wxPoint prev(0, 0);
+        for (size_t i = 0; i < c.f.size(); ++i) {
+            if (!std::isfinite(c.mag[i])) { started = false; continue; }
+            wxPoint p(int(x_of(c.f[i])), int(y_mag(c.mag[i])));
+            if (started) dc.DrawLine(prev, p);
+            prev = p;
+            started = true;
+        }
     }
+    // phase curve (already unwrapped by sample_curve)
     dc.SetPen(wxPen(wxColour(40, 90, 200), 2));
-    started = false;
-    for (size_t i = 0; i < freqs.size(); ++i) {
-        if (!std::isfinite(ph[i])) { started = false; continue; }
-        wxPoint p(int(x_of(freqs[i])), int(y_ph(ph[i])));
-        if (started) dc.DrawLine(prev, p);
-        prev = p;
-        started = true;
+    {
+        bool started = false;
+        wxPoint prev(0, 0);
+        for (size_t i = 0; i < c.f.size(); ++i) {
+            if (!std::isfinite(c.ph[i])) { started = false; continue; }
+            wxPoint p(int(x_of(c.f[i])), int(y_ph(c.ph[i])));
+            if (started) dc.DrawLine(prev, p);
+            prev = p;
+            started = true;
+        }
     }
 
     dc.SetTextForeground(wxColour(200, 40, 40));
     dc.DrawText("Magnitude", mL + 6, mT + 4);
     dc.SetTextForeground(wxColour(40, 90, 200));
     dc.DrawText("Phase", mL + 6, mT + Hh + 18);
-    dc.SetTextForeground(wxColour(90, 90, 95));
+    dc.SetTextForeground(wxColour(110, 110, 118));
     dc.DrawText("frequency [Hz]", mL + W - 78, mT + Hh + 14 + Hp + 4);
 }
 
@@ -370,12 +513,27 @@ void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
     auto X = [&](double v) { return mL + (v - lo) / (hi - lo) * W; };
     auto Y = [&](double v) { return mT + H - (v - lo) / (hi - lo) * H; };
 
-    dc.SetPen(wxPen(wxColour(215, 215, 220)));
+    if (!title_.empty()) {
+        dc.SetTextForeground(wxColour(40, 40, 45));
+        wxFont bold = dc.GetFont(); bold.SetWeight(wxFONTWEIGHT_BOLD);
+        dc.SetFont(bold);
+        dc.DrawText(wxString::FromUTF8(title_), mL, mT - 2);
+        dc.SetFont(wxNullFont);
+    }
+
+    dc.SetPen(wxPen(wxColour(225, 225, 230)));
     dc.DrawRectangle(mL, mT, W, H);
+    // grid lines at 1/5 intervals
+    dc.SetPen(wxPen(wxColour(240, 240, 244)));
+    for (int k = 1; k < 5; ++k) {
+        double v = lo + (hi - lo) * k / 5;
+        dc.DrawLine(int(X(v)), mT, int(X(v)), mT + H);
+        dc.DrawLine(mL, int(Y(v)), mL + W, int(Y(v)));
+    }
     dc.SetPen(wxPen(wxColour(160, 160, 168)));
     dc.DrawLine(int(X(0)), mT, int(X(0)), mT + H);
     dc.DrawLine(mL, int(Y(0)), mL + W, int(Y(0)));
-    dc.SetTextForeground(wxColour(130, 130, 138));
+    dc.SetTextForeground(wxColour(110, 110, 118));
     dc.DrawText("Re", mL + W - 18, int(Y(0)) - 16);
     dc.DrawText("Im", int(X(0)) + 4, mT + 4);
     char b1[48], b2[48];
@@ -406,44 +564,55 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     sample_curve(res_, c, *this);
     if (c.f.empty()) return;
 
-    // x: phase (deg), y: magnitude (dB), both auto-scaled
-    double plo = 1e300, phi = -1e300, mlo = 1e300, mhi = -1e300;
-    for (size_t i = 0; i < c.f.size(); ++i) {
-        if (!std::isfinite(c.mag[i]) || !std::isfinite(c.ph[i])) continue;
-        plo = std::min(plo, c.ph[i]);
-        phi = std::max(phi, c.ph[i]);
-        mlo = std::min(mlo, c.mag[i]);
-        mhi = std::max(mhi, c.mag[i]);
-    }
-    if (plo > phi || mlo > mhi) return;
-    plo -= 10;
-    phi += 10;
-    if (mhi - mlo < 1.0) mhi = mlo + 1.0;
-    mlo -= 5;
-    mhi += 5;
+    double f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi;
+    compute_axes(*res_, c, auto_range_, x_lo_, x_hi_, y_lo_, y_hi_,
+                 f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi);
+    // For Nichols we want phase as x and magnitude as y; the auto/manual
+    // range uses frequency on x, so swap the labels accordingly. The y
+    // bounds stay magnitude; for x we use phase since the user usually
+    // wants to see phase extent rather than frequency.
+    double nx_lo = ph_lo, nx_hi = ph_hi, ny_lo = mag_lo, ny_hi = mag_hi;
 
     const int mL = 56, mR = 16, mT = 16, mB = 34;
     int W = sz.x - mL - mR, H = sz.y - mT - mB;
     if (W < 50 || H < 50) return;
-    auto X = [&](double deg) { return mL + (deg - plo) / (phi - plo) * W; };
-    auto Y = [&](double db) { return mT + H - (db - mlo) / (mhi - mlo) * H; };
+    auto X = [&](double deg) { return mL + (deg - nx_lo) / (nx_hi - nx_lo) * W; };
+    auto Y = [&](double db) { return mT + H - (db - ny_lo) / (ny_hi - ny_lo) * H; };
 
-    dc.SetPen(wxPen(wxColour(215, 215, 220)));
+    if (!title_.empty()) {
+        dc.SetTextForeground(wxColour(40, 40, 45));
+        wxFont bold = dc.GetFont(); bold.SetWeight(wxFONTWEIGHT_BOLD);
+        dc.SetFont(bold);
+        dc.DrawText(wxString::FromUTF8(title_), mL, mT - 2);
+        dc.SetFont(wxNullFont);
+    }
+
+    dc.SetPen(wxPen(wxColour(225, 225, 230)));
     dc.DrawRectangle(mL, mT, W, H);
-    for (int deg = int(std::ceil(plo / 45) * 45); deg <= phi; deg += 45) {
+    // constant-phase vertical grid
+    int ph_step = 45;
+    if (nx_hi - nx_lo > 720) ph_step = 90;
+    int deg = int(std::ceil(nx_lo / ph_step)) * ph_step;
+    for (; deg <= nx_hi; deg += ph_step) {
         int x = int(X(deg));
         dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
                                  : wxColour(240, 240, 244)));
         dc.DrawLine(x, mT, x, mT + H);
-        dc.SetTextForeground(wxColour(130, 130, 138));
+        dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%d\u00b0", deg), x - 8, mT + H + 4);
     }
-    for (int db = int(std::ceil(mlo / 20) * 20); db <= mhi; db += 20) {
+    // constant-magnitude horizontal grid
+    int db_step = 20;
+    if (ny_hi - ny_lo > 200) db_step = 50;
+    else if (ny_hi - ny_lo < 40) db_step = 5;
+    int db = int(std::ceil(ny_lo / db_step)) * db_step;
+    for (; db <= ny_hi; db += db_step) {
         int y = int(Y(db));
-        dc.SetPen(wxPen(wxColour(240, 240, 244)));
+        dc.SetPen(wxPen(db == 0 ? wxColour(205, 205, 212)
+                                 : wxColour(240, 240, 244)));
         dc.DrawLine(mL, y, mL + W, y);
-        dc.SetTextForeground(wxColour(130, 130, 138));
-        dc.DrawText(wxString::Format("%d dB", db), 4, y - 6);
+        dc.SetTextForeground(wxColour(110, 110, 118));
+        dc.DrawText(wxString::Format("%+d dB", db), 4, y - 6);
     }
 
     dc.SetPen(wxPen(wxColour(40, 110, 60), 2));
@@ -461,16 +630,16 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     }
     dc.SetTextForeground(wxColour(40, 110, 60));
     dc.DrawText("Nichols: |H| (dB) vs phase", mL + 6, mT + 4);
-    dc.SetTextForeground(wxColour(90, 90, 95));
+    dc.SetTextForeground(wxColour(110, 110, 118));
     dc.DrawText("phase [deg]", mL + W - 70, mT + H + 4);
+    dc.DrawText("|H| [dB]", 4, mT + 4);
 }
 
 // ---------------------------------------------------------------------------
 BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* root = new wxBoxSizer(wxVERTICAL);
-    plot_ = new BodeCanvas(this);
-    root->Add(plot_, 1, wxEXPAND);
 
+    // Toolbar: plot mode + axis spin controls + save buttons.
     auto* bar = new wxBoxSizer(wxHORIZONTAL);
     auto* mode = new wxChoice(this, wxID_ANY);
     mode->Append("Bode");
@@ -480,14 +649,45 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* svg = new wxButton(this, wxID_ANY, "Save SVG...");
     auto* png = new wxButton(this, wxID_ANY, "Save PNG...");
     auto* csv = new wxButton(this, wxID_ANY, "Save CSV...");
+    auto_box_ = new wxCheckBox(this, wxID_ANY, "Auto scale");
+    auto_box_->SetValue(true);
+    xmin_ = new wxSpinCtrl(this, wxID_ANY, "1",
+                           wxDefaultPosition, wxSize(70, -1),
+                           wxSP_ARROW_KEYS, 1, 1e12, 1);
+    xmax_ = new wxSpinCtrl(this, wxID_ANY, "100000000",
+                           wxDefaultPosition, wxSize(80, -1),
+                           wxSP_ARROW_KEYS, 1, 1e15, 100000000);
+    ymin_ = new wxSpinCtrl(this, wxID_ANY, "-40",
+                           wxDefaultPosition, wxSize(60, -1),
+                           wxSP_ARROW_KEYS, -1000, 1000, -40);
+    ymax_ = new wxSpinCtrl(this, wxID_ANY, "40",
+                           wxDefaultPosition, wxSize(60, -1),
+                           wxSP_ARROW_KEYS, -1000, 1000, 40);
+
     bar->Add(new wxStaticText(this, wxID_ANY, "Plot:"), 0,
              wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     bar->Add(mode, 0, wxRIGHT, 8);
+    bar->Add(auto_box_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    bar->Add(new wxStaticText(this, wxID_ANY, "f:"), 0,
+             wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 2);
+    bar->Add(xmin_, 0, wxRIGHT, 2);
+    bar->Add(new wxStaticText(this, wxID_ANY, ".."), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    bar->Add(xmax_, 0, wxRIGHT, 8);
+    bar->Add(new wxStaticText(this, wxID_ANY, "|H|:"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    bar->Add(ymin_, 0, wxRIGHT, 2);
+    bar->Add(new wxStaticText(this, wxID_ANY, ".."), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    bar->Add(ymax_, 0, wxRIGHT, 8);
     bar->Add(svg, 0, wxRIGHT, 6);
     bar->Add(png, 0, wxRIGHT, 6);
     bar->Add(csv, 0, 0);
-    bar->AddStretchSpacer();
     root->Add(bar, 0, wxEXPAND | wxALL, 4);
+
+    plot_ = new BodeCanvas(this);
+    root->Add(plot_, 1, wxEXPAND);
+
     SetSizer(root);
 
     mode->Bind(wxEVT_CHOICE, [this, mode](wxCommandEvent&) {
@@ -497,6 +697,23 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
             default: plot_->set_mode(PlotMode::Bode); break;
         }
     });
+
+    auto apply_axis = [this](wxCommandEvent&) {
+        if (auto_box_->GetValue()) plot_->set_auto_range(true);
+        else {
+            plot_->set_x_range(xmin_->GetValue(), xmax_->GetValue());
+            plot_->set_y_range(ymin_->GetValue(), ymax_->GetValue());
+        }
+    };
+    auto_box_->Bind(wxEVT_CHECKBOX, apply_axis);
+    xmin_->Bind(wxEVT_SPINCTRL, apply_axis);
+    xmax_->Bind(wxEVT_SPINCTRL, apply_axis);
+    ymin_->Bind(wxEVT_SPINCTRL, apply_axis);
+    ymax_->Bind(wxEVT_SPINCTRL, apply_axis);
+    xmin_->Bind(wxEVT_TEXT, apply_axis);
+    xmax_->Bind(wxEVT_TEXT, apply_axis);
+    ymin_->Bind(wxEVT_TEXT, apply_axis);
+    ymax_->Bind(wxEVT_TEXT, apply_axis);
 
     svg->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         wxFileDialog dlg(this, "Save plot", "", "plot.svg",
@@ -524,6 +741,16 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
 void BodePanel::set_result(const syms::AnalysisResult* r) {
     plot_->set_result(r);
     Refresh();
+}
+
+void BodePanel::set_title(const std::string& t) {
+    plot_->set_title(t);
+}
+
+void BodePanel::sync_axis_controls() {
+    // unused; bindings are direct lambdas. Kept so the declaration in the
+    // header can stay (we used to wire this through wxEVENT_TABLE).
+    (void)xmin_; (void)xmax_; (void)ymin_; (void)ymax_; (void)auto_box_;
 }
 
 } // namespace symcirc

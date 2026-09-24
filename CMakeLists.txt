@@ -55,14 +55,19 @@ endif()
 # wxWidgets: MSYS2 ships a CMake config package (wx::core, ...) alongside a
 # wx-config shell script that native CMake cannot execute -- so prefer CONFIG
 # mode, fall back to the classic FindwxWidgets module.
-find_package(wxWidgets CONFIG QUIET COMPONENTS core base aui adv)
+find_package(wxWidgets CONFIG QUIET COMPONENTS core base aui adv webview)
 if(wxWidgets_FOUND)
   if(NOT wxWidgets_LIBRARIES)
-    set(wxWidgets_LIBRARIES wx::core wx::base wx::aui wx::adv)
+    set(wxWidgets_LIBRARIES wx::core wx::base wx::aui wx::adv wx::webview)
   endif()
 else()
-  find_package(wxWidgets REQUIRED COMPONENTS core base aui adv)
+  find_package(wxWidgets REQUIRED COMPONENTS core base aui adv webview)
   include(${wxWidgets_USE_FILE})
+endif()
+# Some wx builds expose the webview target only via the config package; link
+# it explicitly when present so the Math tab's wxWebView resolves.
+if(TARGET wx::webview)
+  list(APPEND SYM_WX_WEBVIEW wx::webview)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -101,21 +106,26 @@ add_executable(SymCirc WIN32
   src/app/App.cpp
   src/app/MainFrame.cpp
   src/app/Document.cpp
+  src/app/SymbolGeom.cpp
   src/app/Symbols.cpp
   src/app/SchematicCanvas.cpp
   src/app/PalettePanel.cpp
   src/app/PropertiesPanel.cpp
   src/app/AnalysisPanel.cpp
+  src/app/AnalysisResultsFrame.cpp
+  src/app/LatexRender.cpp
+  src/app/MathPanel.cpp
   src/app/ResultsPanel.cpp
   src/app/BodePanel.cpp
   src/app/LuaConsole.cpp
 )
 target_include_directories(SymCirc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(NOT TARGET wx::core)
-  target_link_libraries(SymCirc PRIVATE symcore symscript ${wxWidgets_LIBRARIES})
+  target_link_libraries(SymCirc PRIVATE symcore symscript
+                        ${wxWidgets_LIBRARIES} ${SYM_WX_WEBVIEW})
 else()
   target_link_libraries(SymCirc PRIVATE symcore symscript wx::core wx::base
-                         wx::aui wx::adv)
+                         wx::aui wx::adv ${SYM_WX_WEBVIEW})
 endif()
 
 # ---------------------------------------------------------------------------

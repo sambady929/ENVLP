@@ -26,7 +26,8 @@ wxEND_EVENT_TABLE()
 
 namespace {
 constexpr double kGrid = 10.0;
-constexpr double kSnapR = 8.0; // pin capture radius (screen px)
+constexpr double kSnapR = 5.0;  // 1/2 grid in *document* units; pins and wires
+                                // both share this tolerance for hover/select
 constexpr double kMinZoom = 0.05, kMaxZoom = 8.0;
 
 double dist(Pt a, Pt b) { return std::hypot(a.first - b.first, a.second - b.second); }
@@ -183,6 +184,10 @@ Pt SchematicCanvas::snap(Pt p) const {
             std::round(p.second / kGrid) * kGrid};
 }
 
+void SchematicCanvas::report_view() {
+    if (on_view_changed) on_view_changed(zoom_, view_x_, view_y_);
+}
+
 void SchematicCanvas::set_zoom(double z, wxPoint anchor) {
     z = std::max(kMinZoom, std::min(kMaxZoom, z));
     if (std::fabs(z - zoom_) < 1e-12) return;
@@ -191,6 +196,7 @@ void SchematicCanvas::set_zoom(double z, wxPoint anchor) {
     zoom_ = z;
     view_x_ = d.first - anchor.x / zoom_;
     view_y_ = d.second - anchor.y / zoom_;
+    report_view();
     Refresh(false);
 }
 
@@ -223,6 +229,59 @@ bool SchematicCanvas::content_bounds(double& x0, double& y0, double& x1,
     return any;
 }
 
+// A point is a junction when wire segments meet there in a T or cross, i.e.
+// an endpoint of one segment lies strictly inside another segment, or three or
+// more segment-ends coincide. Endpoints that merely touch end-to-end are a
+// corner, not a junction, and get no dot.
+std::vector<Pt> SchematicCanvas::junction_pts() const {
+    // Gather every segment, and every vertex with the number of segment-ends
+    // landing on it.
+    struct Seg { Pt a, b; };
+    std::vector<Seg> segs;
+    for (const auto& w : doc_->wires)
+        for (size_t k = 1; k < w.pts.size(); ++k)
+            segs.push_back({w.pts[k - 1], w.pts[k]});
+
+    // ("near"/"far" are legacy Windows macros, so avoid those names.)
+    auto close_to = [](Pt p, Pt q) {
+        return std::hypot(p.first - q.first, p.second - q.second) <= 1.0;
+    };
+    auto on_span = [&](Pt p, const Seg& s) {
+        // strictly between the endpoints (not at either end)
+        if (close_to(p, s.a) || close_to(p, s.b)) return false;
+        double vx = s.b.first - s.a.first, vy = s.b.second - s.a.second;
+        double wx = p.first - s.a.first, wy = p.second - s.a.second;
+        double L2 = vx * vx + vy * vy;
+        if (L2 < 1e-9) return false;
+        double t = (wx * vx + wy * vy) / L2;
+        if (t <= 0.0 || t >= 1.0) return false;
+        double px = s.a.first + t * vx, py = s.a.second + t * vy;
+        return std::hypot(p.first - px, p.second - py) <= 1.0;
+    };
+
+    // Every vertex of every wire, and every segment crossing/ending-on them.
+    std::vector<Pt> verts;
+    for (const auto& w : doc_->wires)
+        for (const auto& v : w.pts) verts.push_back(v);
+
+    std::vector<Pt> out;
+    for (const auto& v : verts) {
+        int ends = 0, through = 0;
+        for (const auto& s : segs) {
+            if (close_to(v, s.a) || close_to(v, s.b)) ++ends;
+            else if (on_span(v, s)) ++through;
+        }
+        // a T (endpoint on another wire's middle) or a 3+ way meeting
+        if (through > 0 || ends >= 3) {
+            bool dup = false;
+            for (const auto& q : out)
+                if (close_to(v, q)) { dup = true; break; }
+            if (!dup) out.push_back(v);
+        }
+    }
+    return out;
+}
+
 void SchematicCanvas::zoom_to_fit() {
     double x0, y0, x1, y1;
     if (!content_bounds(x0, y0, x1, y1)) {
@@ -230,6 +289,7 @@ void SchematicCanvas::zoom_to_fit() {
         zoom_ = 1.0;
         view_x_ = -50.0;
         view_y_ = -50.0;
+        report_view();
         Refresh(false);
         return;
     }
@@ -246,6 +306,7 @@ void SchematicCanvas::zoom_to_fit() {
     double cy = (y0 + y1) / 2;
     view_x_ = cx - (cs.x / 2) / zoom_;
     view_y_ = cy - (cs.y / 2) / zoom_;
+    report_view();
     Refresh(false);
 }
 
@@ -313,16 +374,15 @@ Selection SchematicCanvas::selection_info() const {
 // hit testing
 // ---------------------------------------------------------------------------
 std::string SchematicCanvas::hit_component(Pt p) const {
-    Pt v = to_view(p);
+    // Only the symbol body's own box (small pad) counts as a hit, so a click
+    // near a pin lands on the wire attached there instead of on the symbol.
     for (auto it = doc_->circuit.comps.rbegin();
          it != doc_->circuit.comps.rend(); ++it) {
         auto pl = doc_->placements.find(it->ref);
         if (pl == doc_->placements.end()) continue;
         double x0, y0, x1, y1;
-        symbol_bbox(*it, pl->second, x0, y0, x1, y1);
-        Pt a = to_view({x0, y0}), b = to_view({x1, y1});
-        if (v.first >= a.first && v.first <= b.first && v.second >= a.second &&
-            v.second <= b.second)
+        symbol_bbox(*it, pl->second, x0, y0, x1, y1, 4.0);
+        if (p.first >= x0 && p.first <= x1 && p.second >= y0 && p.second <= y1)
             return it->ref;
     }
     return "";
@@ -333,22 +393,19 @@ int SchematicCanvas::hit_pin(const std::string& ref, Pt p) const {
     if (!c) return -1;
     auto pl = doc_->placements.find(ref);
     if (pl == doc_->placements.end()) return -1;
-    Pt v = to_view(p);
     int n = int(pin_offsets(c->kind).size());
     for (int i = 0; i < n; ++i)
-        if (dist(to_view(pin_world(*c, pl->second, i)), v) <= kSnapR)
-            return i;
+        if (dist(pin_world(*c, pl->second, i), p) <= kSnapR) return i;
     return -1;
 }
 
 int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
-    Pt v = to_view(p);
     for (const auto& c : doc_->circuit.comps) {
         auto pl = doc_->placements.find(c.ref);
         if (pl == doc_->placements.end()) continue;
         int n = int(pin_offsets(c.kind).size());
         for (int i = 0; i < n; ++i)
-            if (dist(to_view(pin_world(c, pl->second, i)), v) <= kSnapR) {
+            if (dist(pin_world(c, pl->second, i), p) <= kSnapR) {
                 ref = c.ref;
                 return i;
             }
@@ -358,11 +415,10 @@ int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
 }
 
 bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
-    Pt v = to_view(p);
     for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
         const auto& w = doc_->wires[i];
         for (size_t k = 1; k < w.pts.size(); ++k)
-            if (seg_dist(v, to_view(w.pts[k - 1]), to_view(w.pts[k])) <= 5.0) {
+            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= kSnapR) {
                 idx = i;
                 return true;
             }
@@ -371,11 +427,10 @@ bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
 }
 
 bool SchematicCanvas::hit_wire_segment(Pt p, int& idx, int& seg) const {
-    Pt v = to_view(p);
     for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
         const auto& w = doc_->wires[i];
         for (size_t k = 1; k < w.pts.size(); ++k)
-            if (seg_dist(v, to_view(w.pts[k - 1]), to_view(w.pts[k])) <= 6.0) {
+            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= kSnapR) {
                 idx = i;
                 seg = int(k) - 1;
                 return true;
@@ -385,20 +440,24 @@ bool SchematicCanvas::hit_wire_segment(Pt p, int& idx, int& seg) const {
 }
 
 bool SchematicCanvas::hit_label(Pt p, int& idx) const {
-    Pt v = to_view(p);
     for (int i = int(doc_->labels.size()) - 1; i >= 0; --i) {
         const auto& l = doc_->labels[i];
-        Pt a = to_view(l.pt);
-        // clickable area: the anchor dot plus the text drawn above it
-        double fs = std::max(8, l.font_size) * zoom_;
-        double halfw = std::max(14.0, fs * 0.32 * std::max<size_t>(1, l.name.size()));
+        Pt a = l.pt;
+        // clickable area: the text drawn around `pt` and the anchor dot
+        double fs = std::max(8, l.font_size);
+        double halfw =
+            std::max(14.0, fs * 0.32 * std::max<size_t>(1, l.name.size()));
         double top = a.second - fs * 1.4;
-        if (v.first >= a.first - halfw && v.first <= a.first + halfw &&
-            v.second >= top && v.second <= a.second + 8) {
+        if (p.first >= a.first - halfw && p.first <= a.first + halfw &&
+            p.second >= top && p.second <= a.second + 8) {
             idx = i;
             return true;
         }
-        if (dist(a, v) <= 10.0) {
+        if (dist(a, p) <= kSnapR) {
+            idx = i;
+            return true;
+        }
+        if (dist(l.anchor, p) <= kSnapR) {
             idx = i;
             return true;
         }
@@ -474,6 +533,13 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         }
     }
 
+    // solder dots at T-junctions / 3-way meetings (item: perpendicular wire
+    // into the middle of another must read as a real connection)
+    for (const auto& j : junction_pts()) {
+        if (!on_screen(j.first, j.second, 20)) continue;
+        doc_circle(j, 4, wxColour(0, 0, 0), true);
+    }
+
     // wire in progress: the current (uncommitted) segment, from the last
     // vertex to the snapped cursor
     if (wiring_ && !wire_pts_.empty()) {
@@ -489,6 +555,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     }
 
     // net labels (font size is per-label; drawn above the anchor point)
+    wxFont pre_labels_font = dc.GetFont();
     for (size_t i = 0; i < doc_->labels.size(); ++i) {
         const auto& l = doc_->labels[i];
         if (!on_screen(l.pt.first, l.pt.second, 80)) continue;
@@ -499,20 +566,44 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         dc.SetFont(f);
         wxString txt = wxString::FromUTF8(l.name);
         wxSize ts = dc.GetTextExtent(txt); // logical units (DC is scaled)
-        Pt p{l.pt.first - ts.x / 2.0, l.pt.second - ts.y - 4.0};
+        int rot = ((l.rot % 360) + 360) % 360;
+        // Position the text so the centre-bottom of the glyph sits at `pt`,
+        // and rotate around that anchor. When rotated 90/270 we use the same
+        // visible footprint: a centred box around `pt`.
+        wxPoint anchor(int(l.pt.first), int(l.pt.second));
         if (is_sel) {
             dc.SetBrush(wxBrush(wxColour(0, 92, 200)));
             dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.DrawRectangle(wxRect(int(p.first) - 3, int(p.second) - 1,
-                                    ts.x + 6, ts.y + 2));
+            int bw = ts.x + 6, bh = ts.y + 2;
+            if (rot == 90 || rot == 270) std::swap(bw, bh);
+            dc.DrawRectangle(wxRect(anchor.x - bw / 2, anchor.y - bh / 2,
+                                    bw, bh));
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetTextForeground(*wxWHITE);
         } else {
             dc.SetTextForeground(wxColour(0, 0, 0));
         }
-        dc.DrawText(txt, wxPoint(int(p.first), int(p.second)));
+        if (rot == 0 || rot == 180) {
+            dc.DrawText(txt,
+                        wxPoint(anchor.x - ts.x / 2, anchor.y - ts.y / 2));
+        } else {
+            dc.DrawRotatedText(txt, anchor.x, anchor.y, rot);
+        }
         dc.SetTextForeground(*wxBLACK);
+
+        // Anchor dot (red) shows where on the net this label sits; useful so
+        // the user can see that dragging the text does not detach the label.
+        if (std::fabs(l.anchor.first - l.pt.first) > 0.5 ||
+            std::fabs(l.anchor.second - l.pt.second) > 0.5 ||
+            is_sel) {
+            doc_circle({l.anchor.first, l.anchor.second}, 3,
+                       wxColour(200, 40, 40), true);
+        }
     }
+    // Restore the font before drawing components: draw_symbol() reads the
+    // current DC font as its base for ref/value text, so leaving a label's
+    // custom font installed would change the size of every component name.
+    dc.SetFont(pre_labels_font);
 
     // components (multi-selection highlights all)
     for (const auto& c : doc_->circuit.comps) {
@@ -548,7 +639,8 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
             anchor = best;
         }
         doc_circle(anchor, 5, wxColour(200, 40, 40), false);
-        wxFont f(14, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+        wxFont saved = dc.GetFont();
+        wxFont f(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
         dc.SetFont(f);
         wxString txt = wxString::FromUTF8(label_queue_.front());
         wxSize ts = dc.GetTextExtent(txt);
@@ -556,6 +648,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         dc.DrawText(txt, wxPoint(int(anchor.first - ts.x / 2.0),
                                  int(anchor.second - ts.y - 6.0)));
         dc.SetTextForeground(*wxBLACK);
+        dc.SetFont(saved);
     }
 
     // red dot while in wiring mode: jumps to the nearest valid grid point so
@@ -576,6 +669,37 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         pl.flip_v = place_flip_v_;
         dc.SetPen(wxPen(wxColour(0, 120, 200), 1, wxPENSTYLE_SHORT_DASH));
         draw_symbol(dc, tmp, pl, false);
+    }
+
+    // Net-name tooltip near the cursor (not snapped to the grid; floats with
+    // the cursor as the user moves it across a wire or a pin). Drawn last so
+    // it sits on top of everything else.
+    if (!hover_net_.empty() && has_mouse_) {
+        // Remember the DC font so we can restore it; the canvas's default font
+        // is shared with the components' value/ref labels (the text on each
+        // symbol), so an unrestored font would make them reflow between paints.
+        wxFont old = dc.GetFont();
+        wxFont f(12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL,
+                 wxFONTWEIGHT_BOLD);
+        dc.SetFont(f);
+        wxString txt = wxString::FromUTF8(hover_net_);
+        wxSize ts = dc.GetTextExtent(txt);
+        // Anchor the tooltip up-and-to-the-left of the cursor in *screen*
+        // units, so it stays glued to the cursor regardless of zoom and never
+        // sits under the cursor (where it would obscure the wire).
+        int tx = mouse_.x - ts.x - 12;
+        int ty = mouse_.y - ts.y - 12;
+        // If the tooltip would go off the left/top edge, flip it.
+        if (tx < 0) tx = mouse_.x + 14;
+        if (ty < 0) ty = mouse_.y + 14;
+        dc.SetPen(wxPen(wxColour(80, 80, 90)));
+        dc.SetBrush(wxBrush(wxColour(255, 252, 220)));
+        dc.DrawRectangle(wxRect(tx - 4, ty - 2, ts.x + 8, ts.y + 4));
+        dc.SetTextForeground(wxColour(40, 40, 40));
+        dc.DrawText(txt, wxPoint(tx, ty));
+        dc.SetTextForeground(*wxBLACK);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.SetFont(old);
     }
 }
 
@@ -693,8 +817,11 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         NetLabel l;
         int wi = -1;
         Pt target = snap(p);
+        // The anchor is what attaches to the net; if the click is on a wire,
+        // snap to the wire. Otherwise anchor at the grid point itself.
+        Pt anchor = target;
         if (hit_wire(p, wi) && wi >= 0) {
-            Pt best = target;
+            Pt best = anchor;
             double bestd = 1e300;
             const auto& w = doc_->wires[wi];
             for (size_t k = 1; k < w.pts.size(); ++k) {
@@ -709,11 +836,15 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
                 Pt q{a.first + t * vx, a.second + t * vy};
                 if (dist(q, p) < bestd) { bestd = dist(q, p); best = q; }
             }
-            target = best;
+            anchor = best;
         }
-        l.pt = target;
+        l.anchor = anchor;
         l.name = label_queue_.front();
-        l.font_size = 14;
+        l.font_size = 9; // matches the component ref/value text size
+        l.rot = 0;
+        // Put the text on the readable side of the wire (right of a vertical
+        // wire, above a horizontal one) instead of straddling it.
+        l.pt = doc_->label_display_pt(wi, anchor, int(l.name.size()));
         doc_->labels.push_back(l);
         label_queue_.erase(label_queue_.begin());
         if (label_queue_.empty()) tool_ = Tool::Select;
@@ -760,17 +891,59 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             sel_set_.insert(sel_);
             notify_sel();
             if (on_wire_selected) {
-                std::string err;
-                on_wire_selected(wi, doc_->net_name_of_wire(wi, err));
+                on_wire_selected(wi, doc_->net_name_of_wire(wi));
+            }
+            // Start a wire-segment drag so it carries connected geometry.
+            if (wi >= 0 && wi < int(doc_->wires.size())) {
+                drag_wire_ = wi;
+                drag_wire_pts_backup_ = doc_->wires[wi].pts;
+                drag_anchor_ = p;
+                drag_start_.clear();
+                drag_label_ = -1;
+                dragging_ = true;
+            }
+            Refresh();
+            return;
+        }
+        if (hit_wire(p, wi)) {
+            // Click on the wire body (not a tight segment hit) selects the
+            // whole wire; dragging translates every vertex and any connected
+            // geometry attached at a shared vertex.
+            sel_set_.clear();
+            sel_ = "#wire" + std::to_string(wi);
+            sel_set_.insert(sel_);
+            notify_sel();
+            if (on_wire_selected) {
+                on_wire_selected(wi, doc_->net_name_of_wire(wi));
+            }
+            if (wi >= 0 && wi < int(doc_->wires.size())) {
+                drag_wire_ = wi;
+                drag_wire_pts_backup_ = doc_->wires[wi].pts;
+                drag_anchor_ = p;
+                drag_start_.clear();
+                drag_label_ = -1;
+                dragging_ = true;
             }
             Refresh();
             return;
         }
         if (hit_label(p, li)) {
             sel_set_.clear();
-            sel_ = "#label" + std::to_string(li);
-            sel_set_.insert(sel_);
+            std::string lsel = "#label" + std::to_string(li);
+            sel_ = lsel;
+            sel_set_.insert(lsel);
             notify_sel();
+            // Labels are moveable but the wire they name is *not* -- moving
+            // changes only `pt` (the display position). `anchor` stays.
+            if (li >= 0 && li < int(doc_->labels.size())) {
+                drag_label_ = li;
+                drag_label_pt_backup_ = doc_->labels[li].pt;
+                drag_label_anchor_backup_ = doc_->labels[li].anchor;
+                drag_anchor_ = p;
+                drag_start_.clear();
+                drag_wire_ = -1;
+                dragging_ = true;
+            }
             Refresh();
             return;
         }
@@ -789,7 +962,7 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
 void SchematicCanvas::on_left_up(wxMouseEvent&) {
     if (box_selecting_) {
         box_selecting_ = false;
-        // select every component whose bbox intersects the rubber band
+        // select every component and wire whose geometry intersects the box
         double x0 = std::min(box_a_.first, box_b_.first);
         double x1 = std::max(box_a_.first, box_b_.first);
         double y0 = std::min(box_a_.second, box_b_.second);
@@ -804,6 +977,17 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
                 bool hit = !(bx1 < x0 || bx0 > x1 || by1 < y0 || by0 > y1);
                 if (hit) sel_set_.insert(c.ref);
             }
+            // Wires whose bounding box (per-vertex) intersects the box.
+            for (size_t i = 0; i < doc_->wires.size(); ++i) {
+                bool hit = false;
+                for (const auto& pt : doc_->wires[i].pts)
+                    if (pt.first >= x0 && pt.first <= x1 &&
+                        pt.second >= y0 && pt.second <= y1) {
+                        hit = true;
+                        break;
+                    }
+                if (hit) sel_set_.insert("#wire" + std::to_string(i));
+            }
             sel_ = sel_set_.empty() ? "" : *sel_set_.begin();
             notify_sel();
         }
@@ -812,7 +996,15 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
     }
     if (dragging_) {
         dragging_ = false;
-        notify_doc();
+        // wire / label drags already wrote into the doc; nudge dirty + repaint
+        if (drag_wire_ >= 0 || drag_label_ >= 0) {
+            drag_wire_ = -1;
+            drag_wire_pts_backup_.clear();
+            drag_label_ = -1;
+            notify_doc();
+        } else {
+            notify_doc();
+        }
     }
 }
 
@@ -841,6 +1033,7 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         view_x_ -= dx / zoom_;
         view_y_ -= dy / zoom_;
         pan_last_ = mouse_;
+        report_view();
         Refresh(false);
         return;
     }
@@ -850,7 +1043,6 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         Refresh(false);
         return;
     }
-
     if (dragging_ && !drag_start_.empty()) {
         // absolute grid-snapped offset from where the drag began
         double dx = p.first - drag_anchor_.first;
@@ -866,6 +1058,89 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             moved = true;
         }
         if (moved) Refresh(false);
+        return;
+    }
+
+    if (dragging_ && drag_label_ >= 0 && drag_label_ < int(doc_->labels.size())) {
+        // Labels translate only `pt` -- the `anchor` (which names the net)
+        // stays where it is, so a label dragged off the wire still names it.
+        double nx = std::round((drag_label_pt_backup_.first + p.first -
+                                drag_anchor_.first) / kGrid) * kGrid;
+        double ny = std::round((drag_label_pt_backup_.second + p.second -
+                                drag_anchor_.second) / kGrid) * kGrid;
+        Pt cur = doc_->labels[drag_label_].pt;
+        if (cur.first != nx || cur.second != ny) {
+            doc_->labels[drag_label_].pt = {nx, ny};
+            // anchor unchanged
+            Refresh(false);
+        }
+        return;
+    }
+
+    if (dragging_ && drag_wire_ >= 0 &&
+        drag_wire_ < int(doc_->wires.size()) &&
+        !drag_wire_pts_backup_.empty()) {
+        // Whole-wire or wire-segment drag: translate the dragged vertices and
+        // any tributary geometry that shares an old vertex (other wires'
+        // coincident endpoints; labels whose anchor sits on a moved vertex).
+        // A wire segment (sel_ = "#wireN:segM") moves only that segment's two
+        // endpoints; tributaries are still carried.
+        Selection si = selection_info();
+        bool segment = (si.type == Selection::WireSegment);
+        int seg_a = -1, seg_b = -1;
+        if (segment) {
+            seg_a = si.seg;
+            seg_b = si.seg + 1;
+        }
+        double dx = std::round((p.first - drag_anchor_.first) / kGrid) * kGrid;
+        double dy = std::round((p.second - drag_anchor_.second) / kGrid) * kGrid;
+
+        // New positions for the dragged wire's vertices.
+        std::vector<Pt> new_pts = drag_wire_pts_backup_;
+        for (size_t k = 0; k < new_pts.size(); ++k) {
+            if (segment && int(k) != seg_a && int(k) != seg_b) continue;
+            new_pts[k].first += dx;
+            new_pts[k].second += dy;
+        }
+        // Old -> new mapping for the moved vertices, so other wires can
+        // follow exactly those endpoints.
+        std::map<std::pair<double, double>, Pt> moved;
+        for (size_t k = 0; k < new_pts.size(); ++k) {
+            Pt& o = drag_wire_pts_backup_[k];
+            Pt& n = new_pts[k];
+            if (segment && int(k) != seg_a && int(k) != seg_b) continue;
+            if (o.first != n.first || o.second != n.second)
+                moved[{o.first, o.second}] = n;
+        }
+        // Apply to the dragged wire itself.
+        doc_->wires[drag_wire_].pts = new_pts;
+
+        // Carry other wires whose vertices coincide with a moved vertex.
+        for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
+            if (int(wi) == drag_wire_) continue;
+            bool any = false;
+            for (auto& v : doc_->wires[wi].pts) {
+                auto it = moved.find({v.first, v.second});
+                if (it != moved.end()) {
+                    v = it->second;
+                    any = true;
+                }
+            }
+            if (any) (void)0;
+        }
+        // Carry labels whose anchor sits on a moved vertex.
+        for (auto& l : doc_->labels) {
+            auto it = moved.find({l.anchor.first, l.anchor.second});
+            if (it == moved.end()) continue;
+            Pt da = it->second;
+            Pt old = {it->first.first, it->first.second};
+            double ddx = da.first - old.first;
+            double ddy = da.second - old.second;
+            l.anchor = da;
+            l.pt.first += ddx;
+            l.pt.second += ddy;
+        }
+        Refresh(false);
         return;
     }
 
@@ -908,7 +1183,28 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     }
     // Repaint whenever something follows the cursor: the placement ghost, the
     // wire rubber band / red cursor dot (both before and after the first
-    // click), or the pending net label.
+    // click), or the pending net label. The hover tooltip also follows the
+    // cursor smoothly and is painted in on_paint, so we need a repaint
+    // whenever the hover net changes or the cursor moves while one is shown.
+    std::string hn;
+    {
+        std::string ref;
+        int pin = hit_any_pin(p, ref);
+        if (pin >= 0) {
+            hn = net_name_pin_cached(ref, pin);
+        } else {
+            int wi = -1;
+            if (hit_wire(p, wi)) hn = net_name_wire_cached(wi);
+        }
+    }
+    if (hn != hover_net_) {
+        hover_net_ = hn;
+        Refresh(false);
+    } else if (!hn.empty()) {
+        // tooltip follows the cursor smoothly: repaint every motion while a
+        // net is hovered.
+        Refresh(false);
+    }
     if (wiring_ || tool_ == Tool::Place || tool_ == Tool::Label ||
         tool_ == Tool::Wire)
         Refresh(false);
@@ -972,6 +1268,11 @@ void SchematicCanvas::on_leave(wxMouseEvent&) {
     // Do NOT release capture here: panning must keep working while the cursor
     // is outside the window (#3).
     if (tool_ == Tool::Place || wiring_ || tool_ == Tool::Label) Refresh(false);
+    // Hide the hover tooltip when the cursor leaves the canvas.
+    if (!hover_net_.empty()) {
+        hover_net_.clear();
+        Refresh(false);
+    }
 }
 
 void SchematicCanvas::on_size(wxSizeEvent& e) {
@@ -1011,7 +1312,11 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
     }
     for (auto& l : doc_->labels) {
         for (size_t i = 0; i < old_pins.size(); ++i)
-            if (dist(l.pt, old_pins[i]) <= 1.0) {
+            if (dist(l.anchor, old_pins[i]) <= 1.0) {
+                // Pin moved under the label's anchor: move both the anchor
+                // (the net's grip on the label) and the displayed text.
+                l.anchor.first += dx;
+                l.anchor.second += dy;
                 l.pt.first += dx;
                 l.pt.second += dy;
                 break;
@@ -1021,8 +1326,38 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
 
 void SchematicCanvas::notify_doc() {
     doc_->dirty = true;
+    net_cache_valid_ = false;
     if (on_document_changed) on_document_changed();
     Refresh();
+}
+
+// Lazy net-map cache: rebuilt at most once per edit, so the hover tooltip's
+// per-motion lookups are cheap.
+const NetMap& SchematicCanvas::nets() {
+    if (!net_cache_valid_) {
+        net_cache_ = doc_->net_map();
+        net_cache_valid_ = true;
+    }
+    return net_cache_;
+}
+
+std::string SchematicCanvas::net_name_wire_cached(int wi) {
+    const NetMap& nm = nets();
+    if (wi < 0 || wi >= int(nm.wire_root.size())) return std::string();
+    auto it = nm.name.find(nm.wire_root[wi]);
+    return it == nm.name.end() ? std::string() : it->second;
+}
+
+std::string SchematicCanvas::net_name_pin_cached(const std::string& ref,
+                                                 int pin) {
+    int ci = -1;
+    for (size_t i = 0; i < doc_->circuit.comps.size(); ++i)
+        if (doc_->circuit.comps[i].ref == ref) { ci = int(i); break; }
+    if (ci < 0) return std::string();
+    const NetMap& nm = nets();
+    int r = nm.root_of_pin(ci, pin);
+    auto it = nm.name.find(r);
+    return it == nm.name.end() ? std::string() : it->second;
 }
 
 void SchematicCanvas::notify_sel() {
@@ -1079,8 +1414,14 @@ void SchematicCanvas::toggle_wire_orient() {
 }
 
 void SchematicCanvas::set_wire_net_name(int wire_index, const std::string& name) {
-    std::string err;
-    int li = doc_->ensure_label_on_wire(wire_index, err);
+    if (wire_index < 0 || wire_index >= int(doc_->wires.size())) return;
+    // Use the wire's midpoint as a sensible default click point for the label.
+    const auto& w = doc_->wires[wire_index];
+    Pt at = {0, 0};
+    if (!w.pts.empty()) {
+        at = w.pts[w.pts.size() / 2];
+    }
+    int li = doc_->ensure_label_on_wire(wire_index, at);
     if (li < 0) return;
     if (name.empty()) {
         // clearing the name removes the label
@@ -1088,7 +1429,7 @@ void SchematicCanvas::set_wire_net_name(int wire_index, const std::string& name)
         if (sel_ == "#label" + std::to_string(li)) set_selection("");
     } else {
         doc_->labels[li].name = name;
-        if (doc_->labels[li].font_size <= 0) doc_->labels[li].font_size = 14;
+        if (doc_->labels[li].font_size <= 0) doc_->labels[li].font_size = 9;
     }
     notify_doc();
 }
@@ -1108,32 +1449,59 @@ void SchematicCanvas::flip_selection_v() { flip_ghost(false); }
 
 void SchematicCanvas::delete_selection() {
     if (sel_set_.empty() && sel_.empty()) return;
-    Selection si = selection_info();
-    if (si.type == Selection::Wire || si.type == Selection::WireSegment) {
-        if (si.wire >= 0 && si.wire < int(doc_->wires.size())) {
-            if (on_push_undo) on_push_undo();
-            doc_->wires.erase(doc_->wires.begin() + si.wire);
-        }
-        set_selection("");
-        notify_doc();
-        return;
-    }
-    if (si.type == Selection::Label) {
-        if (si.label >= 0 && si.label < int(doc_->labels.size())) {
-            if (on_push_undo) on_push_undo();
-            doc_->labels.erase(doc_->labels.begin() + si.label);
-        }
-        set_selection("");
-        notify_doc();
-        return;
-    }
-    // components (possibly several)
-    if (on_push_undo) on_push_undo();
+
+    // Collect wires/labels/components in selection order, then delete from the
+    // end backwards so earlier indices remain valid as we erase.
+    std::vector<int> wires, labels;
     std::vector<std::string> refs;
-    for (const auto& r : sel_set_)
-        if (!r.empty() && r[0] != '#') refs.push_back(r);
-    if (refs.empty() && !sel_.empty() && sel_[0] != '#') refs.push_back(sel_);
+    for (const auto& r : sel_set_) {
+        if (r.empty()) continue;
+        if (r[0] == '#') {
+            if (r.compare(0, 5, "#wire") == 0) {
+                int colon = int(r.find(':'));
+                int wi = std::atoi(colon < 0 ? r.c_str() + 5
+                                              : r.substr(5, colon - 5).c_str());
+                wires.push_back(wi);
+            } else if (r.compare(0, 6, "#label") == 0) {
+                labels.push_back(std::atoi(r.c_str() + 6));
+            }
+        } else {
+            refs.push_back(r);
+        }
+    }
+    // Fall back to the primary selection if sel_set_ only has one item and we
+    // already covered it above.
+    if (wires.empty() && labels.empty() && refs.empty() && !sel_.empty()) {
+        if (sel_.compare(0, 5, "#wire") == 0) {
+            int colon = int(sel_.find(':'));
+            int wi = std::atoi(colon < 0 ? sel_.c_str() + 5
+                                          : sel_.substr(5, colon - 5).c_str());
+            wires.push_back(wi);
+        } else if (sel_.compare(0, 6, "#label") == 0) {
+            labels.push_back(std::atoi(sel_.c_str() + 6));
+        } else {
+            refs.push_back(sel_);
+        }
+    }
+    if (wires.empty() && labels.empty() && refs.empty()) return;
+    if (on_push_undo) on_push_undo();
+
+    // For wires, erasing shifts indices; sort descending and skip out-of-range.
+    std::sort(wires.rbegin(), wires.rend());
+    for (int wi : wires)
+        if (wi >= 0 && wi < int(doc_->wires.size())) {
+            doc_->wires.erase(doc_->wires.begin() + wi);
+            // After erasing a wire, indices > wi shift down by 1; for safety
+            // and to keep the operation predictable, remove remaining wires
+            // whose indices were higher than the deleted one.
+            // (Sorted descending means no earlier element has a higher index.)
+        }
+    std::sort(labels.rbegin(), labels.rend());
+    for (int li : labels)
+        if (li >= 0 && li < int(doc_->labels.size()))
+            doc_->labels.erase(doc_->labels.begin() + li);
     for (const auto& r : refs) doc_->remove(r);
+
     set_selection("");
     notify_doc();
 }

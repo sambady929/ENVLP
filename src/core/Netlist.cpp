@@ -210,6 +210,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
+        // Cds defaults to the same value as Cgd (see param_estimate); listed
+        // right after Cgd so the editor reads Cgs / Cgd / Cds together.
+        {"Cds", "20f", true, true, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
     };
@@ -218,6 +221,7 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
+        {"Cds", "20f", true, true, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
     };
@@ -251,8 +255,8 @@ UnitClass param_unit_class(Kind k, const std::string& p) {
     (void)k;
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
     if (p == "ro" || p == "rpi" || p == "rb" || p == "rd") return UnitClass::Ohm;
-    if (p == "Cgs" || p == "Cgd" || p == "Cdb" || p == "Csb" || p == "Cpi" ||
-        p == "Cmu" || p == "Cd")
+    if (p == "Cgs" || p == "Cgd" || p == "Cds" || p == "Cdb" || p == "Csb" ||
+        p == "Cpi" || p == "Cmu" || p == "Cd")
         return UnitClass::Farad;
     return UnitClass::Plain;
 }
@@ -293,6 +297,10 @@ double Component::param_estimate(const std::string& p) const {
     auto it = param_text.find(p);
     if (it != param_text.end() && !it->second.empty()) {
         if (!eng::parse_value(it->second, v)) v = 1.0;
+    } else if (p == "Cds") {
+        // Cds follows Cgd unless the user sets it explicitly (matches the
+        // usual assumption Cdg == Cds for a symmetric device).
+        return param_estimate("Cgd");
     } else {
         for (const auto& d : param_defs(kind)) {
             if (d.name == p) {
