@@ -386,6 +386,13 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     wxSize cs = GetClientSize();
     if (cs.x <= 0 || cs.y <= 0) return;
 
+    // Map document coordinates to the window: a logical point (x,y) is drawn
+    // at (x*zoom + origin). This is what keeps symbols, wires, labels and the
+    // ghost all in the same space as the hit-testing (to_view).
+    dc.SetUserScale(zoom_, zoom_);
+    dc.SetDeviceOrigin(int(std::lround(-view_x_ * zoom_)),
+                       int(std::lround(-view_y_ * zoom_)));
+
     // viewport in document units
     double x0 = view_x_, y0 = view_y_;
     double x1 = view_x_ + cs.x / zoom_, y1 = view_y_ + cs.y / zoom_;
@@ -394,19 +401,22 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     dc.SetPen(wxPen(wxColour(232, 232, 236)));
     double step = kGrid;
     while (step * zoom_ < 22.0) step *= 2.0;
-    for (double x = std::floor(x0 / step) * step; x < x1 + step; x += step) {
-        int sx = int((x - view_x_) * zoom_);
-        dc.DrawLine(sx, 0, sx, cs.y);
-    }
-    for (double y = std::floor(y0 / step) * step; y < y1 + step; y += step) {
-        int sy = int((y - view_y_) * zoom_);
-        dc.DrawLine(0, sy, cs.x, sy);
-    }
+    for (double x = std::floor(x0 / step) * step; x < x1 + step; x += step)
+        dc.DrawLine(wxPoint(int(x), int(y0)), wxPoint(int(x), int(y1)));
+    for (double y = std::floor(y0 / step) * step; y < y1 + step; y += step)
+        dc.DrawLine(wxPoint(int(x0), int(y)), wxPoint(int(x1), int(y)));
 
-    auto view_line = [&](Pt a, Pt b, const wxColour& col, int w) {
+    auto doc_line = [&](Pt a, Pt b, const wxColour& col, int w) {
         dc.SetPen(wxPen(col, w));
-        Pt va = to_view(a), vb = to_view(b);
-        dc.DrawLine(int(va.first), int(va.second), int(vb.first), int(vb.second));
+        dc.DrawLine(wxPoint(int(a.first), int(a.second)),
+                    wxPoint(int(b.first), int(b.second)));
+    };
+    auto doc_circle = [&](Pt c, double r_px, const wxColour& col, bool filled) {
+        dc.SetPen(filled ? *wxTRANSPARENT_PEN : wxPen(col, 2));
+        dc.SetBrush(filled ? wxBrush(col) : *wxTRANSPARENT_BRUSH);
+        dc.DrawCircle(wxPoint(int(c.first), int(c.second)),
+                      int(std::lround(r_px / zoom_)));
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
     };
     auto on_screen = [&](double x, double y, double m) {
         return x >= x0 - m && x <= x1 + m && y >= y0 - m && y <= y1 + m;
@@ -427,10 +437,9 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                 continue;
             bool seg_sel = si.type == Selection::WireSegment &&
                            si.wire == int(i) && si.seg == int(k) - 1;
-            view_line(a, b,
-                      (seg_sel || whole) ? wxColour(0, 92, 200)
-                                         : wxColour(0, 0, 0),
-                      (seg_sel || whole) ? 3 : 2);
+            doc_line(a, b,
+                     (seg_sel || whole) ? wxColour(0, 92, 200) : wxColour(0, 0, 0),
+                     (seg_sel || whole) ? 3 : 2);
         }
     }
 
@@ -441,10 +450,10 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         auto mids = ortho_route(last, m, wire_h_first_);
         Pt prev = last;
         for (const auto& q : mids) {
-            view_line(prev, q, wxColour(0, 120, 200), 2);
+            doc_line(prev, q, wxColour(0, 120, 200), 2);
             prev = q;
         }
-        view_line(prev, m, wxColour(0, 120, 200), 2);
+        doc_line(prev, m, wxColour(0, 120, 200), 2);
     }
 
     // net labels (font size is per-label; drawn above the anchor point)
@@ -457,19 +466,19 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                  wxFONTWEIGHT_NORMAL);
         dc.SetFont(f);
         wxString txt = wxString::FromUTF8(l.name);
-        wxSize ts = dc.GetTextExtent(txt);
-        Pt v = to_view(l.pt);
-        wxPoint p(int(v.first) - ts.x / 2, int(v.second) - ts.y - 4);
+        wxSize ts = dc.GetTextExtent(txt); // logical units (DC is scaled)
+        Pt p{l.pt.first - ts.x / 2.0, l.pt.second - ts.y - 4.0};
         if (is_sel) {
             dc.SetBrush(wxBrush(wxColour(0, 92, 200)));
             dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.DrawRectangle(p.x - 3, p.y - 1, ts.x + 6, ts.y + 2);
+            dc.DrawRectangle(wxRect(int(p.first) - 3, int(p.second) - 1,
+                                    ts.x + 6, ts.y + 2));
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetTextForeground(*wxWHITE);
         } else {
             dc.SetTextForeground(wxColour(0, 0, 0));
         }
-        dc.DrawText(txt, p.x, p.y);
+        dc.DrawText(txt, wxPoint(int(p.first), int(p.second)));
         dc.SetTextForeground(*wxBLACK);
     }
 
@@ -483,10 +492,10 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
 
     // box selection rubber band
     if (box_selecting_) {
-        Pt a = to_view(box_a_), b = to_view(box_b_);
-        wxRect r(int(std::min(a.first, b.first)), int(std::min(a.second, b.second)),
-                 int(std::fabs(b.first - a.first)),
-                 int(std::fabs(b.second - a.second)));
+        wxRect r(int(std::min(box_a_.first, box_b_.first)),
+                 int(std::min(box_a_.second, box_b_.second)),
+                 int(std::fabs(box_b_.first - box_a_.first)),
+                 int(std::fabs(box_b_.second - box_a_.second)));
         dc.SetPen(wxPen(wxColour(0, 92, 200), 1, wxPENSTYLE_SHORT_DASH));
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
         dc.DrawRectangle(r);
@@ -506,28 +515,21 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                 }
             anchor = best;
         }
-        // anchor marker
-        Pt av = to_view(anchor);
-        dc.SetPen(wxPen(wxColour(200, 40, 40), 2));
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
-        dc.DrawCircle(int(av.first), int(av.second), 5);
+        doc_circle(anchor, 5, wxColour(200, 40, 40), false);
         wxFont f(14, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
         dc.SetFont(f);
         wxString txt = wxString::FromUTF8(label_queue_.front());
         wxSize ts = dc.GetTextExtent(txt);
         dc.SetTextForeground(wxColour(0, 92, 200));
-        dc.DrawText(txt, int(av.first) - ts.x / 2, int(av.second) - ts.y - 6);
+        dc.DrawText(txt, wxPoint(int(anchor.first - ts.x / 2.0),
+                                 int(anchor.second - ts.y - 6.0)));
         dc.SetTextForeground(*wxBLACK);
     }
 
     // red dot at the cursor while wiring (#8)
     if (tool_ == Tool::Wire && has_mouse_) {
         Pt m = snap(to_doc(mouse_));
-        Pt v = to_view(m);
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.SetBrush(wxBrush(wxColour(210, 30, 30)));
-        dc.DrawCircle(int(v.first), int(v.second), 4);
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        doc_circle(m, 4, wxColour(210, 30, 30), true);
     }
 
     // ghost of component being placed
