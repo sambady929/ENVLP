@@ -152,6 +152,41 @@ syms::Circuit Document::resolved(std::string& err) const {
             if (dx * dx + dy * dy <= kJoinTol * kJoinTol) uf.join(i, j);
         }
 
+    // A label sitting *on* a wire segment (not just its endpoints) joins that
+    // wire. Pins likewise attach to a segment they lie on.
+    auto point_on_seg = [](Pt p, Pt a, Pt b) {
+        double vx = b.first - a.first, vy = b.second - a.second;
+        double wx = p.first - a.first, wy = p.second - a.second;
+        double L2 = vx * vx + vy * vy;
+        if (L2 < 1e-12) return std::hypot(wx, wy) <= kJoinTol;
+        double t = (wx * vx + wy * vy) / L2;
+        if (t < 0.0 || t > 1.0) return false;
+        double px = a.first + t * vx, py = a.second + t * vy;
+        return std::hypot(p.first - px, p.second - py) <= kJoinTol;
+    };
+    {
+        // wire vertex indices, per wire
+        std::vector<std::pair<size_t, size_t>> spans;
+        size_t idx = wire_base;
+        for (const auto& w : wires) {
+            spans.push_back({idx, w.pts.size()});
+            idx += w.pts.size();
+        }
+        auto attach = [&](int pi) {
+            for (const auto& sp : spans) {
+                for (size_t k = 1; k < sp.second; ++k) {
+                    if (point_on_seg(pts[pi], pts[sp.first + k - 1],
+                                     pts[sp.first + k])) {
+                        uf.join(pi, int(sp.first + k));
+                        uf.join(pi, int(sp.first + k - 1));
+                    }
+                }
+            }
+        };
+        for (size_t i = 0; i < pins.size(); ++i) attach(int(i));
+        for (size_t k = 0; k < labels.size(); ++k) attach(int(label_base + k));
+    }
+
     // Net naming: ground wins, then user labels, else auto n1, n2, ...
     std::map<int, std::string> net_name;
     std::vector<int> roots;

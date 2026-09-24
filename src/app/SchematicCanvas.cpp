@@ -546,7 +546,21 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         if (label_queue_.empty()) break;
         if (on_push_undo) on_push_undo();
         NetLabel l;
-        l.pt = snap(p);
+        // The net resolver joins coincident points, so attach the label to the
+        // nearest wire vertex within capture range; otherwise use the grid
+        // point under the cursor.
+        int wi = -1;
+        Pt target = snap(p);
+        if (hit_wire(p, wi) && wi >= 0) {
+            Pt best = target;
+            double bestd = kSnapR;
+            for (const auto& v : doc_->wires[wi].pts) {
+                double d = dist(v, p);
+                if (d <= bestd) { bestd = d; best = v; }
+            }
+            if (bestd < kSnapR) target = best;
+        }
+        l.pt = target;
         l.name = label_queue_.front();
         doc_->labels.push_back(l);
         label_queue_.erase(label_queue_.begin());
