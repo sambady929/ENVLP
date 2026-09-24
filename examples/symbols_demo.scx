@@ -1,5 +1,5 @@
 symcirc 1
-req "V1" "V(out)" 1000 40 0
+req "V1" "V(out)" 1 1e9 0 10 0 1 1 1
 comp "V1" "V" 300 120 0 0 0 0 "1"
 comp "I1" "I" 460 120 0 0 0 0 "1m"
 comp "M1" "NMOS" 640 140 0 0 0 0 ""

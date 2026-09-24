@@ -95,6 +95,92 @@ static void test_eng_parse() {
 }
 
 // ---------------------------------------------------------------------------
+static void test_sweep_points() {
+    // decade: 3 decades * 10 pts -> 31 points from 1 to 1e3
+    SweepSpec s;
+    s.f_start_hz = 1.0;
+    s.f_stop_hz = 1e3;
+    s.type = SweepType::Decade;
+    s.points_per_interval = 10;
+    auto pts = sweep_points(s);
+    CHECK(pts.size() == 31);
+    CHECK_CLOSE(pts.front(), 1.0, 1e-9);
+    CHECK_CLOSE(pts.back(), 1e3, 1e-6);
+
+    // octave: 1..8 is 3 octaves -> 3*4 + 1 points
+    SweepSpec o;
+    o.f_start_hz = 1.0;
+    o.f_stop_hz = 8.0;
+    o.type = SweepType::Octave;
+    o.points_per_interval = 4;
+    auto op = sweep_points(o);
+    CHECK(op.size() == 13);
+    CHECK_CLOSE(op.back(), 8.0, 1e-6);
+
+    // linear: exactly n points
+    SweepSpec l;
+    l.f_start_hz = 0.0;
+    l.f_stop_hz = 100.0;
+    l.type = SweepType::Linear;
+    l.points_per_interval = 5;
+    auto lp = sweep_points(l);
+    CHECK(lp.size() == 5);
+    CHECK_CLOSE(lp[0], 0.0, 1e-12);
+    CHECK_CLOSE(lp[4], 100.0, 1e-9);
+}
+
+// The ranking band decides which terms are negligible. A term that is tiny at
+// DC but dominant at the top of the band must be kept.
+static void test_rank_band_keeps_high_freq_term() {
+    ParamTable pt;
+    ex s = pt.get("s");
+    ex R = pt.get("R"), C = pt.get("C");
+    pt.set("R", 1e3, UnitClass::Ohm);
+    pt.set("C", 1e-9, UnitClass::Farad);
+    // denominator 1 + s*R*C, plus a huge s^3 term that is negligible at DC but
+    // huge at the top of a wide band.
+    ex d = 1 + s * R * C + GiNaC::pow(s, 3) * R * R * R * C * C * C;
+
+    LowEntropyOptions o;
+    o.prune = true;
+    o.normalize = false;
+    o.approx_factor = false;
+    o.threshold_db = 40;
+    o.global_ref = true; // compare every term against the whole polynomial
+    // narrow band at 1 Hz: the s^3 term is negligible
+    o.band_lo_hz = 1.0;
+    o.band_hi_hz = 1.0;
+    ParamTable pt2 = pt;
+    LowEntropy le_narrow = low_entropy(ex(1), d, pt2, o);
+    CHECK(le_narrow.den_poly.degree(s) <= 1);
+
+    // wide band out to 1 GHz: the s^3 term dominates and must be kept
+    LowEntropyOptions ow = o;
+    ow.band_lo_hz = 1.0;
+    ow.band_hi_hz = 1e9;
+    ParamTable pt3 = pt;
+    LowEntropy le_wide = low_entropy(ex(1), d, pt3, ow);
+    CHECK(le_wide.den_poly.degree(s) == 3);
+}
+
+// Ground and supply symbols are anonymous: several share a reference.
+static void test_anonymous_ground_refs() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "0"}, "1k"));
+    // two grounds with the same ref must validate
+    c.comps.push_back(comp(Kind::GND, "GND", {"0"}));
+    c.comps.push_back(comp(Kind::GND, "GND", {"0"}));
+    std::string err;
+    CHECK(c.validate(err));
+    // two resistors with the same ref must NOT validate
+    Circuit bad = c;
+    bad.comps.push_back(comp(Kind::R, "R1", {"in", "0"}, "1k"));
+    err.clear();
+    CHECK(!bad.validate(err));
+}
+
+// ---------------------------------------------------------------------------
 static void test_roots() {
     auto r1 = poly_roots({2, 3, 1}); // s^2 + 3s + 2
     CHECK(r1.size() == 2);
@@ -779,6 +865,9 @@ int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
     std::vector<Test> tests = {
         {"eng_parse", test_eng_parse},
+        {"sweep_points", test_sweep_points},
+        {"rank_band", test_rank_band_keeps_high_freq_term},
+        {"anon_gnd", test_anonymous_ground_refs},
         {"roots", test_roots},
         {"divider", test_divider},
         {"rc_lowpass", test_rc_lowpass},

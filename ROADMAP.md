@@ -88,16 +88,22 @@ independent, so exact-but-unfactored output is also available.
 | L | inductor |
 | V | voltage source |
 | B | current source |
-| M | NMOS; press M again while placing → PMOS |
+| M | NMOS (press M again to toggle PMOS while placing) |
 | K | inductor coupling (mutual inductance) |
 | G | ground (universal); Shift+G → VDD (universal supply) |
 | D | diode |
 | T | transformer |
 | W | wire tool |
+| N | net label(s) — type space-separated names, click each net |
 | I | instance menu (all components: R C L V B M K G D T, E VCVS, G VCCS, nullor, op-amp, FD op-amp, amplifier, 1/s block, s block, VDD, …) |
-| Space | rotate CCW (while ghosting; also rotates a selected component) |
+| Space | rotate CCW (while placing); swaps wire route while wiring; rotates a selected component |
 | Shift+Space | flip horizontal |
 | Ctrl+Space | flip vertical |
+
+Space / rotate / flip all work **while a component is following the cursor**,
+not only after placing. The wire tool commits an orthogonal route and Space
+swaps horizontal-first ↔ vertical-first. Moving a placed component carries the
+wire endpoints attached to its pins.
 
 ### New components (netlist `Kind` + symbols + MNA stamps)
 - diode D (small-signal: gm diode + optional non-idealities),
@@ -118,7 +124,14 @@ independent, so exact-but-unfactored output is also available.
   ro = 10e3). Same mechanism feeds `size_db`/estimates into pruning.
 - Node/branch right-click → context menu: show expression (and plot for AC).
 - Analysis panel: **cards** — add-analysis dropdown, one card per analysis,
-  options edited inside the card, cards run in listed order.
+  options edited inside the card, cards run in listed order. Each transfer-like
+  card carries the SPICE-style sweep (start, stop, decade/octave/linear, points
+  per interval), which drives both the plots and the term ranking.
+- Toolbar + **View** menu: **Ignore negligible terms** toggle (replaces the old
+  per-document "prune" checkbox); Select / Wire / Net-label / Analyze tools.
+  The old "Analysis defaults" block was removed — everything is per card.
+- Ground / supply symbols are anonymous: they show no reference and several
+  share the `GND` / `VDD` ref.
 
 ---
 

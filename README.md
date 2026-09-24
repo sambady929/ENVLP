@@ -79,23 +79,36 @@ ctest --test-dir build --output-on-failure   # run the engine tests
 
 ## Usage
 
-1. Pick a component in the left palette, click the canvas to place it
-   (`R` rotates before/during editing, `Del` deletes, `Esc` deselects,
-   right-click returns to the Select tool).
-2. Use the **Wire** tool: click pin → click pin. Name important nets by
-   selecting a wire/label and editing the name on the right (or place a label
-   at a pin).
-3. Place at least one **Ground** symbol.
-4. In the right panel set the input source (`V1`), output (`V(out)` or
-   `I(R2)`), the tuning frequency `f0`, and the pruning threshold (dB).
-   Alternatively add **analysis cards** on the far-right panel (one per
-   analysis; add/remove, edit the options in the card, run one or all).
-5. Press **F5** (Run → Analyze). Read the report in **Results**, the plot in
-   **Bode** (switch to Nyquist / Nichols), or post-process in **Lua**.
+1. Pick a component in the left palette, or press its key, then click the
+   canvas to place it. While the ghost is following the cursor, **Space**
+   rotates, **Shift+Space / Ctrl+Space** flip, **Esc** cancels. A click places
+   one component and returns to Select, so keys and Space work at any time.
+2. **Wire (W)**: click a start pin, then click points/pins to route. **Space**
+   while wiring swaps the route between horizontal-first and
+   vertical-first; click a second pin (or double-click) to finish. Moving a
+   component drags the wires attached to its pins along with it.
+3. **Net labels (N)**: type one or more names separated by spaces
+   (e.g. `out in`); press Enter, then click each net in turn to drop the labels.
+   **Esc** stops.
+4. Place at least one **Ground** symbol.
+5. Configure analyses with the cards on the right: pick the input source,
+   output (`V(out)` or `I(R2)`), the **sweep** (start / stop / decade·octave·
+   linear / points per interval), and the `ignore negligible` / `||` /
+   `gm·ro≫1` / `approx roots` switches. Run one card or **Run all**, or press
+   **F5**.
+6. Read the report in **Results**, the plot in **Bode** (switch to Nyquist /
+   Nichols), or post-process in **Lua**.
 
 `examples/common_source_amp.scx` is a common-source amplifier with a resistor
-load and an output capacitor, pre-loaded with TF / AC / DC / Zin / Zout / noise
-cards.
+load and an output capacitor, pre-loaded with TF / AC / DC / Zin / Zout /
+short-circuit / noise cards.
+
+### Ignore negligible terms
+
+The **Ignore negligible terms** check item lives on the toolbar and in the
+**View** menu. It turns low-entropy pruning on/off globally (the exact,
+unpruned expression is shown when it is off). Each analysis card can override
+it.
 
 ### Component magnitudes
 
@@ -105,6 +118,19 @@ for pruning purposes (e.g. mark a resistor as "really 100× bigger than its
 label" without changing the symbol). Device parameters (`gm`, `ro`, `Cgd`,
 …) each have an estimate field and a dB offset; parasitic parameters have an
 on/off checkbox.
+
+### Frequency sweep and term ranking
+
+Every transfer-like card uses the standard SPICE AC-sweep controls:
+
+- **start** / **stop** frequency,
+- interval type: **decade**, **octave** or **linear**,
+- **points per interval**.
+
+The sweep drives the Bode / Nyquist / Nichols plots *and* the low-entropy
+ranking: a term is judged by its worst-case magnitude anywhere in the band, so
+a term that is negligible at low frequency but dominant at high frequency is
+kept. DC and noise cards do not use the sweep.
 
 ### Lua API
 
@@ -126,9 +152,9 @@ dropped()         -- { {location=, term=, db=}, ... }
 `.scx` files are a small line-based text format (`symcirc 1` header:
 `comp`, `param`, `wire`, `netlabel`, `req`, `card`). Net topology is derived
 from wire geometry at analyze time, so files stay geometry-based and diffable.
-The `req` line ends with the engine switches
-(`… global_ref prune || gm*ro approx`); `card` lines configure the analysis
-stack and round-trip verbatim.
+The `req` line ends with the engine switches and the sweep
+(`fstart fstop type points prune || gm*ro approx`); `card` lines configure the
+analysis stack and round-trip verbatim.
 
 ## Repository layout
 
