@@ -455,8 +455,8 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
         sizer->Add(t, 0, wxALL, 8);
     }
 
-    sizer->AddStretchSpacer();
-    FitInside();
+    sizer->AddSpacer(6);
+    FitInside(); // size the virtual area to the content so it scrolls (#5)
     rebuilding_ = false;
 }
 
