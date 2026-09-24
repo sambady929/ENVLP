@@ -144,6 +144,7 @@ int pin_count(Kind k) {
 int branch_count(Kind k) {
     switch (k) {
         case Kind::V:
+        case Kind::VDD:
         case Kind::L:
         case Kind::E:
         case Kind::IS:
@@ -267,7 +268,8 @@ UnitClass value_unit_class(Kind k) {
         case Kind::C: return UnitClass::Farad;
         case Kind::L: return UnitClass::Henry;
         case Kind::G: return UnitClass::Siemens;
-        case Kind::V: return UnitClass::Volt;
+        case Kind::V:
+        case Kind::VDD: return UnitClass::Volt;
         // T, K, and the controlled blocks carry gains/ratios: keep them Plain
         // so they are not mistaken for R/C/L time-constant candidates.
         default: return UnitClass::Plain;

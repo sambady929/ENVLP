@@ -53,7 +53,11 @@ inline bool is_device(Kind k) {
     return k == Kind::NMOS || k == Kind::PMOS || k == Kind::NPN ||
            k == Kind::PNP || k == Kind::D;
 }
-inline bool is_independent_source(Kind k) { return k == Kind::V || k == Kind::I; }
+inline bool is_independent_source(Kind k) {
+    // VDD is now an ideal voltage source (single-pin, supply rail to
+    // ground) and can be the analysis excitation just like a V source.
+    return k == Kind::V || k == Kind::I || k == Kind::VDD;
+}
 inline bool is_ground(Kind k) { return k == Kind::GND; }
 inline bool is_supply(Kind k) { return k == Kind::VDD; }
 inline bool has_branch_current(Kind k) { return branch_count(k) > 0; }

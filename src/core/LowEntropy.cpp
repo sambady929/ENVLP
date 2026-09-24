@@ -717,13 +717,15 @@ ex factor_common_impl(const ex& e) {
 }
 
 // Wrap a factor's text in parentheses when it is a sum or a ratio, so a
-// product of factors prints unambiguously: "(a+b)" not "a+b".
+// product of factors prints unambiguously: "(a+b)" not "a+b". The middle
+// dot is emitted as the LaTeX command `\cdot` (see core/Print.cpp) so the
+// report survives copy-paste into terminals that don't honour UTF-8.
 std::string paren_factor(const std::string& t) {
     if (t == "1") return t;
     bool sum = t.find('+') != std::string::npos ||
                t.find(" - ") != std::string::npos;
     bool ratio = t.find('/') != std::string::npos;
-    bool product = t.find("\xC2\xB7") != std::string::npos;
+    bool product = t.find("\\cdot") != std::string::npos;
     if (sum || ratio || product) return "(" + t + ")";
     return t;
 }
@@ -752,7 +754,7 @@ std::string join_factors_pretty(const std::vector<Factor>& fs) {
         if (out.empty())
             out = t;
         else
-            out += "\xC2\xB7" + t;
+            out += "\\cdot " + t;
     }
     return out.empty() ? "1" : out;
 }
@@ -760,7 +762,7 @@ std::string join_factors_pretty(const std::vector<Factor>& fs) {
 std::string wrap_compound(const std::string& t) {
     if (t == "1") return t;
     if (already_wrapped(t)) return t;
-    bool compound = t.find("\xC2\xB7") != std::string::npos ||
+    bool compound = t.find("\\cdot") != std::string::npos ||
                     t.find('+') != std::string::npos ||
                     t.find('-') != std::string::npos ||
                     t.find('/') != std::string::npos ||
@@ -965,7 +967,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     else if (Nt == "1")
         base = Kt;
     else
-        base = Kt + "\xC2\xB7" + wrap_compound(Nt);
+        base = Kt + "\\cdot " + wrap_compound(Nt);
     R.text = (Dt == "1") ? base : base + " / " + wrap_compound(Dt);
     R.text_poly = pretty_ratio(R.num_poly, R.den_poly, s);
 

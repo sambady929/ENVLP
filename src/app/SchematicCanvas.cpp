@@ -55,14 +55,40 @@ std::vector<Pt> ortho_route(Pt a, Pt b, bool h_first) {
     return mid;
 }
 
+// Does the segment ab lie on (or pass through) `p` strictly between its
+// endpoints? Used to detect T-junctions at corners added by ortho_fix.
+bool segment_hits(const std::vector<std::pair<Pt, Pt>>& segs, Pt p,
+                  double tol = 1.0) {
+    for (const auto& s : segs) {
+        if (std::hypot(s.first.first - p.first, s.first.second - p.second) <= tol ||
+            std::hypot(s.second.first - p.first, s.second.second - p.second) <= tol)
+            continue; // ignore endpoint matches
+        double vx = s.second.first - s.first.first,
+               vy = s.second.second - s.first.second;
+        double wx = p.first - s.first.first, wy = p.second - s.first.second;
+        double L2 = vx * vx + vy * vy;
+        if (L2 < 1e-9) continue;
+        double t = (wx * vx + wy * vy) / L2;
+        if (t <= 0.0 || t >= 1.0) continue;
+        double px = s.first.first + t * vx, py = s.first.second + t * vy;
+        if (std::hypot(p.first - px, p.second - py) <= tol) return true;
+    }
+    return false;
+}
+
 // Orthogonalise a wire: walk its polyline and replace every diagonal
 // segment with two axis-aligned legs joined at a corner. The corner
 // direction alternates so a series of diagonals doesn't all bend the same
-// way (which would produce visible "stairs"). The wire's general shape is
+// way (which would produce visible "stairs"). When `other_segs` (segments
+// of OTHER wires in the schematic) is provided, the corner is placed on
+// the side that doesn't land on another wire -- otherwise the corner
+// becomes an unintended T-junction and the schematic fills with solder
+// dots every time the user drags a component. The wire's general shape is
 // preserved; only the leg directions are normalised. This is what schematic
 // editors (Cadence Virtuoso, KiCad, etc.) do when you drag a component
 // through its wires -- every connected wire stays rectangular.
-void ortho_fix_wire(std::vector<Pt>& pts) {
+void ortho_fix_wire(std::vector<Pt>& pts,
+                    const std::vector<std::pair<Pt, Pt>>& other_segs = {}) {
     if (pts.size() < 2) return;
     std::vector<Pt> out;
     out.push_back(pts[0]);
@@ -77,11 +103,23 @@ void ortho_fix_wire(std::vector<Pt>& pts) {
             prev_was_horizontal = horiz;
             continue;
         }
-        // Diagonal -- insert a corner. Alternate corner placement so a run
-        // of diagonals doesn't stack the bend on the same side.
-        bool h_first = !prev_was_horizontal;
-        Pt corner = h_first ? Pt{b.first, a.second} : Pt{a.first, b.second};
-        // Skip duplicate corners (zero-length legs).
+        // Diagonal. Two corners are valid: (b.x, a.y) and (a.x, b.y). Pick
+        // the one whose resulting corner doesn't land on another wire's
+        // middle; if both are clear, alternate from the previous leg so a
+        // run of diagonals doesn't stack the bend on the same side.
+        Pt c1{b.first, a.second}; // horizontal-first corner
+        Pt c2{a.first, b.second}; // vertical-first corner
+        bool h_first;
+        if (other_segs.empty()) {
+            h_first = !prev_was_horizontal;
+        } else {
+            bool c1_clean = !segment_hits(other_segs, c1);
+            bool c2_clean = !segment_hits(other_segs, c2);
+            if (c1_clean && !c2_clean) h_first = true;
+            else if (c2_clean && !c1_clean) h_first = false;
+            else h_first = !prev_was_horizontal; // both clean (or both busy)
+        }
+        Pt corner = h_first ? c1 : c2;
         if (std::fabs(out.back().first - corner.first) > 1e-9 ||
             std::fabs(out.back().second - corner.second) > 1e-9)
             out.push_back(corner);
@@ -1335,7 +1373,23 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
     pl->second.x = nx;
     pl->second.y = ny;
 
-    for (auto& w : doc_->wires) {
+    // Build a flat list of segments belonging to OTHER wires (everything
+    // except the wire we're about to re-route). ortho_fix_wire uses it to
+    // avoid landing new corners on another wire's middle -- which would
+    // create an unintended T-junction and a stray solder dot.
+    auto build_other_segs = [&](size_t skip_idx) {
+        std::vector<std::pair<Pt, Pt>> segs;
+        for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
+            if (wi == skip_idx) continue;
+            const auto& ow = doc_->wires[wi];
+            for (size_t k = 1; k < ow.pts.size(); ++k)
+                segs.push_back({ow.pts[k - 1], ow.pts[k]});
+        }
+        return segs;
+    };
+
+    for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
+        auto& w = doc_->wires[wi];
         bool touched = false;
         for (auto& v : w.pts) {
             for (size_t i = 0; i < old_pins.size(); ++i) {
@@ -1352,7 +1406,10 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
         // a component moving perpendicular to its attached wire leaves a
         // diagonal stub between the pin and the first un-touched corner,
         // which looks broken and breaks the "follow the wire" intuition.
-        if (touched) ortho_fix_wire(w.pts);
+        // We pass the other wires' segments so the corner can be placed on
+        // the side that doesn't create an unintended T-junction (and a
+        // stray solder dot) on a bystander wire.
+        if (touched) ortho_fix_wire(w.pts, build_other_segs(wi));
     }
     for (auto& l : doc_->labels) {
         for (size_t i = 0; i < old_pins.size(); ++i)
@@ -1446,7 +1503,8 @@ void SchematicCanvas::rotate_ghost(int delta) {
         // and orthogonalise the result. This is the same logic as
         // move_component, but per-component so a multi-component selection
         // re-routes cleanly.
-        for (auto& w : doc_->wires) {
+        for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
+            auto& w = doc_->wires[wi];
             bool touched = false;
             for (auto& v : w.pts) {
                 for (size_t i = 0; i < old_pins.size(); ++i) {
@@ -1457,7 +1515,15 @@ void SchematicCanvas::rotate_ghost(int delta) {
                     }
                 }
             }
-            if (touched) ortho_fix_wire(w.pts);
+            if (!touched) continue;
+            std::vector<std::pair<Pt, Pt>> other_segs;
+            for (size_t oi = 0; oi < doc_->wires.size(); ++oi) {
+                if (oi == wi) continue;
+                const auto& ow = doc_->wires[oi];
+                for (size_t k = 1; k < ow.pts.size(); ++k)
+                    other_segs.push_back({ow.pts[k - 1], ow.pts[k]});
+            }
+            ortho_fix_wire(w.pts, other_segs);
         }
         any = true;
     }

@@ -279,8 +279,30 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::GND:
-        case Kind::VDD:
             break;
+        case Kind::VDD: {
+            // VDD is an ideal DC voltage source from the supply rail to
+            // ground: the symbol's single pin is the + terminal, the implicit
+            // - terminal is node 0. Like Kind::V, this stamps as an
+            // independent voltage source with no series impedance.
+            int a = idx(nd[0]);
+            int bb = idx("0");          // - terminal: always ground
+            int k = sys.branch_idx.at(c.ref);
+            if (a >= 0) {
+                sys.Y(a, k) += 1;
+                sys.Y(k, a) += 1;
+            }
+            if (bb >= 0) {
+                sys.Y(bb, k) -= 1;
+                sys.Y(k, bb) -= 1;
+            }
+            // The VDD rail is never the excitation for AC (the user picks
+            // a separate input source). Register the supply value as a
+            // parameter so reports can name it, e.g. VDD = 5.
+            sys.params.set(c.ref, c.estimate(), UnitClass::Volt);
+            sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
+            break;
+        }
         case Kind::D: {
             // small-signal diode: gm(A->K), optional rd in series, Cd
             int A = idx(nd[0]), Kk = idx(nd[1]);

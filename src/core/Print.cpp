@@ -13,19 +13,20 @@ using GiNaC::ex;
 using GiNaC::is_a;
 using GiNaC::numeric;
 
-// unicode superscript: 2 -> "²"
+// Multiplication sign in plain-text output. We use the LaTeX command
+// \cdot (rather than the Unicode middle dot ·) because the report is often
+// pasted into terminals / editors / chat clients that don't all agree on
+// the UTF-8 byte sequence (0xC2 0xB7): the leading byte 0xC2 is the
+// Latin-1 "Â", which then shows up in the rendered text as `Â·`. The
+// LaTeX command survives every channel -- the Math tab still typesets it
+// properly because the LaTeX renderer maps \cdot to the middle-dot glyph.
+constexpr const char* kDot = "\\cdot ";
+
+// Superscript: emit LaTeX "^{n}" so the report survives every channel
+// (terminals, chat clients, code review tools). The Math tab renders the
+// LaTeX as a real superscript.
 std::string sup(int k) {
-    static const char* supd[] = {
-        "\xE2\x81\xB0", /*0*/ "\xC2\xB9", /*1*/ "\xC2\xB2", /*2*/ "\xC2\xB3", /*3*/
-        "\xE2\x81\xB4", "\xE2\x81\xB5", "\xE2\x81\xB6", "\xE2\x81\xB7",
-        "\xE2\x81\xB8", "\xE2\x81\xB9"};
-    std::string ds = std::to_string(k);
-    std::string out;
-    for (char c : ds) {
-        if (c >= '0' && c <= '9') out += supd[c - '0'];
-        else out += c;
-    }
-    return out;
+    return "^{" + std::to_string(k) + "}";
 }
 
 // GiNaC's default stream output ("print_dflt") as a string.
@@ -99,7 +100,7 @@ std::string p(const ex& e, int prec) {
             if (num_str.empty())
                 num_str = fs;
             else
-                num_str += "\xC2\xB7" + fs; // '·'
+                num_str += kDot + fs; // factors joined by \cdot
         }
         if (num_str.empty()) num_str = "1";
 
@@ -109,7 +110,7 @@ std::string p(const ex& e, int prec) {
             if (den_str.empty())
                 den_str = fs;
             else
-                den_str += "\xC2\xB7" + fs;
+                den_str += kDot + fs;
         }
 
         std::string out = negative ? "-" : "";
@@ -171,7 +172,7 @@ std::string pretty_product(const std::vector<ex>& factors) {
         if (out.empty())
             out = fs;
         else
-            out += "\xC2\xB7" + fs;
+            out += kDot + fs;
     }
     return out.empty() ? "1" : out;
 }
@@ -212,7 +213,7 @@ std::string pretty_in_s(const ex& e, const ex& s) {
             if (cs == "1")
                 body = spow;
             else
-                body = spow + "\xC2\xB7" + cs;
+                body = spow + kDot + cs;
         }
         if (body.empty()) continue;
         if (first) {

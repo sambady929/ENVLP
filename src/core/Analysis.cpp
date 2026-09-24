@@ -256,8 +256,10 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 // PSRR = H(Vin->out) / H(VDD->out).
 // ---------------------------------------------------------------------------
 CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
-    // PSR: drive the supply. We model the VDD rail as an input by adding a
-    // unity source in series with the supply node when the circuit uses VDD.
+    // PSR: drive the supply. The Kind::VDD symbol now stamps as an ideal
+    // voltage source from VDD to ground, so the supply rail IS the input.
+    // Drive it by re-pointing the analysis input at "VDD" (the supply net)
+    // and running H(s) the same way as for any other source.
     bool has_vdd = false;
     for (const auto& cc : c.comps) {
         if (cc.kind == Kind::VDD) has_vdd = true;
@@ -274,18 +276,19 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
-    // Signal path: H_sig = Vout/Vin
+    // Signal path: H_sig = Vout/Vin (input = user-selected source)
     RawTF sig = raw_tf(c, s.input_ref, s.output);
 
-    // Supply path: add a test source Vdd_test from VDD to ground and drive it.
-    Circuit cs = c;
-    Component vs;
-    vs.kind = Kind::V;
-    vs.ref = "__VDD__";
-    vs.nodes = {"VDD", "0"};
-    vs.value_text = "1";
-    cs.comps.push_back(vs);
-    RawTF psr = raw_tf(cs, "__VDD__", s.output);
+    // Supply path: drive the VDD rail directly. VDD stamps as an ideal V
+    // source so the rail is the input -- no test source needed (and adding
+    // one would over-constrain the MNA). Use the VDD symbol's own ref as
+    // the input so the engine treats it as the excitation.
+    std::string vdd_ref;
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::VDD) { vdd_ref = cc.ref; break; }
+    }
+    if (vdd_ref.empty()) vdd_ref = "VDD";
+    RawTF psr = raw_tf(c, vdd_ref, s.output);
 
     ex s_sym = sig.params.get("s");
     ex Hsig = (sig.num / sig.den).normal();
@@ -308,7 +311,7 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
     if (psrr_p.text.empty()) psrr_p.text = "0 (no supply coupling)";
 
     std::string rep = "PSR / PSRR analysis\n";
-    rep += "input: " + s.input_ref + "   supply: VDD\n";
+    rep += "input: " + s.input_ref + "   supply: " + vdd_ref + "\n";
     rep += "----------------------------------------\n";
     rep += "PSR  = H(VDD -> out)  = " + psr_p.text + "\n";
     rep += "  LaTeX: " + psr_p.latex + "\n";
