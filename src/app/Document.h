@@ -95,6 +95,11 @@ public:
     // Bind each end of `w` to a component pin if it currently coincides with
     // one. Call this after any wire edit (draw, split, merge).
     void bind_wire_ends(Wire& w) const;
+    // Give each pin-bound end a short orthogonal lead along the pin's
+    // outward axis, so a wire leaves a pin the way the pin points
+    // (analog-canvas's "escape: outward") instead of sprouting sideways or
+    // running back across the body.
+    void escape_pin_ends(Wire& w);
     // Re-resolve every wire's pin-bound endpoints to the pins' current
     // positions and re-route the wire orthogonally. This is what makes a
     // component move/rotate carry its wires without hunting for the old pin

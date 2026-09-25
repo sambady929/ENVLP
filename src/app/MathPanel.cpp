@@ -119,9 +119,10 @@ std::string esc_html(const std::string& s) {
     return e;
 }
 
-// Turn the plain-text report into formatted HTML: short lines ending in
-// ':' become section headings; everything else is a body line. Blank lines
-// are dropped (spacing comes from the CSS margins).
+// Turn the plain-text report into formatted HTML. The transfer-function
+// line is skipped -- the Math tab already shows it typeset above, so
+// repeating it as text would be the duplicate the user flagged. Short lines
+// ending in ':' become section headings; the rest are body lines.
 std::string render_report_html(const std::string& report) {
     std::string out;
     std::string cur;
@@ -130,9 +131,15 @@ std::string render_report_html(const std::string& report) {
                (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
             cur.pop_back();
         if (!cur.empty()) {
-            if (cur.size() < 40 && cur.back() == ':')
+            bool heading = cur.size() < 40 && cur.back() == ':';
+            bool equation = cur.rfind("H(s) = ", 0) == 0 ||
+                            cur.rfind("Zin = ", 0) == 0 ||
+                            cur.rfind("Zout = ", 0) == 0 ||
+                            cur.rfind("Isc", 0) == 0 ||
+                            cur.rfind("T(s) = ", 0) == 0;
+            if (heading)
                 out += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
-            else
+            else if (!equation)
                 out += "<p class=\"line\">" + esc_html(cur) + "</p>";
         }
         cur.clear();
@@ -154,6 +161,9 @@ void MathPanel::render() {
     }
     std::string body;
     if (!latex_.empty()) {
+        // The engine's LaTeX already begins with "H(s) = " (or "Zout = "
+        // etc.); that's exactly what we want as the typeset lead-in, so we
+        // pass it through unchanged.
         body += "<div class=\"expr math\">";
         body += latex_render_line(latex_);
         body += "</div>";

@@ -413,6 +413,10 @@ void Document::sync_wire_endpoints() {
             moved = true;
         }
         if (moved) {
+            // First, pull each pin-bound end out along its pin's outward
+            // axis (analog-canvas's "escape: outward"): a wire must leave a
+            // pin going the way the pin points, never back across the body.
+            escape_pin_ends(w);
             ortho_fix_pts(w.pts);
             // Drop a bend that became collinear with its neighbours.
             if (w.pts.size() >= 3) {
@@ -433,6 +437,56 @@ void Document::sync_wire_endpoints() {
             }
         }
     }
+}
+
+void Document::escape_pin_ends(Wire& w) {
+    if (w.pts.size() < 2) return;
+    // A wire that ends on a pin with a defined outward axis gets a short
+    // orthogonal lead in that direction, so the first segment leaves along
+    // the pin axis. Without it a wire can appear to sprout sideways out of
+    // a pin (or run straight back through the symbol).
+    //
+    // Idempotency: this runs on every drag step, so it must *replace* the
+    // lead vertex rather than accumulate new ones. If the current neighbour
+    // already lies on the pin's outward axis (a lead we inserted, or a
+    // genuine bend the user drew on-axis) we move that vertex to the fresh
+    // lead point; otherwise we insert one.
+    auto do_end = [&](bool start) {
+        const WireEnd& e = start ? w.a : w.b;
+        if (e.kind != WireEnd::Kind::Pin) return;
+        const syms::Component* c = circuit.find(e.ref);
+        auto pl = placements.find(e.ref);
+        if (!c || pl == placements.end()) return;
+        Pt dir = pin_outward(*c, pl->second, e.pin);
+        if (dir.first == 0 && dir.second == 0) return;
+        Pt pin = pin_world(*c, pl->second, e.pin);
+        size_t ni = start ? 1 : w.pts.size() - 2;
+        Pt next = w.pts[ni];
+        // Is `next` on the pin's outward axis? (perpendicular offset ~0 and
+        // in front of the pin)
+        double perp = (next.first - pin.first) * (-dir.second) +
+                      (next.second - pin.second) * dir.first;
+        double along = (next.first - pin.first) * dir.first +
+                       (next.second - pin.second) * dir.second;
+        double lead = std::max(10.0, std::fabs(along));
+        Pt lead_pt{pin.first + dir.first * lead,
+                   pin.second + dir.second * lead};
+        bool on_axis = std::fabs(perp) < 1e-6 && along >= -1e-6;
+        if (on_axis) {
+            // Replace the existing on-axis vertex with the fresh lead point.
+            if (std::hypot(w.pts[ni].first - lead_pt.first,
+                           w.pts[ni].second - lead_pt.second) > 1e-6) {
+                w.pts[ni] = lead_pt;
+            }
+        } else {
+            // Neighbour is off-axis: splice a lead in so the escape is
+            // orthogonal, leaving the user's vertex where it is.
+            w.pts.insert(start ? w.pts.begin() + 1 : w.pts.end() - 1,
+                         lead_pt);
+        }
+    };
+    do_end(true);
+    do_end(false);
 }
 
 // ---------------------------------------------------------------------------

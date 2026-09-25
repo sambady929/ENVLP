@@ -785,28 +785,32 @@ std::string low_entropy_latex(const LowEntropy& le) {
     std::ostringstream os;
     os << "H(s) = ";
     std::string K = to_latex(le.gain);
-    // Only wrap a factor in parentheses when it actually needs them (a sum
-    // or a ratio). Wrapping every factor in \left(...\right) made a product
-    // of single symbols read as "(Cgd_M1 R1 ro_M1)" -- visual noise with no
-    // mathematical purpose.
-    auto wrap = [](const std::string& tex, const GiNaC::ex& f) {
-        bool sum = GiNaC::is_a<GiNaC::add>(f.expand()) ||
-                   GiNaC::is_a<GiNaC::add>(f);
-        bool ratio = GiNaC::is_a<GiNaC::mul>(f) ? false : false;
-        if (sum || ratio) return "\\left(" + tex + "\\right)";
+    // A factor is wrapped in \left(...\right) when it's a sum (so an additive
+    // group stays visually distinct from the product around it). Products get
+    // an explicit \cdot between factors: `R1 ro_M1` (juxtaposition) is
+    // technically valid TeX but reads ambiguously next to `R1\parallel ro_M1`,
+    // whereas `R1\cdot ro_M1` does not. The plain-text form has always used an
+    // explicit `*`; this keeps the LaTeX view just as unambiguous.
+    auto is_sum = [](const GiNaC::ex& f) {
+        return GiNaC::is_a<GiNaC::add>(f) ||
+               GiNaC::is_a<GiNaC::add>(f.expand());
+    };
+    auto factor_tex = [&](const GiNaC::ex& f) {
+        std::string tex = to_latex(f);
+        if (is_sum(f)) return "\\left(" + tex + "\\right)";
         return tex;
     };
     std::string N, D;
     for (const auto& f : le.num_factors) {
-        if (!N.empty()) N += "\\,";
-        N += wrap(to_latex(f.expr), f.expr);
+        if (!N.empty()) N += "\\cdot ";
+        N += factor_tex(f.expr);
     }
     for (const auto& f : le.den_factors) {
-        if (!D.empty()) D += "\\,";
-        D += wrap(to_latex(f.expr), f.expr);
+        if (!D.empty()) D += "\\cdot ";
+        D += factor_tex(f.expr);
     }
     std::string num = K;
-    if (!N.empty()) num += (num.empty() ? "" : "\\,") + N;
+    if (!N.empty()) num += (num.empty() ? "" : "\\cdot ") + N;
     if (num.empty()) num = "1";
     if (D.empty())
         os << num;

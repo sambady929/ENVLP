@@ -86,6 +86,112 @@ Pt pin_world(const syms::Component& c, const Placement& pl, int pin_index) {
     return {pl.x + r.first, pl.y + r.second};
 }
 
+Pt pin_outward(const syms::Component& c, const Placement& pl, int pin_index) {
+    // Local-frame outward direction per kind/pin. This mirrors analog-canvas's
+    // SymbolPinSchema.direction: a wire must leave a pin along this axis.
+    // The vector is then run through transform_pt so rotation/flip follow.
+    Pt local{0, 0};
+    switch (c.kind) {
+    case Kind::R:
+    case Kind::C:
+    case Kind::L:
+    case Kind::D:
+    case Kind::IS:
+    case Kind::SBLK:
+    case Kind::AMP:
+        // two-terminal horizontal: pin0 (left) escapes west, pin1 (right) east
+        local = (pin_index == 0) ? Pt{-1, 0} : Pt{1, 0};
+        break;
+    case Kind::V:
+    case Kind::I:
+        // drawn vertical: +/head (pin0) escapes north, -/tail (pin1) south
+        local = (pin_index == 0) ? Pt{0, -1} : Pt{0, 1};
+        break;
+    case Kind::NMOS:
+    case Kind::NPN:
+        // D/C top -> north, G/B left -> west, S/E bottom -> south
+        local = (pin_index == 0) ? Pt{0, -1}
+                : (pin_index == 1) ? Pt{-1, 0}
+                                   : Pt{0, 1};
+        break;
+    case Kind::PMOS:
+    case Kind::PNP:
+        // S/E top, G/B left, D/C bottom
+        local = (pin_index == 0) ? Pt{0, -1}
+                : (pin_index == 1) ? Pt{-1, 0}
+                                   : Pt{0, 1};
+        break;
+    case Kind::E:
+    case Kind::G:
+    case Kind::CCCS:
+    case Kind::CCVS:
+        // out+ , out- , ctrl+ , ctrl-
+        local = (pin_index == 0 || pin_index == 1) ? Pt{1, 0} : Pt{-1, 0};
+        break;
+    case Kind::OPAMP:
+        // in+ , in- , out
+        local = (pin_index >= 2) ? Pt{1, 0} : Pt{-1, 0};
+        break;
+    case Kind::FDOPAMP:
+        local = (pin_index >= 2) ? Pt{1, 0} : Pt{-1, 0};
+        break;
+    case Kind::NULLOR:
+        local = (pin_index >= 2) ? Pt{1, 0} : Pt{-1, 0};
+        break;
+    case Kind::VDD:
+    case Kind::GND:
+        local = {0, -1}; // rail above the pin
+        break;
+    default:
+        return {0, 0}; // no single outward axis; caller routes freely
+    }
+    Pt r = transform_pt(local, pl);
+    double len = std::hypot(r.first, r.second);
+    if (len < 1e-9) return {0, 0};
+    return {r.first / len, r.second / len};
+}
+
+// Half-extents of a symbol's *drawn body* in its own local frame, ignoring
+// pins. Used so ref/value labels clear the artwork, not just the pin line.
+// Returns {x0,y0,x1,y1}; a kind with no local body returns a degenerate box
+// at the origin.
+namespace {
+struct LocalBox { double x0, y0, x1, y1; };
+LocalBox body_local_box(Kind k) {
+    switch (k) {
+    // horizontal two-terminal bodies: zigzag / plates / coils span y
+    case Kind::R: return {-13, -9, 13, 9};
+    case Kind::C: return {-5, -13, 5, 13};
+    case Kind::L: return {-14, -9, 14, 9};
+    case Kind::D: return {-13, -12, 13, 12};
+    // sources: circle radius ~13, plus a small cap above
+    case Kind::V: return {-13, -17, 13, 13};
+    case Kind::I: return {-13, -17, 13, 13};
+    // MOSFET: gate bar + channel, roughly this footprint
+    case Kind::NMOS: return {-16, -22, 12, 22};
+    case Kind::PMOS: return {-16, -22, 12, 22};
+    case Kind::NPN: return {-14, -22, 16, 22};
+    case Kind::PNP: return {-14, -22, 16, 22};
+    // controlled sources: the box is ±26 wide, ±20 tall
+    case Kind::E:
+    case Kind::G:
+    case Kind::CCCS:
+    case Kind::CCVS: return {-26, -20, 26, 20};
+    case Kind::OPAMP: return {-26, -22, 30, 22};
+    case Kind::NULLOR: return {-20, -16, 20, 16};
+    case Kind::FDOPAMP: return {-26, -22, 34, 22};
+    case Kind::AMP: return {-26, -20, 30, 20};
+    case Kind::IS: return {-16, -16, 16, 16};
+    case Kind::SBLK: return {-16, -16, 16, 16};
+    case Kind::T: return {-40, -22, 40, 22};
+    case Kind::K: return {-8, -8, 8, 8};
+    case Kind::GND: return {-12, 0, 12, 21};
+    case Kind::VDD: return {-13, -15, 13, 0};
+    }
+    return {0, 0, 0, 0};
+}
+} // namespace
+
 void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
                  double& y0, double& x1, double& y1, double pad) {
     auto offs = pin_offsets(c.kind);
@@ -100,6 +206,14 @@ void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
     acc({pl.x, pl.y});
     for (size_t i = 0; i < offs.size(); ++i) {
         Pt r = transform_pt(offs[i], pl);
+        acc({pl.x + r.first, pl.y + r.second});
+    }
+    // Union in the drawn body so labels sit beside the artwork, not on it.
+    LocalBox lb = body_local_box(c.kind);
+    Pt corners[4] = {{lb.x0, lb.y0}, {lb.x1, lb.y0},
+                     {lb.x1, lb.y1}, {lb.x0, lb.y1}};
+    for (const auto& cpt : corners) {
+        Pt r = transform_pt(cpt, pl);
         acc({pl.x + r.first, pl.y + r.second});
     }
     x0 -= pad;

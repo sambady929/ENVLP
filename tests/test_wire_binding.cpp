@@ -85,6 +85,22 @@ int main() {
     // one net). Verify they resolve to a single root.
     CHECK(r_root == v_root);
 
+    // Idempotency: a second sync with no placement change must not add any
+    // vertices (the escape-lead insertion has to replace, not accumulate --
+    // otherwise a slow drag grows the polyline on every motion event).
+    size_t before = d.wires[0].pts.size();
+    d.sync_wire_endpoints();
+    CHECK(d.wires[0].pts.size() == before);
+
+    // Escape direction: R1's pin 0 is its left pin (offset -30,0), so a wire
+    // leaving it must head west: the vertex right after the pin has the same
+    // y and a smaller x.
+    const auto& pts = d.wires[0].pts;
+    Pt end = pts.back();
+    Pt lead = pts[pts.size() - 2];
+    CHECK(std::fabs(lead.second - end.second) < 1e-6);
+    CHECK(lead.first < end.first);
+
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "WIREBIND FAILED" : "wirebind ok", g_fail);
     return g_fail == 0 ? 0 : 1;

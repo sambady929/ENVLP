@@ -448,10 +448,10 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     }
 
     // Text placement: the ref + value sit centred vertically on the right
-    // edge of the symbol, drawn horizontally in world space. Using the
-    // symbol's axis-aligned bbox (post-rotation) keeps the label clear of
-    // the body for any rotation; placing it centred means the label is
-    // always near the middle of the symbol, not floating above it.
+    // edge of the symbol, drawn horizontally in world space. `symbol_bbox`
+    // now unions the *drawn body* (not just the pin line), so the label
+    // clears the artwork for every rotation. A comfortable gap keeps it
+    // from crowding the symbol.
     double fs = 9.0;
 
     wxFont ref_font = base;
@@ -467,14 +467,12 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     wxString val_text = !c.value_text.empty()
                             ? wxString::FromUTF8(c.value_text)
                             : wxString();
-    wxSize val_ts = val_text.IsEmpty() ? wxSize(0, 0)
-                                       : dc.GetTextExtent(val_text);
     // Two rows -> 2*lh; one row -> lh.
     double total_h = val_text.IsEmpty() ? lh : 2 * lh;
-    // Stack: ref on top, value below. Anchor at the right edge of the
-    // symbol, vertically centred on its bbox.
+    // Stack: ref on top, value below, anchored just right of the body and
+    // vertically centred on it.
     double stack_y = (by0 + by1) / 2.0 - total_h / 2.0;
-    double tx = bx1 + 3.0;
+    double tx = bx1 + 6.0;
 
     dc.DrawText(ref_text, wxPoint(int(tx), int(stack_y)));
     if (!val_text.IsEmpty()) {

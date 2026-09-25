@@ -41,10 +41,17 @@ void par_print(const ex& a, const ex& b, const GiNaC::print_context& c) {
     c.s << ")";
 }
 
+// LaTeX form of the parallel operator. The parentheses matter: a bare
+// `a\parallel b` sitting inside a product like `Cgd_M1 R1\parallel ro_M1 s`
+// reads ambiguously (is it (R1∥ro_M1), or Cgd_M1·R1 ∥ ro_M1·s?). The
+// plain-text printer has always parenthesised (`(R1||ro_M1)`); the LaTeX
+// printer must do the same so the two views agree.
 void par_print_latex(const ex& a, const ex& b, const GiNaC::print_context& c) {
+    c.s << "\\left(";
     a.print(c);
     c.s << "\\parallel ";
     b.print(c);
+    c.s << "\\right)";
 }
 
 // ---------------------------------------------------------------------------

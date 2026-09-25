@@ -17,6 +17,14 @@ Pt transform_pt(Pt p, const Placement& pl);
 // World position of a pin for a placed component.
 Pt pin_world(const syms::Component& c, const Placement& pl, int pin_index);
 
+// The direction a wire should leave a pin, in *world* coordinates, as a unit
+// vector. Ported from analog-canvas's per-pin `direction`
+// (north/east/south/west): a wire from a pin must escape along the pin's
+// outward axis so it never runs back across the symbol body. For kinds whose
+// pins don't have a single obvious outward axis (e.g. the four-terminal
+// transformer) returns {0,0} and the caller falls back to free routing.
+Pt pin_outward(const syms::Component& c, const Placement& pl, int pin_index);
+
 // Bounding box (axis-aligned), used by hit-testing, selection, and the
 // ref/value label anchor. `pad` grows the box on all sides; the default is
 // generous for hit tolerance, but selection and label anchoring pass a small
