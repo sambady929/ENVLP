@@ -18,6 +18,10 @@ bool is_axis_aligned(symcirc::Pt a, symcirc::Pt b) {
 void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
                     const std::vector<std::pair<symcirc::Pt, symcirc::Pt>>& other_segs = {}) {
     if (pts.size() < 2) return;
+    auto eq_pt = [](symcirc::Pt a, symcirc::Pt b) {
+        return std::fabs(a.first - b.first) < 1e-6 &&
+               std::fabs(a.second - b.second) < 1e-6;
+    };
     auto seg_hits = [&](symcirc::Pt p) {
         for (const auto& s : other_segs) {
             if (std::hypot(s.first.first - p.first, s.first.second - p.second) < 1.0 ||
@@ -49,20 +53,26 @@ void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
         }
         symcirc::Pt c1{b.first, a.second};
         symcirc::Pt c2{a.first, b.second};
-        bool h_first;
-        if (other_segs.empty()) {
-            h_first = !prev_was_horizontal;
-        } else {
-            bool c1_clean = !seg_hits(c1);
-            bool c2_clean = !seg_hits(c2);
-            if (c1_clean && !c2_clean) h_first = true;
-            else if (c2_clean && !c1_clean) h_first = false;
-            else h_first = !prev_was_horizontal;
+        symcirc::Pt next = (i + 2 < pts.size()) ? pts[i + 2] : b;
+        auto bad = [&](symcirc::Pt c) {
+            if (eq_pt(c, next)) return true;
+            if (eq_pt(c, a)) return true;
+            if (eq_pt(c, b)) return true;
+            return !other_segs.empty() && seg_hits(c);
+        };
+        bool c1_bad = bad(c1), c2_bad = bad(c2);
+        if (c1_bad && c2_bad) {
+            out.push_back(b);
+            prev_was_horizontal = false;
+            continue;
         }
+        bool h_first = c2_bad
+                       ? true
+                       : (c1_bad
+                          ? false
+                          : !prev_was_horizontal);
         symcirc::Pt corner = h_first ? c1 : c2;
-        if (std::fabs(out.back().first  - corner.first ) > 1e-6 ||
-            std::fabs(out.back().second - corner.second) > 1e-6)
-            out.push_back(corner);
+        if (!eq_pt(out.back(), corner)) out.push_back(corner);
         out.push_back(b);
         prev_was_horizontal = !h_first;
     }
@@ -202,6 +212,51 @@ int main() {
             if (std::fabs(p.first - 760.0) < 1e-6 &&
                 std::fabs(p.second - 240.0) < 1e-6) bad_corner = true;
         CHECK(!bad_corner);
+    }
+
+    // ----- Backtrack avoidance: don't pick a corner that equals the
+    // next input vertex (which would force the wire to leave the corner,
+    // then immediately back up over the previous leg).
+    {
+        // Pin moved from (100,100) to (100,200). Original wire was
+        // [(100,100), (200,100), (200,200)]; after the move the wire is
+        // [(100,200), (200,100), (200,200)]. With h_first=true the corner
+        // is (200,200) -- but (200,200) is the NEXT input vertex, so the
+        // route would be (100,200)->(200,200)->(200,100)->(200,200), i.e.
+        // backtrack over the (200,100)->(200,200) leg. Reject c1 and use
+        // c2 = (100,100) instead -- but that equals the start point, so
+        // reject c2 too and fall back to h_first=true (no insert).
+        std::vector<symcirc::Pt> w = {{100,200},{200,100},{200,200}};
+        dump(w, "backtrack-input");
+        ortho_fix_wire(w);
+        dump(w, "backtrack-output");
+        check_all_axis_aligned(w, "backtrack");
+        // Verify the route has no backtrack. The original wire was
+        // (100,100)->(200,100)->(200,200); after the pin moved down, the
+        // input was (100,200)->(200,100)->(200,200). The visible GUI bug
+        // was a backtrack -- the new corner landed at (200,200), making the
+        // wire go (100,200)->(200,200)->(200,100)->(200,200), i.e. the
+        // last two segments retrace each other. After the fix, the wire
+        // takes the OTHER corner at (100,100), producing an inverted-U:
+        // (100,200)->(100,100)->(200,100)->(200,200) which is a perfectly
+        // valid orthogonal path (no backtrack).
+        bool backtrack = false;
+        for (size_t i = 0; i + 2 < w.size(); ++i) {
+            // A backtrack looks like w[i+1] == w[i+2] (vertex repeated) OR
+            // two adjacent segments with opposite direction (e.g. (200,200)
+            // -> (200,100) followed by (200,100) -> (200,200)).
+            bool same_vertex = std::fabs(w[i+1].first - w[i+2].first) < 1e-6 &&
+                               std::fabs(w[i+1].second - w[i+2].second) < 1e-6;
+            bool same_y = std::fabs(w[i].second - w[i+1].second) < 1e-6 &&
+                          std::fabs(w[i+1].second - w[i+2].second) < 1e-6;
+            bool same_x = std::fabs(w[i].first - w[i+1].first) < 1e-6 &&
+                          std::fabs(w[i+1].first - w[i+2].first) < 1e-6;
+            if (same_vertex ||
+                (same_y && (w[i].first - w[i+1].first) * (w[i+1].first - w[i+2].first) < -1e-6) ||
+                (same_x && (w[i].second - w[i+1].second) * (w[i+1].second - w[i+2].second) < -1e-6))
+                backtrack = true;
+        }
+        CHECK(!backtrack);
     }
 
     std::printf("%s (%d failure(s))\n",

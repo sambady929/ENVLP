@@ -629,8 +629,12 @@ static void test_report_has_latex_and_factors() {
     req.output = "V(out)";
     req.f0_hz = 1e5;
     AnalysisResult r = analyze(c, req);
-    CHECK(r.report.find("LaTeX") != std::string::npos);
-    CHECK(r.report.find("Low-entropy") != std::string::npos);
+    // The plain-text report now emits a single H(s) line in LaTeX form
+    // (with \frac, \cdot, ...) instead of the older triple (low-entropy
+    // + expanded + LaTeX). Verify the LaTeX expression is present.
+    CHECK(r.report.find("H(s)") != std::string::npos);
+    CHECK(r.report.find("\\frac") != std::string::npos);
+    CHECK(r.report.find("\\cdot") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

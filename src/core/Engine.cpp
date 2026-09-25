@@ -135,31 +135,30 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
 
 std::string format_report(const AnalysisResult& r) {
     std::string out;
-    out += "SymCirc analysis -- " + r.output_desc + " per " + r.input_desc + "\n";
-    // frequency-sweep line, in the same terms the analysis card uses
+    out += r.output_desc + " per " + r.input_desc + "\n";
     const char* typ = r.sweep.type == SweepType::Linear
                           ? "linear"
                           : r.sweep.type == SweepType::Octave ? "octave"
                                                               : "decade";
-    char hdr[320];
-    std::snprintf(hdr, sizeof(hdr),
-                  "sweep: %s .. %s, %s, %d pts/interval   "
-                  "(ignore terms below %.0f dB)\n",
-                  fmt_hz(r.sweep.f_start_hz).c_str(),
-                  fmt_hz(r.sweep.f_stop_hz).c_str(), typ,
-                  r.sweep.points_per_interval, r.opts.threshold_db);
-    out += hdr;
-    out += "----------------------------------------------------------------\n";
-    out += "Low-entropy transfer function:\n";
-    out += "  H(s) = " + r.pruned.text + "\n";
-    out += "\nExpanded (pruned) form:\n";
-    out += "  H(s) = " + r.pruned.text_poly + "\n";
-    out += "\nLaTeX (copy into a paper/slides):\n";
-    out += "  " + r.pruned.latex + "\n";
+    out += "sweep: " + fmt_hz(r.sweep.f_start_hz) + " .. " +
+           fmt_hz(r.sweep.f_stop_hz) + ", " + typ + ", " +
+           std::to_string(r.sweep.points_per_interval) +
+           " pts/interval  (ignore terms below " +
+           std::to_string(int(r.opts.threshold_db)) + " dB)\n";
+    // One line per quantity. The Math tab renders LaTeX-shaped lines as
+    // typeset math; everything else renders as plain text. We deliberately
+    // emit each H(s) ONCE -- the LaTeX form (with \frac, \cdot, ...) --
+    // and drop the duplicated low-entropy + expanded + LaTeX triple that
+    // used to live here, which cluttered the report without adding signal.
+    out += "\n";
+    if (!r.pruned.latex.empty())
+        out += "  " + r.pruned.latex + "\n";
+    else
+        out += "  H(s) = " + r.pruned.text + "\n";
     if (r.pruned.numeric_factors)
-        out += "\nNote: one or more factors are approximate -- the exact "
-               "denominator/numerator\n      does not factor symbolically, so "
-               "numeric (estimate-based) roots were used.\n";
+        out += "  (one or more factors are approximate -- the exact "
+               "denominator/numerator does not factor symbolically, so "
+               "numeric (estimate-based) roots were used)\n";
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";
@@ -174,7 +173,7 @@ std::string format_report(const AnalysisResult& r) {
             out += "    [" + d.location + "]  " + d.term + "   " + dbbuf + "\n";
         }
     } else {
-        out += "\nNo terms ignored (everything is within the margin).\n";
+        out += "No terms ignored (everything is within the margin).\n";
     }
     return out;
 }

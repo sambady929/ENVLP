@@ -87,9 +87,19 @@ bool segment_hits(const std::vector<std::pair<Pt, Pt>>& segs, Pt p,
 // preserved; only the leg directions are normalised. This is what schematic
 // editors (Cadence Virtuoso, KiCad, etc.) do when you drag a component
 // through its wires -- every connected wire stays rectangular.
+//
+// Backtrack avoidance: a corner at `(b.x, a.y)` would force the wire to
+// leave `a`, travel to `(b.x, a.y)`, then immediately to `b`. If the next
+// vertex in the input is exactly `b`, the next segment from `b` to that
+// vertex would have to back up over the previous leg -- visible "hook".
+// We reject corner choices that equal the next input vertex.
 void ortho_fix_wire(std::vector<Pt>& pts,
                     const std::vector<std::pair<Pt, Pt>>& other_segs = {}) {
     if (pts.size() < 2) return;
+    auto eq_pt = [](Pt a, Pt b) {
+        return std::fabs(a.first - b.first) < 1e-9 &&
+               std::fabs(a.second - b.second) < 1e-9;
+    };
     std::vector<Pt> out;
     out.push_back(pts[0]);
     bool prev_was_horizontal = false;
@@ -103,26 +113,37 @@ void ortho_fix_wire(std::vector<Pt>& pts,
             prev_was_horizontal = horiz;
             continue;
         }
-        // Diagonal. Two corners are valid: (b.x, a.y) and (a.x, b.y). Pick
-        // the one whose resulting corner doesn't land on another wire's
-        // middle; if both are clear, alternate from the previous leg so a
-        // run of diagonals doesn't stack the bend on the same side.
-        Pt c1{b.first, a.second}; // horizontal-first corner
-        Pt c2{a.first, b.second}; // vertical-first corner
-        bool h_first;
-        if (other_segs.empty()) {
-            h_first = !prev_was_horizontal;
-        } else {
-            bool c1_clean = !segment_hits(other_segs, c1);
-            bool c2_clean = !segment_hits(other_segs, c2);
-            if (c1_clean && !c2_clean) h_first = true;
-            else if (c2_clean && !c1_clean) h_first = false;
-            else h_first = !prev_was_horizontal; // both clean (or both busy)
+        // Diagonal. Two corner choices exist: (b.x, a.y) and (a.x, b.y).
+        // We pick the one that doesn't backtrack (corner == next input
+        // vertex), create a useless stub (corner == a or b), or land on
+        // another wire's middle. If BOTH are unusable, leave the segment
+        // as a diagonal -- the painter draws it as a straight line, which
+        // is preferable to either a useless stub or a visible backtrack.
+        // The next drag of the same component may re-resolve the shape.
+        Pt c1{b.first, a.second};
+        Pt c2{a.first, b.second};
+        Pt next = (i + 2 < pts.size()) ? pts[i + 2] : b;
+        auto bad = [&](Pt c) {
+            if (eq_pt(c, next)) return true;            // would backtrack
+            if (eq_pt(c, a)) return true;              // zero-length leg
+            if (eq_pt(c, b)) return true;              // corner == end
+            return !other_segs.empty() && segment_hits(other_segs, c);
+        };
+        bool c1_bad = bad(c1), c2_bad = bad(c2);
+        if (c1_bad && c2_bad) {
+            out.push_back(b);
+            prev_was_horizontal = false;
+            continue;
         }
+        // Prefer c1, fall back to c2, tie-break by alternating the previous
+        // leg (for runs of consecutive diagonals).
+        bool h_first = c2_bad
+                       ? true
+                       : (c1_bad
+                          ? false
+                          : !prev_was_horizontal);
         Pt corner = h_first ? c1 : c2;
-        if (std::fabs(out.back().first - corner.first) > 1e-9 ||
-            std::fabs(out.back().second - corner.second) > 1e-9)
-            out.push_back(corner);
+        if (!eq_pt(out.back(), corner)) out.push_back(corner);
         out.push_back(b);
         prev_was_horizontal = !h_first;
     }
