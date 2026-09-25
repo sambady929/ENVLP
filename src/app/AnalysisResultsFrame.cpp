@@ -9,17 +9,18 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     results_ = new ResultsPanel(book_);
     math_ = new MathPanel(book_);
     bode_ = new BodePanel(book_);
-    lua_ = new LuaConsole(book_);
     // "Results" is the typeset (LaTeX) view and comes first; the plain-text
     // dump is the secondary "Results (Text)" tab.
     book_->AddPage(math_, "Results", true);
     book_->AddPage(results_, "Results (Text)");
     book_->AddPage(bode_, "Plot");
-    // The Lua console tab is hidden for now (messy); the object stays alive
-    // so the existing lua()->set_result() plumbing doesn't null-deref, but a
-    // child wxPanel that isn't a notebook page still paints at (0,0), so
-    // Hide() it explicitly.
-    lua_->Hide();
+    // The Lua console is hidden for now (messy): lua_ stays null, so the
+    // lua()->...() plumbing in MainFrame is a no-op via the null guard.
+
+    // The RICH2 text controls report a huge best-size, which would make the
+    // frame taller than the screen; pin it to a sensible client size.
+    SetSize(900, 600);
+    SetMinSize(wxSize(320, 240));
 
     // Closing the window just hides it; the next analysis brings it back.
     Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& e) {

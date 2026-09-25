@@ -538,7 +538,7 @@ void MainFrame::on_new(wxCommandEvent&) {
     result_.reset();
     if (results_frame_) {
         results_frame_->bode()->set_result(nullptr);
-        results_frame_->lua()->set_result(nullptr);
+        if (results_frame_->lua()) results_frame_->lua()->set_result(nullptr);
         results_frame_->results()->clear();
     }
     canvas_->set_selection("");
@@ -571,7 +571,7 @@ void MainFrame::open_path(const wxString& p) {
     result_.reset();
     if (results_frame_) {
         results_frame_->bode()->set_result(nullptr);
-        results_frame_->lua()->set_result(nullptr);
+        if (results_frame_->lua()) results_frame_->lua()->set_result(nullptr);
         results_frame_->results()->clear();
     }
     canvas_->set_selection("");
@@ -775,7 +775,7 @@ void MainFrame::run_card(int index) {
     }
     rf->bode()->set_title(last_title);
     rf->bode()->set_result(result_.get());
-    rf->lua()->set_result(result_.get());
+    if (rf->lua()) rf->lua()->set_result(result_.get());
     rf->popup();
     rf->select_page(0); // land on the "Results" (typeset) tab
     SetStatusText("Analysis OK -- see the results window.", 0);
