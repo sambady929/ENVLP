@@ -19,10 +19,28 @@ struct Placement {
     bool flip_v = false;
 };
 
+// Where a wire endpoint attaches. In the reference model (analog-canvas) a
+// route endpoint is a *binding*, not a coordinate: `{instanceId, pinName}`
+// or a junction. We mirror that here for the two endpoints of a wire:
+//   - Free: a fixed coordinate (a bend, a T-junction, a dangling end).
+//   - Pin:  bound to a component pin; resolves to the pin's *current* world
+//           position, so moving/rotating the component carries the wire
+//           automatically -- no hunting for vertices that happen to coincide
+//           with the old pin position.
+// Intermediate polyline vertices are always free bends.
+struct WireEnd {
+    enum class Kind { Free, Pin } kind = Kind::Free;
+    std::string ref;  // component ref when kind == Pin
+    int pin = -1;     // pin index when kind == Pin
+};
+
 // A polyline of wire segments. Consecutive points are electrically one net;
-// separate wires that touch (within tolerance) are also one net.
+// separate wires that touch (within tolerance) are also one net. The first
+// and last points are the endpoints described by `a` / `b`; the points in
+// between are free bends.
 struct Wire {
     std::vector<Pt> pts;
+    WireEnd a, b;
 };
 
 // A user-assigned net name placed near a net. `anchor` is the point that
@@ -68,6 +86,20 @@ public:
     // Adds the component and gives it a free reference/placement.
     std::string add(const syms::Component& c, double x, double y);
     void remove(const std::string& ref);
+
+    // --- wire endpoint bindings -------------------------------------------
+    // Resolve a wire end to its current coordinate: a Pin end follows the
+    // pin's world position (so moving the component carries the wire); a
+    // Free end is the stored coordinate.
+    Pt wire_end_pt(const Wire& w, bool start) const;
+    // Bind each end of `w` to a component pin if it currently coincides with
+    // one. Call this after any wire edit (draw, split, merge).
+    void bind_wire_ends(Wire& w) const;
+    // Re-resolve every wire's pin-bound endpoints to the pins' current
+    // positions and re-route the wire orthogonally. This is what makes a
+    // component move/rotate carry its wires without hunting for the old pin
+    // vertices: the binding does the work.
+    void sync_wire_endpoints();
 
     // Returns the circuit with every pin's node name filled in from the
     // wire topology. Fills `err` (instead of throwing) on structural

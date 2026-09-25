@@ -413,20 +413,45 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
 
     wxFont base = dc.GetFont();
 
-    // Ground and supply symbols are anonymous: show neither a reference nor a
-    // value, just the glyph.
-    if (c.kind == Kind::GND || c.kind == Kind::VDD) return;
+    // Ground is anonymous: show neither a reference nor a value, just the
+    // glyph. VDD is special -- it's a supply rail, so it always reads "VDD"
+    // with the DC voltage underneath.
+    if (c.kind == Kind::GND) return;
+
+    double bx0, by0, bx1, by1;
+    symbol_bbox(c, pl, bx0, by0, bx1, by1, 2.0);
+
+    if (c.kind == Kind::VDD) {
+        // "VDD" above the glyph (supply rails read as a label on top), the
+        // DC value below it. Both are centred horizontally on the symbol.
+        double fs = 9.0;
+        wxFont f = base;
+        f.SetPointSize(int(fs));
+        f.SetWeight(wxFONTWEIGHT_BOLD);
+        dc.SetFont(f);
+        wxString ref_text = "VDD";
+        wxSize rs = dc.GetTextExtent(ref_text);
+        double cx = (bx0 + bx1) / 2.0;
+        dc.SetTextForeground(kRefInk);
+        dc.DrawText(ref_text, wxPoint(int(cx - rs.x / 2.0), int(by0 - rs.y)));
+        if (!c.value_text.empty()) {
+            f.SetWeight(wxFONTWEIGHT_NORMAL);
+            dc.SetFont(f);
+            wxString vt = wxString::FromUTF8(c.value_text) + " V";
+            wxSize vs = dc.GetTextExtent(vt);
+            dc.SetTextForeground(kValInk);
+            dc.DrawText(vt, wxPoint(int(cx - vs.x / 2.0), int(by1 + 2)));
+        }
+        dc.SetTextForeground(kRefInk);
+        dc.SetFont(base);
+        return;
+    }
 
     // Text placement: the ref + value sit centred vertically on the right
     // edge of the symbol, drawn horizontally in world space. Using the
     // symbol's axis-aligned bbox (post-rotation) keeps the label clear of
     // the body for any rotation; placing it centred means the label is
     // always near the middle of the symbol, not floating above it.
-    double bx0, by0, bx1, by1;
-    symbol_bbox(c, pl, bx0, by0, bx1, by1, 2.0);
-
-    // Use a slightly smaller font for the labels than the canvas default so
-    // they read as annotations rather than primary content.
     double fs = 9.0;
 
     wxFont ref_font = base;
@@ -439,8 +464,7 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     wxSize ref_ts = dc.GetTextExtent(ref_text);
     double lh = ref_ts.y;
 
-    wxString val_text = (!c.value_text.empty() && c.kind != Kind::GND &&
-                         c.kind != Kind::VDD)
+    wxString val_text = !c.value_text.empty()
                             ? wxString::FromUTF8(c.value_text)
                             : wxString();
     wxSize val_ts = val_text.IsEmpty() ? wxSize(0, 0)

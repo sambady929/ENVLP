@@ -714,9 +714,8 @@ void MainFrame::run_card(int index) {
         sp.approx_factor = card.approx_factor;
 
         syms::CardResult cr = syms::run_analysis(c, sp);
-        report += "==================================================\n";
         report += cr.title + "\n";
-        report += "==================================================\n";
+        report += std::string(cr.title.size() + 8, '-') + "\n";
         report += cr.report;
         report += "\n";
         if (!cr.latex.empty()) latex = cr.latex;
@@ -752,9 +751,9 @@ void MainFrame::run_card(int index) {
     auto* rf = ensure_results_frame();
     rf->results()->set_text(report);
     rf->results()->set_latex(latex);
-    // Typeset the result in the Math tab: render the report line by line
-    // (LaTeX-shaped lines as typeset math, plain lines as text) so the
-    // output reads as math equations rather than a plaintext dump.
+    // Results tab = the plain-text report. Math tab = the same report
+    // typeset (the transfer function as real stacked fractions with proper
+    // subscripts, the poles/zeros as a formatted list).
     rf->set_report(report, latex);
     result_ = std::move(keep);
     // The bode tab shows the most recent card's title so the user can tell

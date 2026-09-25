@@ -74,83 +74,97 @@ void MathPanel::clear() {
 }
 
 namespace {
-// Decide whether a report line is a math expression that should be typeset,
-// or plain text. Heuristic: contains `\` and either contains a LaTeX
-// command (`\frac`, `\mathrm`, etc.) or has at least one `\cmd{...}` shape.
-bool looks_like_latex(const std::string& line) {
-    if (line.find('\\') == std::string::npos) return false;
-    static const char* kCmds[] = {"\\frac", "\\mathrm", "\\parallel",
-                                  "\\cdot", "\\times", "\\right", "\\begin",
-                                  "\\le",  "\\pm",     "\\sqrt",   "\\pi"};
-    for (const char* c : kCmds)
-        if (line.find(c) != std::string::npos) return true;
-    return false;
+// The Math tab shows the typeset expression first (the headline result:
+// stacked fractions, proper subscripts, the parallel glyph), then the
+// supporting text report below it in a clean document style -- so it reads
+// as a typeset page rather than a dump of raw LaTeX.
+const char* kReportCss =
+    "html, body { margin: 0; padding: 0; background: #ffffff; }"
+    "body { font-family: 'Segoe UI', sans-serif; color: #202634; }"
+    ".wrap { padding: 22px 26px 36px 26px; max-width: 860px; }"
+    ".expr { margin: 0 0 20px 0; padding: 16px 20px;"
+    "        background: #f7f8fb; border: 1px solid #e3e6ee;"
+    "        border-radius: 6px; overflow-x: auto; }"
+    ".math { font-family: 'Cambria Math', 'Latin Modern Math',"
+    "        'Times New Roman', serif; font-size: 21px;"
+    "        line-height: 2.5; color: #10141a; }"
+    ".frac { display: inline-block; vertical-align: middle;"
+    "        text-align: center; margin: 0 4px; }"
+    ".frac > .num { display: block; padding: 0 5px 2px 5px;"
+    "               border-bottom: 1.5px solid #10141a; }"
+    ".frac > .den { display: block; padding: 2px 5px 0 5px; }"
+    "sub, sup { font-size: 72%; }"
+    ".overline { border-top: 1.3px solid #10141a; padding-top: 1px; }"
+    ".mathrm, .text { font-style: normal; }"
+    ".mathit { font-style: italic; }"
+    "h2.section { font-size: 12px; font-weight: 600; text-transform:"
+    "        uppercase; letter-spacing: .08em; color: #8890a0;"
+    "        margin: 22px 0 6px 0; }"
+    "p.line { margin: 5px 0; font-size: 13.5px; line-height: 1.55;"
+    "        color: #2a3140; }"
+    "p.line.mono { font-family: 'Cascadia Mono', 'Consolas', monospace;"
+    "        font-size: 12.5px; white-space: pre; }"
+    ".note { color: #8a6d1a; background: #fdf6e0; border: 1px solid"
+    "        #f0e2b0; border-radius: 4px; padding: 8px 10px;"
+    "        font-size: 12.5px; margin: 10px 0; }";
+
+std::string esc_html(const std::string& s) {
+    std::string e;
+    for (char c : s) {
+        if (c == '<') e += "&lt;";
+        else if (c == '>') e += "&gt;";
+        else if (c == '&') e += "&amp;";
+        else e += c;
+    }
+    return e;
+}
+
+// Turn the plain-text report into formatted HTML: short lines ending in
+// ':' become section headings; everything else is a body line. Blank lines
+// are dropped (spacing comes from the CSS margins).
+std::string render_report_html(const std::string& report) {
+    std::string out;
+    std::string cur;
+    auto flush = [&]() {
+        while (!cur.empty() &&
+               (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
+            cur.pop_back();
+        if (!cur.empty()) {
+            if (cur.size() < 40 && cur.back() == ':')
+                out += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
+            else
+                out += "<p class=\"line\">" + esc_html(cur) + "</p>";
+        }
+        cur.clear();
+    };
+    for (char c : report) {
+        if (c == '\n') flush();
+        else cur += c;
+    }
+    flush();
+    return out;
 }
 } // namespace
 
 void MathPanel::render() {
     if (!view_) return;
-    // Compute the page we want right now and send it exactly once. wxWebView
-    // calls LOADED when it finishes, but we don't loop back -- the next
-    // render() call (from set_latex or refresh()) is what re-pushes content.
-    std::string page;
     if (latex_.empty() && report_.empty()) {
-        page = kEmptyPage;
-    } else if (report_.empty()) {
-        page = latex_to_html(latex_);
-    } else {
-        // Combine report + math. Walk the report line by line: text lines
-        // render as <p>, LaTeX lines render as typeset math.
-        std::string body = "<div class=\"report\">";
-        std::string cur;
-        auto flush_text = [&]() {
-            if (cur.empty()) return;
-            // escape < > & for safe inclusion
-            std::string esc;
-            for (char c : cur) {
-                if (c == '<') esc += "&lt;";
-                else if (c == '>') esc += "&gt;";
-                else if (c == '&') esc += "&amp;";
-                else esc += c;
-            }
-            body += "<p class=\"text\">" + esc + "</p>";
-            cur.clear();
-        };
-        for (char c : report_) {
-            if (c == '\n') {
-                std::string trimmed = cur;
-                while (!trimmed.empty() && (trimmed.back() == '\r' ||
-                                            trimmed.back() == ' '))
-                    trimmed.pop_back();
-                if (looks_like_latex(trimmed)) {
-                    flush_text();
-                    body += "<div class=\"line\">" +
-                            latex_render_line(trimmed) + "</div>";
-                } else {
-                    cur += '\n'; // keep the line break
-                }
-            } else {
-                cur += c;
-            }
-        }
-        flush_text();
-        body += "</div>";
-        page = std::string("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-                          "<style>") +
-               "body{margin:0;padding:16px;font-family:'Segoe UI',sans-serif;"
-               "color:#55606e;}"
-               ".math{font-family:'Cambria Math',serif;font-size:19px;"
-               "line-height:2.1;color:#10141a;}"
-               ".frac{display:inline-block;vertical-align:middle;text-align:center;"
-               "margin:0 3px;}.frac>.num{display:block;padding:0 4px 1px 4px;"
-               "border-bottom:1.4px solid #10141a;}.frac>.den{display:block;"
-               "padding:1px 4px 0 4px;}sub,sup{font-size:72%;}"
-               ".overline{border-top:1.3px solid #10141a;padding-top:1px;}"
-               ".report p.text{margin:6px 0;color:#3a4452;font-size:13px;"
-               "line-height:1.5;font-family:'Segoe UI',sans-serif;}"
-               ".report .line{margin:6px 0;}"
-               "</style></head><body>" + body + "</body></html>";
+        view_->SetPage(kEmptyPage, "");
+        return;
     }
+    std::string body;
+    if (!latex_.empty()) {
+        body += "<div class=\"expr math\">";
+        body += latex_render_line(latex_);
+        body += "</div>";
+    }
+    if (!report_.empty()) body += render_report_html(report_);
+    std::string page;
+    page += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>";
+    page += kReportCss;
+    page += "</style></head><body><div class=\"wrap\">";
+    page += body;
+    page += "</div></body></html>";
     view_->SetPage(page, "");
 }
 

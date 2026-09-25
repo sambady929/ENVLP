@@ -381,6 +381,11 @@ bool Circuit::validate(std::string& err) const {
 }
 
 std::string next_ref(const Circuit& c, Kind k) {
+    // VDD is a singleton marker: it always reads "VDD" (there is no
+    // "VDD1"). validate() treats it as anonymous so several VDD symbols may
+    // share the same reference. GND keeps its numbered form so multiple
+    // ground symbols stay addressable in the schematic.
+    if (k == Kind::VDD) return "VDD";
     std::string prefix = ref_prefix(k);
     int n = 1;
     while (c.find(prefix + std::to_string(n))) ++n;

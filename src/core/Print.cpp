@@ -13,20 +13,16 @@ using GiNaC::ex;
 using GiNaC::is_a;
 using GiNaC::numeric;
 
-// Multiplication sign in plain-text output. We use the LaTeX command
-// \cdot (rather than the Unicode middle dot ·) because the report is often
-// pasted into terminals / editors / chat clients that don't all agree on
-// the UTF-8 byte sequence (0xC2 0xB7): the leading byte 0xC2 is the
-// Latin-1 "Â", which then shows up in the rendered text as `Â·`. The
-// LaTeX command survives every channel -- the Math tab still typesets it
-// properly because the LaTeX renderer maps \cdot to the middle-dot glyph.
-constexpr const char* kDot = "\\cdot ";
+// Multiplication sign in plain-text output. This is the *text* path, so use
+// an ASCII `*` -- no Unicode, no LaTeX. The Math tab gets the real
+// multiplication dot from the separate LaTeX string (pruned.latex), so the
+// two views stay independent.
+constexpr const char* kDot = "*";
 
-// Superscript: emit LaTeX "^{n}" so the report survives every channel
-// (terminals, chat clients, code review tools). The Math tab renders the
-// LaTeX as a real superscript.
+// Superscript in plain text: `s^2`. The LaTeX form (built separately in
+// LowEntropy.cpp) uses `s^{2}` for proper typesetting.
 std::string sup(int k) {
-    return "^{" + std::to_string(k) + "}";
+    return "^" + std::to_string(k);
 }
 
 // GiNaC's default stream output ("print_dflt") as a string.

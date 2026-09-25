@@ -154,12 +154,21 @@ NetMap Document::net_map() const {
     }
 
     // Flat point list: [0 .. nPins) pins, then wire pts, then label anchors.
+    // A wire's first/last point is *resolved from its endpoint binding* --
+    // a Pin-bound end follows the pin's current world position, so the
+    // connectivity graph stays correct even before sync_wire_endpoints()
+    // has physically moved the stored coordinate.
     std::vector<Pt> pts;
     for (size_t i = 0; i < nm.pin_comp.size(); ++i)
         pts.push_back(pin_pt(nm.pin_comp[i], nm.pin_index[i]));
     size_t wire_base = pts.size();
-    for (const auto& w : wires)
-        for (auto& p : w.pts) pts.push_back(p);
+    for (const auto& w : wires) {
+        for (size_t k = 0; k < w.pts.size(); ++k) {
+            if (k == 0) pts.push_back(wire_end_pt(w, true));
+            else if (k + 1 == w.pts.size()) pts.push_back(wire_end_pt(w, false));
+            else pts.push_back(w.pts[k]);
+        }
+    }
     size_t label_base = pts.size();
     for (const auto& l : labels) pts.push_back(l.anchor);
 
@@ -301,6 +310,129 @@ syms::Circuit Document::resolved(std::string& err) const {
         return empty;
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// wire endpoint bindings
+// ---------------------------------------------------------------------------
+namespace {
+// Orthogonalise a polyline: replace every diagonal segment with two axis-
+// aligned legs joined at a corner. Same rule as the canvas uses, so the
+// model-level sync and the interactive drag agree.
+void ortho_fix_pts(std::vector<Pt>& pts) {
+    if (pts.size() < 2) return;
+    std::vector<Pt> out;
+    out.push_back(pts[0]);
+    bool prev_h = false;
+    auto eq = [](Pt a, Pt b) {
+        return std::fabs(a.first - b.first) < 1e-9 &&
+               std::fabs(a.second - b.second) < 1e-9;
+    };
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        Pt a = pts[i], b = pts[i + 1];
+        bool horiz = std::fabs(b.second - a.second) < 1e-9;
+        bool vert = std::fabs(b.first - a.first) < 1e-9;
+        if (horiz || vert) {
+            out.push_back(b);
+            prev_h = horiz;
+            continue;
+        }
+        Pt c1{b.first, a.second};
+        Pt c2{a.first, b.second};
+        Pt next = (i + 2 < pts.size()) ? pts[i + 2] : b;
+        auto bad = [&](Pt c) {
+            return eq(c, next) || eq(c, a) || eq(c, b);
+        };
+        bool c1_bad = bad(c1), c2_bad = bad(c2);
+        if (c1_bad && c2_bad) { out.push_back(b); prev_h = false; continue; }
+        bool h_first = c2_bad ? true : (c1_bad ? false : !prev_h);
+        Pt corner = h_first ? c1 : c2;
+        if (!eq(out.back(), corner)) out.push_back(corner);
+        out.push_back(b);
+        prev_h = !h_first;
+    }
+    pts = std::move(out);
+}
+} // namespace
+
+Pt Document::wire_end_pt(const Wire& w, bool start) const {
+    const WireEnd& e = start ? w.a : w.b;
+    if (e.kind == WireEnd::Kind::Pin) {
+        const syms::Component* c = circuit.find(e.ref);
+        auto pl = placements.find(e.ref);
+        if (c && pl != placements.end())
+            return pin_world(*c, pl->second, e.pin);
+    }
+    if (w.pts.empty()) return {0, 0};
+    return start ? w.pts.front() : w.pts.back();
+}
+
+void Document::bind_wire_ends(Wire& w) const {
+    if (w.pts.size() < 2) return;
+    // Bind each end to a pin whose world position coincides with it.
+    // A pin match wins over a free coordinate because it's the stronger
+    // declaration of intent (the user drew from / to a pin).
+    auto bind_one = [&](bool start) {
+        Pt p = start ? w.pts.front() : w.pts.back();
+        for (const auto& c : circuit.comps) {
+            auto pl = placements.find(c.ref);
+            if (pl == placements.end()) continue;
+            int np = int(pin_offsets(c.kind).size());
+            for (int i = 0; i < np; ++i) {
+                Pt pw = pin_world(c, pl->second, i);
+                if (std::hypot(pw.first - p.first, pw.second - p.second) <= 1.0) {
+                    WireEnd e;
+                    e.kind = WireEnd::Kind::Pin;
+                    e.ref = c.ref;
+                    e.pin = i;
+                    if (start) w.a = e; else w.b = e;
+                    return;
+                }
+            }
+        }
+        WireEnd e;
+        e.kind = WireEnd::Kind::Free;
+        if (start) w.a = e; else w.b = e;
+    };
+    bind_one(true);
+    bind_one(false);
+}
+
+void Document::sync_wire_endpoints() {
+    for (auto& w : wires) {
+        if (w.pts.size() < 2) continue;
+        bool moved = false;
+        Pt a = wire_end_pt(w, true);
+        Pt b = wire_end_pt(w, false);
+        if (std::hypot(a.first - w.pts.front().first,
+                       a.second - w.pts.front().second) > 1e-9 ||
+            std::hypot(b.first - w.pts.back().first,
+                       b.second - w.pts.back().second) > 1e-9) {
+            w.pts.front() = a;
+            w.pts.back() = b;
+            moved = true;
+        }
+        if (moved) {
+            ortho_fix_pts(w.pts);
+            // Drop a bend that became collinear with its neighbours.
+            if (w.pts.size() >= 3) {
+                std::vector<Pt> keep{w.pts.front()};
+                for (size_t i = 1; i + 1 < w.pts.size(); ++i) {
+                    const Pt& p0 = keep.back();
+                    const Pt& p1 = w.pts[i];
+                    const Pt& p2 = w.pts[i + 1];
+                    bool collinear =
+                        (std::fabs(p0.first - p1.first) < 1e-9 &&
+                         std::fabs(p1.first - p2.first) < 1e-9) ||
+                        (std::fabs(p0.second - p1.second) < 1e-9 &&
+                         std::fabs(p1.second - p2.second) < 1e-9);
+                    if (!collinear) keep.push_back(p1);
+                }
+                keep.push_back(w.pts.back());
+                w.pts = std::move(keep);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,9 +635,21 @@ std::string Document::serialize() const {
               << "\n";
     }
     for (const auto& w : wires) {
+        // Format: "wire x,y x,y ... [a=<pin|free>] [b=<pin|free>]"
+        // The endpoint binding is appended so reloading keeps the wire
+        // attached to its pins. Older files without it deserialize as free
+        // ends and are re-bound on load.
         o << "wire";
         for (auto& p : w.pts)
             o << " " << p.first << "," << p.second;
+        auto emit_end = [&](const WireEnd& e) {
+            if (e.kind == WireEnd::Kind::Pin)
+                o << " pin:" << e.ref << ":" << e.pin;
+            else
+                o << " free";
+        };
+        emit_end(w.a);
+        emit_end(w.b);
         o << "\n";
     }
     for (const auto& l : labels) {
@@ -621,7 +765,27 @@ bool Document::deserialize(const std::string& data, std::string& err) {
         } else if (kw == "wire") {
             Wire w;
             std::string t;
+            bool saw_binding = false;
             while (next_token(line, i, t)) {
+                if (t.rfind("pin:", 0) == 0 || t == "free") {
+                    // Endpoint binding: "pin:REF:N" or "free".
+                    WireEnd e;
+                    if (t == "pin:") return fail("bad wire binding " + t);
+                    if (t.rfind("pin:", 0) == 0) {
+                        // pin:REF:N  (REF may itself contain ':'; split on
+                        // the last colon)
+                        std::string body = t.substr(4);
+                        size_t colon = body.rfind(':');
+                        if (colon == std::string::npos)
+                            return fail("bad wire pin binding " + t);
+                        e.kind = WireEnd::Kind::Pin;
+                        e.ref = body.substr(0, colon);
+                        e.pin = std::atoi(body.c_str() + colon + 1);
+                    }
+                    if (!saw_binding) { w.a = e; saw_binding = true; }
+                    else w.b = e;
+                    continue;
+                }
                 double x, y;
                 if (std::sscanf(t.c_str(), "%lf,%lf", &x, &y) != 2)
                     return fail("bad wire point " + t);
@@ -672,6 +836,21 @@ bool Document::deserialize(const std::string& data, std::string& err) {
     if (!saw_header) {
         err = "not a SymCirc file (missing header)";
         return false;
+    }
+    // Re-bind any wire end that wasn't explicitly tagged. Old .scx files
+    // predate the binding, and hand-written files often omit it; binding by
+    // coincidence with a current pin position gets them attached.
+    for (auto& w : wires) {
+        if (!w.pts.empty()) {
+            bool a_tagged = w.a.kind == WireEnd::Kind::Pin;
+            bool b_tagged = w.b.kind == WireEnd::Kind::Pin;
+            if (!a_tagged || !b_tagged) {
+                Wire tmp = w;
+                bind_wire_ends(tmp);
+                if (!a_tagged) w.a = tmp.a;
+                if (!b_tagged) w.b = tmp.b;
+            }
+        }
     }
     dirty = false;
     return true;

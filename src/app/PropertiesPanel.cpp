@@ -294,7 +294,11 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
              wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
     sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     if (with_unit) {
-        std::string unit = syms::kind_display(comp->kind);
+        // VDD's "value" is a supply voltage; show "V" rather than the
+        // component-kind description ("Supply rail").
+        std::string unit = (comp->kind == syms::Kind::VDD)
+                               ? std::string("V")
+                               : syms::kind_display(comp->kind);
         sub->Add(new wxStaticText(this, wxID_ANY, wxString::FromUTF8(unit)), 0,
                  wxALIGN_CENTER_VERTICAL);
     }
@@ -467,10 +471,10 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             // value selector for passives and ideal sources
             if (c->kind == Kind::R || c->kind == Kind::C ||
                 c->kind == Kind::L || c->kind == Kind::V ||
-                c->kind == Kind::I || c->kind == Kind::D ||
-                c->kind == Kind::OPAMP || c->kind == Kind::FDOPAMP ||
-                c->kind == Kind::AMP || c->kind == Kind::E ||
-                c->kind == Kind::G)
+                c->kind == Kind::VDD || c->kind == Kind::I ||
+                c->kind == Kind::D || c->kind == Kind::OPAMP ||
+                c->kind == Kind::FDOPAMP || c->kind == Kind::AMP ||
+                c->kind == Kind::E || c->kind == Kind::G)
                 add_value_selector(comp, true);
 
             // device model parameters: checkbox (parasitic) + mantissa/exponent

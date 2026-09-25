@@ -717,15 +717,15 @@ ex factor_common_impl(const ex& e) {
 }
 
 // Wrap a factor's text in parentheses when it is a sum or a ratio, so a
-// product of factors prints unambiguously: "(a+b)" not "a+b". The middle
-// dot is emitted as the LaTeX command `\cdot` (see core/Print.cpp) so the
-// report survives copy-paste into terminals that don't honour UTF-8.
+// product of factors prints unambiguously: "(a+b)" not "a+b". The text path
+// uses an ASCII `*` (see core/Print.cpp); `pruned.latex` is built separately
+// with real LaTeX.
 std::string paren_factor(const std::string& t) {
     if (t == "1") return t;
     bool sum = t.find('+') != std::string::npos ||
                t.find(" - ") != std::string::npos;
     bool ratio = t.find('/') != std::string::npos;
-    bool product = t.find("\\cdot") != std::string::npos;
+    bool product = t.find('*') != std::string::npos;
     if (sum || ratio || product) return "(" + t + ")";
     return t;
 }
@@ -754,7 +754,7 @@ std::string join_factors_pretty(const std::vector<Factor>& fs) {
         if (out.empty())
             out = t;
         else
-            out += "\\cdot " + t;
+            out += "*" + t;
     }
     return out.empty() ? "1" : out;
 }
@@ -762,7 +762,7 @@ std::string join_factors_pretty(const std::vector<Factor>& fs) {
 std::string wrap_compound(const std::string& t) {
     if (t == "1") return t;
     if (already_wrapped(t)) return t;
-    bool compound = t.find("\\cdot") != std::string::npos ||
+    bool compound = t.find('*') != std::string::npos ||
                     t.find('+') != std::string::npos ||
                     t.find('-') != std::string::npos ||
                     t.find('/') != std::string::npos ||
@@ -785,14 +785,25 @@ std::string low_entropy_latex(const LowEntropy& le) {
     std::ostringstream os;
     os << "H(s) = ";
     std::string K = to_latex(le.gain);
+    // Only wrap a factor in parentheses when it actually needs them (a sum
+    // or a ratio). Wrapping every factor in \left(...\right) made a product
+    // of single symbols read as "(Cgd_M1 R1 ro_M1)" -- visual noise with no
+    // mathematical purpose.
+    auto wrap = [](const std::string& tex, const GiNaC::ex& f) {
+        bool sum = GiNaC::is_a<GiNaC::add>(f.expand()) ||
+                   GiNaC::is_a<GiNaC::add>(f);
+        bool ratio = GiNaC::is_a<GiNaC::mul>(f) ? false : false;
+        if (sum || ratio) return "\\left(" + tex + "\\right)";
+        return tex;
+    };
     std::string N, D;
     for (const auto& f : le.num_factors) {
         if (!N.empty()) N += "\\,";
-        N += "\\left(" + to_latex(f.expr) + "\\right)";
+        N += wrap(to_latex(f.expr), f.expr);
     }
     for (const auto& f : le.den_factors) {
         if (!D.empty()) D += "\\,";
-        D += "\\left(" + to_latex(f.expr) + "\\right)";
+        D += wrap(to_latex(f.expr), f.expr);
     }
     std::string num = K;
     if (!N.empty()) num += (num.empty() ? "" : "\\,") + N;
@@ -967,7 +978,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     else if (Nt == "1")
         base = Kt;
     else
-        base = Kt + "\\cdot " + wrap_compound(Nt);
+        base = Kt + "*" + wrap_compound(Nt);
     R.text = (Dt == "1") ? base : base + " / " + wrap_compound(Dt);
     R.text_poly = pretty_ratio(R.num_poly, R.den_poly, s);
 

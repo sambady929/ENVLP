@@ -54,3 +54,10 @@ add_executable(test_ortho_fix test_ortho_fix.cpp
 target_include_directories(test_ortho_fix PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_ortho_fix PRIVATE symcore)
 add_test(NAME ortho_fix COMMAND test_ortho_fix)
+
+# Regression: wires carry on component move via the endpoint binding.
+add_executable(test_wire_binding test_wire_binding.cpp
+               ../src/app/Document.cpp ../src/app/SymbolGeom.cpp)
+target_include_directories(test_wire_binding PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wire_binding PRIVATE symcore)
+add_test(NAME wire_binding COMMAND test_wire_binding)

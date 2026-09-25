@@ -133,48 +133,30 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
 
 } // namespace
 
+// Plain-text report shown in the Results tab. This is deliberately NOT
+// LaTeX: no \frac, no \cdot, no \parallel -- just readable ASCII/math text.
+// The Math tab renders the LaTeX form (AnalysisResult::pruned.latex)
+// separately, so each view does one job well.
 std::string format_report(const AnalysisResult& r) {
     std::string out;
-    out += r.output_desc + " per " + r.input_desc + "\n";
-    const char* typ = r.sweep.type == SweepType::Linear
-                          ? "linear"
-                          : r.sweep.type == SweepType::Octave ? "octave"
-                                                              : "decade";
-    out += "sweep: " + fmt_hz(r.sweep.f_start_hz) + " .. " +
-           fmt_hz(r.sweep.f_stop_hz) + ", " + typ + ", " +
-           std::to_string(r.sweep.points_per_interval) +
-           " pts/interval  (ignore terms below " +
-           std::to_string(int(r.opts.threshold_db)) + " dB)\n";
-    // One line per quantity. The Math tab renders LaTeX-shaped lines as
-    // typeset math; everything else renders as plain text. We deliberately
-    // emit each H(s) ONCE -- the LaTeX form (with \frac, \cdot, ...) --
-    // and drop the duplicated low-entropy + expanded + LaTeX triple that
-    // used to live here, which cluttered the report without adding signal.
-    out += "\n";
-    if (!r.pruned.latex.empty())
-        out += "  " + r.pruned.latex + "\n";
-    else
-        out += "  H(s) = " + r.pruned.text + "\n";
+    out += "H(s) = " + r.pruned.text + "\n";
     if (r.pruned.numeric_factors)
-        out += "  (one or more factors are approximate -- the exact "
-               "denominator/numerator does not factor symbolically, so "
-               "numeric (estimate-based) roots were used)\n";
+        out += "(one or more factors are approximate: the exact denominator "
+               "does not factor symbolically, so numeric estimate-based roots "
+               "were used)\n";
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";
     out += poles_zeros_text(r.pruned.zeros, false);
     if (!r.pruned.dropped.empty()) {
-        out += "\nIgnored terms (" + std::to_string(r.pruned.dropped.size()) +
-               "), each below the dominant term by more than " +
-               std::to_string(static_cast<int>(r.opts.threshold_db)) + " dB:\n";
+        out += "\nNeglected terms:\n";
         for (const auto& d : r.pruned.dropped) {
             char dbbuf[48];
-            std::snprintf(dbbuf, sizeof(dbbuf), "%7.1f dB", d.db_rel);
-            out += "    [" + d.location + "]  " + d.term + "   " + dbbuf + "\n";
+            std::snprintf(dbbuf, sizeof(dbbuf), "%6.1f dB", d.db_rel);
+            out += "  " + d.term + "   " + dbbuf + "\n";
         }
-    } else {
-        out += "No terms ignored (everything is within the margin).\n";
     }
+    (void)r.sweep;
     return out;
 }
 

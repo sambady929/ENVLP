@@ -254,10 +254,12 @@ void SchematicCanvas::wire_commit_segment() {
     if (wire_idx_ < 0) {
         Wire w;
         w.pts = seg;
+        doc_->bind_wire_ends(w);
         doc_->wires.push_back(w);
         wire_idx_ = int(doc_->wires.size()) - 1;
     } else {
         doc_->wires[wire_idx_].pts = seg;
+        doc_->bind_wire_ends(doc_->wires[wire_idx_]);
     }
     wire_pts_ = seg;
     notify_doc();
@@ -899,10 +901,12 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         if (wire_idx_ < 0) {
             Wire w;
             w.pts = seg;
+            doc_->bind_wire_ends(w);
             doc_->wires.push_back(w);
             wire_idx_ = int(doc_->wires.size()) - 1;
         } else {
             doc_->wires[wire_idx_].pts = seg;
+            doc_->bind_wire_ends(doc_->wires[wire_idx_]);
         }
         wire_pts_ = seg;
 
@@ -1453,67 +1457,17 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
     pl->second.x = nx;
     pl->second.y = ny;
 
-    // Build a flat list of segments belonging to OTHER wires (everything
-    // except the wire we're about to re-route). ortho_fix_wire uses it to
-    // avoid landing new corners on another wire's middle -- which would
-    // create an unintended T-junction and a stray solder dot.
-    auto build_other_segs = [&](size_t skip_idx) {
-        std::vector<std::pair<Pt, Pt>> segs;
-        for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
-            if (wi == skip_idx) continue;
-            const auto& ow = doc_->wires[wi];
-            for (size_t k = 1; k < ow.pts.size(); ++k)
-                segs.push_back({ow.pts[k - 1], ow.pts[k]});
-        }
-        return segs;
-    };
+    // Wires whose endpoints are *bound* to this component's pins follow it
+    // automatically -- the binding records "this end is pin G of M1", so
+    // resolving it now yields the pin's new world position. We do not have
+    // to guess which vertices to translate; the model owns that.
+    doc_->sync_wire_endpoints();
 
-    for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
-        auto& w = doc_->wires[wi];
-        // Move ONLY the vertices that coincide with an old pin position --
-        // the others (junctions, label anchors, far-end terminals) must
-        // stay put. The wire then needs to be re-routed from the new pin
-        // positions to those unmoved vertices. Without this, dragging a
-        // component translated the whole wire -- including vertices that
-        // were anchoring it to other nets -- which then disconnected the
-        // moved component from those other nets.
-        //
-        // Example: wire [(440,200),(440,140),(600,140)] anchored to a
-        // component pin at (440,200) and a net label "out" at (600,140).
-        // Moving the pin straight to (612,347) should produce a wire from
-        // (612,347) to the still-anchored vertices at (440,140) and
-        // (600,140), not a translated version of the original.
-        std::vector<bool> vertex_at_pin(w.pts.size(), false);
-        bool touched = false;
-        for (size_t v = 0; v < w.pts.size(); ++v) {
-            for (size_t i = 0; i < old_pins.size(); ++i) {
-                if (dist(w.pts[v], old_pins[i]) <= 1.0) {
-                    w.pts[v].first += dx;
-                    w.pts[v].second += dy;
-                    vertex_at_pin[v] = true;
-                    touched = true;
-                    break;
-                }
-            }
-        }
-        if (!touched) continue;
-
-        // Re-route the wire so it stays connected to every vertex that
-        // wasn't pinned to the moved component. The classic L-route from
-        // each unmoved vertex to the nearest moved vertex (or between two
-        // moved vertices) is enough: walk the polyline, and at every
-        // junction between a moved and an unmoved vertex, drop a corner on
-        // the axis-aligned L that keeps the rest of the polyline shape.
-        // We do this with a single ortho_fix_wire call, then collapse any
-        // duplicated collinear vertices the new corners introduced.
-        ortho_fix_wire(w.pts, build_other_segs(wi));
-        collapse_collinear(w.pts);
-    }
+    // Labels that were sitting on a pin travel with it so the annotation
+    // stays where the user put it.
     for (auto& l : doc_->labels) {
         for (size_t i = 0; i < old_pins.size(); ++i)
             if (dist(l.anchor, old_pins[i]) <= 1.0) {
-                // Pin moved under the label's anchor: move both the anchor
-                // (the net's grip on the label) and the displayed text.
                 l.anchor.first += dx;
                 l.anchor.second += dy;
                 l.pt.first += dx;
@@ -1607,57 +1561,13 @@ void SchematicCanvas::rotate_ghost(int delta) {
         if (r.empty() || r[0] == '#') continue;
         auto pl = doc_->placements.find(r);
         if (pl == doc_->placements.end()) continue;
-        const Component* c = doc_->circuit.find(r);
-        if (!c) continue;
-        // Snapshot pin world positions BEFORE the rotation. Any wire vertex
-        // coincident with an old pin gets re-anchored to the new pin position
-        // and the whole wire is re-routed to stay orthogonal -- a 90deg
-        // rotation about a component's centre moves pins by exact grid steps
-        // in our schematic, but the user can pre-rotate at any angle and we
-        // want the same Cadence-style behaviour as a drag.
-        std::vector<Pt> old_pins;
-        int np = int(pin_offsets(c->kind).size());
-        for (int i = 0; i < np; ++i)
-            old_pins.push_back(pin_world(*c, pl->second, i));
-
         pl->second.rot = ((pl->second.rot + delta) % 360 + 360) % 360;
-        std::vector<Pt> new_pins;
-        for (int i = 0; i < np; ++i)
-            new_pins.push_back(pin_world(*c, pl->second, i));
-
-        // For each touched wire, snap every old-pin vertex to its new pin
-        // and orthogonalise the result. Only vertices coincident with the
-        // component's pins are moved; vertices anchored to other nets (label
-        // anchors, T-junctions with other wires, the far end of the wire)
-        // must stay put -- otherwise rotating the component would yank the
-        // entire wire along with it and disconnect it from those other
-        // nets. The orthogonaliser then re-routes the wire from the new
-        // pin positions to those unmoved anchors.
-        for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
-            auto& w = doc_->wires[wi];
-            bool touched = false;
-            for (auto& v : w.pts) {
-                for (size_t i = 0; i < old_pins.size(); ++i) {
-                    if (dist(v, old_pins[i]) <= 1.0) {
-                        v = new_pins[i];
-                        touched = true;
-                        break;
-                    }
-                }
-            }
-            if (!touched) continue;
-            std::vector<std::pair<Pt, Pt>> other_segs;
-            for (size_t oi = 0; oi < doc_->wires.size(); ++oi) {
-                if (oi == wi) continue;
-                const auto& ow = doc_->wires[oi];
-                for (size_t k = 1; k < ow.pts.size(); ++k)
-                    other_segs.push_back({ow.pts[k - 1], ow.pts[k]});
-            }
-            ortho_fix_wire(w.pts, other_segs);
-            collapse_collinear(w.pts);
-        }
         any = true;
     }
+    // After the rotation, re-resolve every pin-bound wire endpoint to the
+    // pins' new positions and re-route orthogonally. The binding (not a
+    // vertex-coincidence heuristic) is what keeps the wires attached.
+    if (any) doc_->sync_wire_endpoints();
     if (any) notify_doc();
 }
 

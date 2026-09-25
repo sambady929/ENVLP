@@ -254,102 +254,99 @@ const char* kStyle =
 
 } // namespace
 
-// Find the extent of a single script argument following a `_` or `^` at
-// position `i` in `s`. Returns the number of characters the script arg spans.
-//   "{ab cd}"      -> balanced braces, count to the matching `}`
-//   "\name"        -> the backslash command name (letters only)
-//   "M1"           -> one token: all letters/digits/UTF-8 continuation
-//                    bytes until a non-identifier char (space, comma, brace,
-//                    the next `_`/`^`, another `\\` command, etc.)
-//   "_M1 ^2 \cdot" -> one token each, since each starts at i and runs to
-//                    the next script delimiter
-static size_t script_arg_len(const std::string& s, size_t i) {
-    if (i >= s.size()) return 0;
-    if (s[i] == '{') {
-        int depth = 1;
-        for (size_t k = i + 1; k < s.size(); ++k) {
-            if (s[k] == '{') ++depth;
-            else if (s[k] == '}') { --depth; if (depth == 0) return k + 1 - i; }
-        }
-        return s.size() - i;
-    }
-    if (s[i] == '\\') {
-        size_t k = i + 1;
-        while (k < s.size() && ((s[k] >= 'a' && s[k] <= 'z') ||
-                                (s[k] >= 'A' && s[k] <= 'Z')))
-            ++k;
-        return k - i;
-    }
-    // Run until a delimiter: end of string, `_`/`^` (next script), `{`/`}`
-    // (group), `\\` (next control word), or whitespace. Multi-byte UTF-8
-    // characters (≥0x80) are *not* extended through -- they belong to the
-    // previous ASCII identifier or stand on their own (e.g. the `·` emitted
-    // by \cdot would already be a `\cdot` command; a bare UTF-8 char is
-    // a single visible glyph and shouldn't swallow the following tokens).
-    size_t k = i;
-    while (k < s.size()) {
-        unsigned char c = (unsigned char)s[k];
-        if (c == '_' || c == '^' || c == '{' || c == '}' || c == '\\') break;
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') break;
-        if (c >= 0x80) break;
-        ++k;
-    }
-    return k - i;
-}
-
+// Normalize the engine's LaTeX before rendering. Two jobs:
+//
+//  1. GiNaC prints an identifier like `ro_M1` as the literal string
+//     `ro_M1` -- `_M1` is a single token whose subscript body is two
+//     characters. TeX would typeset that as `<sub>M</sub>1`; we wrap it as
+//     `ro_{M1}` so the whole token lands in the subscript.
+//
+//  2. Brace groups must be normalized *recursively*: `\frac{ R1 ro_M1}{...}`
+//     carries the same `ro_M1` inside the numerator group, so copying the
+//     group verbatim leaves it broken. We walk into every group.
+//
+// An unbraced script argument runs only over ASCII alphanumerics -- so
+// `Cds_M1))` becomes `Cds_{M1})` (the `))` stays outside the subscript), and
+// `ro_M1+` becomes `ro_{M1}+`. A leading backslash is a control word
+// (`\cdot`, `\parallel`) and is copied as a single atom.
 std::string latex_normalize(const std::string& latex) {
+    auto is_name_char = [](unsigned char c) { return std::isalnum(c) != 0; };
     std::string out;
     out.reserve(latex.size());
     size_t i = 0;
     while (i < latex.size()) {
         char c = latex[i];
-        // Skip past control words when scanning -- they can contain braces too.
         if (c == '\\') {
+            // Control word: backslash + letters. \left( etc. leave the
+            // following delimiter to the main loop.
             size_t j = i + 1;
-            while (j < latex.size() && ((latex[j] >= 'a' && latex[j] <= 'z') ||
-                                       (latex[j] >= 'A' && latex[j] <= 'Z')))
+            while (j < latex.size() &&
+                   std::isalpha((unsigned char)latex[j]))
                 ++j;
             out.append(latex, i, j - i);
             i = j;
+            if (i < latex.size() && latex[i] != '\\' &&
+                !std::isalpha((unsigned char)latex[i]) &&
+                latex[i] != '{' && latex[i] != '}' &&
+                latex[i] != '_' && latex[i] != '^') {
+                // \left( and friends: the delimiter is a separate token and
+                // must not be swallowed by anything. Just let it fall through.
+            }
             continue;
         }
         if (c == '{') {
-            // Copy balanced braces verbatim.
+            // Balanced group: normalize the inside, keep the braces.
             int depth = 1;
-            out += '{';
-            ++i;
-            while (i < latex.size() && depth > 0) {
-                if (latex[i] == '{') ++depth;
-                else if (latex[i] == '}') { --depth; }
-                out += latex[i++];
+            size_t j = i + 1;
+            while (j < latex.size() && depth > 0) {
+                if (latex[j] == '{') ++depth;
+                else if (latex[j] == '}') { --depth; if (depth == 0) break; }
+                ++j;
             }
+            std::string inner = latex.substr(i + 1, j - (i + 1));
+            out += '{';
+            out += latex_normalize(inner);
+            out += '}';
+            i = (j < latex.size()) ? j + 1 : latex.size();
             continue;
         }
-        if ((c == '_' || c == '^') && i + 1 < latex.size()) {
-            // The script argument: a single character (no braces), a single
-            // command starting with \, or a balanced brace group. Anything
-            // longer than one *character* needs to be wrapped in {} so the
-            // typesetter doesn't split it into one sub/super char + plain.
+        if (c == '_' || c == '^') {
             out += c;
-            size_t alen = script_arg_len(latex, i + 1);
-            char first = latex[i + 1];
-            bool is_braced = first == '{';
-            bool single_char = !is_braced && alen == 1;
-            bool single_token = !is_braced && alen > 1 &&
-                                (first == '\\' || !std::isalnum((unsigned char)first));
-            // Wrap when the argument is multiple characters that aren't
-            // already a brace group or a single TeX token (control word).
-            if (!is_braced && !single_char && !single_token) {
-                out += '{';
-                out.append(latex, i + 1, alen);
-                out += '}';
-                i += 1 + alen;
+            ++i;
+            if (i >= latex.size()) break;
+            if (latex[i] == '{') {
+                // Already braced: recurse into it on the next iteration.
                 continue;
             }
-            // Otherwise (single char, single control word, or already braced)
-            // copy verbatim.
-            out.append(latex, i + 1, alen);
-            i += 1 + alen;
+            if (latex[i] == '\\') {
+                // Control-word atom (e.g. `^\circ`).
+                size_t j = i + 1;
+                while (j < latex.size() &&
+                       std::isalpha((unsigned char)latex[j]))
+                    ++j;
+                out.append(latex, i, j - i);
+                i = j;
+                continue;
+            }
+            // Unbraced argument: run of ASCII alphanumerics.
+            size_t j = i;
+            while (j < latex.size() &&
+                   is_name_char((unsigned char)latex[j]))
+                ++j;
+            size_t len = j - i;
+            if (len == 0) {
+                // Stray `_` at a boundary: emit and move on.
+                if (i < latex.size()) out += latex[i++];
+                continue;
+            }
+            if (len == 1) {
+                out += latex[i];
+            } else {
+                out += '{';
+                out.append(latex, i, len);
+                out += '}';
+            }
+            i = j;
             continue;
         }
         out += c;
