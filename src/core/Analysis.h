@@ -39,7 +39,6 @@ struct AnalysisSpec {
     bool global_ref = false;
     bool prune = true;
     bool use_parallel = true;
-    bool gm_ro_assume = true; // assume gm*ro >> 1 when idealizing
     bool approx_factor = true; // numeric factoring when exact factoring fails
     bool normalize = true; // normalize denominator DC term to 1 (TFs only)
 

@@ -721,7 +721,6 @@ void MainFrame::run_card(int index) {
         sp.global_ref = card.global_ref;
         sp.prune = card.prune;
         sp.use_parallel = card.use_parallel;
-        sp.gm_ro_assume = card.gm_ro;
         sp.approx_factor = card.approx_factor;
 
         syms::CardResult cr = syms::run_analysis(c, sp);

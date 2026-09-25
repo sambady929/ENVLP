@@ -37,7 +37,14 @@ std::complex<double> eval_complex(const ex& e, const ParamTable& params,
     if (sit != params.syms.end())
         m[sit->second] = ex(GiNaC::I) * omega;
 
-    ex v = e.subs(m).evalf();
+    ex v;
+    try {
+        v = e.subs(m).evalf();
+    } catch (...) {
+        // e.g. a pole at DC (1/s) evaluating at s=0 -> division by zero.
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
+    }
     if (!is_a<numeric>(v))
         return {std::numeric_limits<double>::quiet_NaN(),
                 std::numeric_limits<double>::quiet_NaN()};
@@ -59,7 +66,6 @@ double eval_phase_deg(const ex& e, const ParamTable& params, double omega) {
 
 namespace {
 ex factor_common_impl(const ex& e);
-ex gm_ro_idealize(const ex& e, const ParamTable& pt);
 
 // Exact polynomial divisibility of `num` (a polynomial in `s`) by `fac`.
 // GiNaC's rem() fails when a coefficient is a held function (par(R1,ro)), so
@@ -649,27 +655,6 @@ void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
     factors = kept;
 }
 
-// gm*ro >> 1 idealization pass: inside a sum, if exactly one term is a
-// gm*ro product (or a multiple of one) and it dominates, drop the rest.
-// This is deliberately conservative -- it only fires on sums that contain an
-// explicit gm*ro term, so ordinary polynomials are untouched.
-bool looks_like_gm_ro(const ex& e, const ParamTable& pt) {
-    // The term must contain a *transconductance* gm_* symbol AND an *output
-    // resistance* ro_* symbol -- that is the structural signature of "a
-    // transconductance times an output resistance". It must NOT match a gm
-    // times an ordinary load resistor (gm_M1 * R1), which is the forward gain
-    // and is not >> 1 in the same way gm*ro is; treating it as gm*ro would
-    // wrongly drop the Miller feedforward zero s*Cgd*R beside it.
-    bool has_gm = false, has_ro = false;
-    for (const auto& kv : pt.syms) {
-        if (!e.has(kv.second)) continue;
-        const std::string& name = kv.first;
-        if (name.rfind("gm_", 0) == 0) has_gm = true;
-        else if (name.rfind("ro_", 0) == 0) has_ro = true;
-    }
-    return has_gm && has_ro;
-}
-
 // Magnitude helper: |e| at s = 0 with the user's parameter estimates, with a
 // floor to keep log10 sane when a summand has zero numeric value (a bare
 // parameter or a term that simplifies to 0).
@@ -677,46 +662,6 @@ static double num_mag(const ex& e, const ParamTable& pt) {
     std::complex<double> z = eval_complex(e, pt, 0.0);
     double mag = std::hypot(z.real(), z.imag());
     return mag > 0.0 ? mag : 1e-30;
-}
-
-ex gm_ro_idealize(const ex& e, const ParamTable& pt) {
-    if (is_a<GiNaC::add>(e)) {
-        // recurse first
-        GiNaC::exvector ops;
-        for (size_t i = 0; i < e.nops(); ++i)
-            ops.push_back(gm_ro_idealize(e.op(i), pt));
-        ex sum = GiNaC::add(ops);
-        // find gm*ro-like terms; if exactly one, drop the rest provided it
-        // dominates them by a wide margin (a factor of ~30 = 30 dB, the same
-        // magnitude the magnitude-pruning pass uses).
-        std::vector<ex> terms;
-        if (is_a<GiNaC::add>(sum))
-            for (size_t i = 0; i < sum.nops(); ++i) terms.push_back(sum.op(i));
-        else
-            terms.push_back(sum);
-        ex dom;
-        int ndom = 0;
-        for (const ex& t : terms)
-            if (looks_like_gm_ro(t, pt)) { dom = t; ++ndom; }
-        if (ndom == 1) {
-            double d = num_mag(dom, pt);
-            bool dominates = true;
-            for (const ex& t : terms) {
-                if (t.is_equal(dom)) continue;
-                if (num_mag(t, pt) > d / 31.6) { dominates = false; break; }
-            }
-            if (dominates) return dom;
-        }
-        return sum;
-    }
-    if (is_a<GiNaC::mul>(e) || is_a<GiNaC::power>(e)) {
-        GiNaC::exvector ops;
-        for (size_t i = 0; i < e.nops(); ++i)
-            ops.push_back(gm_ro_idealize(e.op(i), pt));
-        return is_a<GiNaC::mul>(e) ? ex(GiNaC::mul(ops))
-                                   : ex(GiNaC::pow(ops[0], ops[1]));
-    }
-    return e;
 }
 
 // Pull a common factor out of a sum of products: a*x + a*y -> a*(x+y).
@@ -1226,12 +1171,6 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
             n = (n / c0).normal();
             d = (d / c0).normal();
         }
-    }
-
-    // 4b. gm*ro >> 1 idealization (drop the "+1" beside a dominant gm*ro).
-    if (opts.prune && opts.gm_ro_assume) {
-        n = gm_ro_idealize(n, params);
-        d = gm_ro_idealize(d, params);
     }
 
     // 5b. Re-reduce the ratio so any common factor the pruning / parallel

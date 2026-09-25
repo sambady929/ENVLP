@@ -25,7 +25,6 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     o.prune = s.prune;
     // Parallelizing terms (R1||R2) is hardcoded on for now (#6).
     o.use_parallel = true;
-    o.gm_ro_assume = s.gm_ro_assume;
     o.approx_factor = s.approx_factor;
     // Rank terms by their worst case across the sweep band.
     o.band_lo_hz = s.sweep.f_start_hz;
@@ -50,7 +49,6 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     r.global_ref = s.global_ref;
     r.prune = s.prune;
     r.use_parallel = s.use_parallel;
-    r.gm_ro_assume = s.gm_ro_assume;
     r.approx_factor = s.approx_factor;
     r.normalize = s.normalize;
     r.sweep = s.sweep;

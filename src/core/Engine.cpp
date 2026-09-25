@@ -25,7 +25,6 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
     r.opts.use_parallel = true; // hardcoded on (#6)
-    r.opts.gm_ro_assume = req.gm_ro_assume;
     r.opts.approx_factor = req.approx_factor;
     r.opts.normalize = req.normalize;
     r.opts.band_lo_hz = req.sweep.f_start_hz;
@@ -141,6 +140,60 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
     return out;
 }
 
+// Numeric gain/bandwidth metrics, computed from the *unpruned* transfer
+// function over the sweep range: DC gain, the -3 dB corner, and the unity-gain
+// (0 dB) crossover. A single log-spaced scan is reused for both crossings
+// (with linear interpolation for sub-point precision).
+std::string gain_bw_text(const AnalysisResult& r) {
+    std::string out;
+    char buf[96];
+
+    double dc = mag_db_at(r, 0.0);
+    if (std::isfinite(dc)) {
+        std::snprintf(buf, sizeof(buf), "  DC gain: %.2f dB\n", dc);
+        out += buf;
+    } else {
+        out += "  DC gain: n/a (zero or pole at DC)\n";
+    }
+
+    double f0 = r.sweep.f_start_hz > 0 ? r.sweep.f_start_hz : 1.0;
+    double f1 = r.sweep.f_stop_hz > f0 ? r.sweep.f_stop_hz : f0 * 1e6;
+
+    // One log-spaced magnitude sweep, reused to locate both crossings.
+    const int N = 400;
+    std::vector<double> f(N), m(N);
+    for (int i = 0; i < N; ++i) {
+        double t = double(i) / (N - 1);
+        f[i] = f0 * std::pow(f1 / f0, t);
+        m[i] = mag_db_at(r, 2.0 * M_PI * f[i]);
+    }
+    auto find_cross = [&](double target_db) -> double {
+        for (int i = 1; i < N; ++i) {
+            if (std::isfinite(m[i - 1]) && std::isfinite(m[i]) &&
+                m[i - 1] > target_db && m[i] <= target_db) {
+                double frac = (m[i - 1] - target_db) / (m[i - 1] - m[i]);
+                return f[i - 1] + frac * (f[i] - f[i - 1]);
+            }
+        }
+        return -1.0;
+    };
+
+    double bw3 = std::isfinite(dc) ? find_cross(dc - 3.0) : -1.0;
+    double bw0 = find_cross(0.0);
+
+    if (bw3 < 0.0)
+        out += "  -3 dB bandwidth: > " + fmt_hz(f1) + "\n";
+    else
+        out += "  -3 dB bandwidth: " + fmt_hz(bw3) + "\n";
+
+    if (bw0 < 0.0)
+        out += "  Unity-gain (0 dB) bandwidth: none within sweep\n";
+    else
+        out += "  Unity-gain (0 dB) bandwidth: " + fmt_hz(bw0) + "\n";
+
+    return out;
+}
+
 } // namespace
 
 // Plain-text report shown in the Results tab. This is deliberately NOT
@@ -154,6 +207,8 @@ std::string format_report(const AnalysisResult& r) {
         out += "(one or more factors are approximate: the exact denominator "
                "does not factor symbolically, so numeric estimate-based roots "
                "were used)\n";
+    out += "\nGain / bandwidth:\n";
+    out += gain_bw_text(r);
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";

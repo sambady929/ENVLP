@@ -24,10 +24,7 @@ static Component mkv(Kind k, const std::string& ref,
 
 static Circuit cd_test() {
     Circuit c;
-    // input source
     c.comps.push_back(mkv(Kind::V, "V1", {"in", "0"}, "1"));
-
-    // MOSFET: drain=VDD, gate=in, source=out (the output node)
     Component m = mkv(Kind::NMOS, "M1", {"VDD", "in", "out"});
     m.param_text["gm"] = "1m";
     m.param_text["ro"] = "100k";
@@ -35,10 +32,7 @@ static Circuit cd_test() {
     m.param_on["Cgs"] = false;
     m.param_on["Cgd"] = false;
     c.comps.push_back(m);
-
-    // DC source for the drain
     c.comps.push_back(mkv(Kind::V, "VDD", {"VDD", "0"}, "5"));
-
     return c;
 }
 
@@ -48,29 +42,18 @@ int main() {
     s.input_ref = "V1";
     s.output = "V(out)";
     s.sweep = syms::SweepSpec{};
+
     s.prune = false;
-    s.gm_ro_assume = false;
-
     syms::CardResult cr = syms::run_analysis(cd_test(), s);
-    std::printf("TF (no prune, gm_ro off):\n  %s\n", cr.text.c_str());
-
-    s.gm_ro_assume = true;
-    cr = syms::run_analysis(cd_test(), s);
-    std::printf("\nTF (no prune, gm_ro ON):\n  %s\n", cr.text.c_str());
+    std::printf("TF (no prune):\n  %s\n", cr.text.c_str());
 
     s.prune = true;
-    s.gm_ro_assume = false;
     cr = syms::run_analysis(cd_test(), s);
-    std::printf("\nTF (prune, gm_ro off):\n  %s\n", cr.text.c_str());
+    std::printf("\nTF (prune):\n  %s\n", cr.text.c_str());
+    std::printf("(expected: gm*ro/(1+gm*ro) ~ 1 for gm*ro = 100)\n");
 
-    s.gm_ro_assume = true;
-    cr = syms::run_analysis(cd_test(), s);
-    std::printf("\nTF (prune, gm_ro ON):\n  %s\n", cr.text.c_str());
-    std::printf("(expected: '1' when gm*ro dominates)\n");
-
-    // A circuit where gm*ro is small (gm = 1u, ro = 100) -- the idealization
-    // must NOT fire (gm*ro = 1e-4, no longer >> 1). The exact form is
-    // gm*ro / (1 + gm*ro) and the printed form should keep that.
+    // A circuit where gm*ro is small (gm = 1u, ro = 100): the "+1" is no
+    // longer negligible, so the exact form gm*ro/(1+gm*ro) must survive.
     Circuit small;
     small.comps.push_back(mkv(Kind::V, "V1", {"in", "0"}, "1"));
     Component m = mkv(Kind::NMOS, "M1", {"VDD", "in", "out"});
@@ -83,9 +66,8 @@ int main() {
     small.comps.push_back(m);
     small.comps.push_back(mkv(Kind::V, "VDD", {"VDD", "0"}, "5"));
     s.prune = true;
-    s.gm_ro_assume = true;
     cr = syms::run_analysis(small, s);
-    std::printf("\nsmall gm*ro (prune, gm_ro ON):\n  %s\n", cr.text.c_str());
-    std::printf("(expected: gm*ro/(1+gm*ro) -- idealization must NOT fire)\n");
+    std::printf("\nsmall gm*ro (prune):\n  %s\n", cr.text.c_str());
+    std::printf("(expected: gm*ro/(1+gm*ro) -- the +1 must survive)\n");
     return 0;
 }

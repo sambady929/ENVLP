@@ -665,7 +665,7 @@ std::string Document::serialize() const {
       << req.sweep.f_start_hz << " " << req.sweep.f_stop_hz << " "
       << int(req.sweep.type) << " " << req.sweep.points_per_interval << " "
       << (req.prune ? 1 : 0) << " " << (req.use_parallel ? 1 : 0) << " "
-      << (req.gm_ro_assume ? 1 : 0) << " " << (req.approx_factor ? 1 : 0)
+      << (req.approx_factor ? 1 : 0)
       << "\n";
     for (const auto& c : circuit.comps) {
         auto pl = placements.find(c.ref);
@@ -757,7 +757,8 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             std::string t;
             while (next_token(line, i, t)) rest.push_back(t);
             if (rest.size() >= 8) {
-                // new: fstart fstop stype npts prune par gro approx
+                // new, with the legacy gm_ro field: fstart fstop stype npts
+                // prune par gro approx  (the gro field is ignored).
                 req.sweep.f_start_hz = std::atof(rest[0].c_str());
                 req.sweep.f_stop_hz = std::atof(rest[1].c_str());
                 int ty = std::atoi(rest[2].c_str());
@@ -767,17 +768,27 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 req.sweep.points_per_interval = std::atoi(rest[3].c_str());
                 req.prune = rest[4] != "0";
                 req.use_parallel = rest[5] != "0";
-                req.gm_ro_assume = rest[6] != "0";
                 req.approx_factor = rest[7] != "0";
+            } else if (rest.size() == 7) {
+                // new, no gm_ro field: fstart fstop stype npts prune par approx
+                req.sweep.f_start_hz = std::atof(rest[0].c_str());
+                req.sweep.f_stop_hz = std::atof(rest[1].c_str());
+                int ty = std::atoi(rest[2].c_str());
+                req.sweep.type = ty == 1 ? syms::SweepType::Octave
+                                         : ty == 2 ? syms::SweepType::Linear
+                                                   : syms::SweepType::Decade;
+                req.sweep.points_per_interval = std::atoi(rest[3].c_str());
+                req.prune = rest[4] != "0";
+                req.use_parallel = rest[5] != "0";
+                req.approx_factor = rest[6] != "0";
             } else if (rest.size() >= 5) {
-                // old: f0 threshold global prune par gro approx
+                // old: f0 threshold global prune par [approx]
                 req.f0_hz = std::atof(rest[0].c_str());
                 req.threshold_db = std::atof(rest[1].c_str());
                 req.global_ref = rest[2] != "0";
                 if (rest.size() > 3) req.prune = rest[3] != "0";
                 if (rest.size() > 4) req.use_parallel = rest[4] != "0";
-                if (rest.size() > 5) req.gm_ro_assume = rest[5] != "0";
-                if (rest.size() > 6) req.approx_factor = rest[6] != "0";
+                if (rest.size() > 5) req.approx_factor = rest[5] != "0";
                 req.sweep.f_start_hz = req.f0_hz > 0 ? req.f0_hz : 1.0;
                 req.sweep.f_stop_hz = req.sweep.f_start_hz * 1e6;
             }

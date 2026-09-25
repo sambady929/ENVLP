@@ -28,7 +28,6 @@ struct AnalysisCard {
     double threshold_db = 20.0;
     bool global_ref = false;
     bool use_parallel = true;
-    bool gm_ro = true;
     bool approx_factor = true;
     bool enabled = true;
 };

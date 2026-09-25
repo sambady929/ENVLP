@@ -239,21 +239,13 @@ void AnalysisPanel::refresh(Document* doc) {
             auto* opts = new wxBoxSizer(wxHORIZONTAL);
             auto* prune = new wxCheckBox(box, wxID_ANY, "ignore negligible");
             prune->SetValue(c.prune);
-            auto* gro = new wxCheckBox(box, wxID_ANY, "gm*ro>>1");
-            gro->SetValue(c.gm_ro);
             auto* af = new wxCheckBox(box, wxID_ANY, "approx roots");
             af->SetValue(c.approx_factor);
             opts->Add(prune, 0, wxRIGHT, 8);
-            opts->Add(gro, 0, wxRIGHT, 8);
             opts->Add(af, 0);
             s->Add(opts, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
             prune->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
                 c.prune = e.IsChecked();
-                if (doc_) doc_->dirty = true;
-                if (on_changed) on_changed();
-            });
-            gro->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
-                c.gm_ro = e.IsChecked();
                 if (doc_) doc_->dirty = true;
                 if (on_changed) on_changed();
             });
@@ -325,7 +317,7 @@ std::string AnalysisPanel::serialize() const {
           << c.sweep.f_start_hz << " " << c.sweep.f_stop_hz << " "
           << type_of(c.sweep.type) << " " << c.sweep.points_per_interval << " "
           << (c.prune ? 1 : 0) << " " << (c.use_parallel ? 1 : 0) << " "
-          << (c.gm_ro ? 1 : 0) << " " << (c.enabled ? 1 : 0) << " " << q(title)
+          << (c.enabled ? 1 : 0) << " " << q(title)
           << " " << (c.approx_factor ? 1 : 0) << "\n";
     }
     return o.str();
@@ -358,8 +350,19 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         c.output = unq(ls);
         c.probe_ref = unq(ls);
         double fs = 1.0, fe = 1e9;
-        int ty = 0, npts = 10, pr = 1, par = 1, gro = 1, en = 1;
-        ls >> fs >> fe >> ty >> npts >> pr >> par >> gro >> en;
+        int ty = 0, npts = 10, pr = 1, par = 1, en = 1;
+        ls >> fs >> fe >> ty >> npts >> pr >> par;
+        // The "gm*ro>>1" field was removed. An older file still carries it as
+        // an extra numeric token between use_parallel and enabled; detect it by
+        // whether the token after the next one is the quoted title or a number.
+        int x = 1;
+        ls >> x;
+        ls >> std::ws;
+        if (ls.peek() == '"') {
+            en = x;                    // no gm*ro field: x is enabled
+        } else {
+            ls >> en;                  // old: x was the (ignored) gm*ro field
+        }
         std::string title = unq(ls);
         int af = 1;
         ls >> af;
@@ -372,7 +375,6 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         c.sweep.points_per_interval = npts > 0 ? npts : 10;
         c.prune = pr != 0;
         c.use_parallel = par != 0;
-        c.gm_ro = gro != 0;
         c.enabled = en != 0;
         c.approx_factor = af != 0;
         c.title = title.empty() ? analysis_kind_name(c.kind) : title;

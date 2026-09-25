@@ -35,7 +35,6 @@ struct AnalysisRequest {
                              // true => rank against whole polynomial
     bool prune = true;       // false => keep every symbolic term (exact)
     bool use_parallel = true; // express R1*R2/(R1+R2) as R1||R2
-    bool gm_ro_assume = true; // assume gm*ro >> 1 when idealizing
     bool approx_factor = true; // numeric factoring when exact factoring fails
     bool normalize = true; // normalize denominator DC term to 1
     // Frequency sweep used for ranking and for the plots. When `rank_omega`

@@ -75,7 +75,6 @@ struct LowEntropyOptions {
     double pole_zero_threshold_db = 60.0;
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
-    bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product
     // When the exact denominator/ numerator does not factor symbolically,
     // estimate each coefficient numerically and factor the resulting real
     // polynomial, then rebuild component-labelled factors. Bounded by the

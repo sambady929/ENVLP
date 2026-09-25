@@ -932,6 +932,26 @@ static void test_pole_zero_60db_threshold() {
     CHECK(poles_at(1e-10) == 1); // 80 dB apart -> far pole dropped
 }
 
+// The report must include the numeric gain/bandwidth metrics.
+static void test_gain_bw_report() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1n"));
+    c = ground(c);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.sweep.f_start_hz = 1.0;
+    req.sweep.f_stop_hz = 1e6;
+    AnalysisResult r = analyze(c, req);
+    CHECK(r.report.find("DC gain") != std::string::npos);
+    CHECK(r.report.find("-3 dB bandwidth") != std::string::npos);
+    CHECK(r.report.find("Unity-gain") != std::string::npos);
+    // RC low-pass: DC gain 0 dB, -3 dB at 1/(2*pi*R*C) ~ 15.9 kHz.
+    CHECK(r.report.find("kHz") != std::string::npos);
+}
+
 // The Miller feedforward zero (s = gm/Cgd) from a gate-drain capacitance is a
 // *significant* zero: it must survive "ignore negligible", not be dropped as
 // if gm*Rd (the forward gain) were a gm*ro intrinsic-gain term.
@@ -1014,6 +1034,7 @@ int main(int argc, char** argv) {
         {"pole_zero_60db", test_pole_zero_60db_threshold},
         {"series_20db", test_series_reduction_20db},
         {"miller_zero_survives", test_miller_zero_survives_pruning},
+        {"gain_bw_report", test_gain_bw_report},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
