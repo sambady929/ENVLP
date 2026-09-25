@@ -11,7 +11,7 @@
 int main(int argc, char** argv) {
     const char* path = argc > 1 ? argv[1]
                                 : "D:/Projects/Programming/SymCirc/examples/"
-                                  "common_source_amp.scx";
+                                  "cs_test.scx";
     symcirc::Document d;
     std::string err;
     if (!d.load(path, err)) {

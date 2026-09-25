@@ -98,14 +98,14 @@ ctest --test-dir build --output-on-failure   # run the engine tests
    `approx roots` switches. Run one card or **Run all**, or press **F5**.
 6. Pan with a right-drag (works even past the window edges) and zoom with the
    wheel; **F** frames all components. Read the report in **Results**, the plot
-   in **Bode** (switch to Nyquist / Nichols), or post-process in **Lua**.
+   in **Plot** (switch to Nyquist / Nichols).
 
 To select several components, drag a box on empty canvas with the Select tool
 (or Shift-click to add/remove); the group moves and rotates together.
 
-`examples/common_source_amp.scx` is a common-source amplifier with a resistor
-load and an output capacitor, pre-loaded with TF / AC / DC / Zin / Zout /
-short-circuit / noise cards.
+`examples/cs_test.scx` is a common-source amplifier (NMOS with a drain load
+and a source-degeneration / input network), the main test fixture, pre-loaded
+with TF and Zout cards.
 
 ### Ignore negligible terms
 
