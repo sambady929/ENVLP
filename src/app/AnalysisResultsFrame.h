@@ -32,7 +32,8 @@ public:
     // Feed the typeset-math tab with the full text report AND the math
     // expression. Lines of the report that look like LaTeX get typeset;
     // the rest renders as plain text.
-    void set_report(const std::string& report, const std::string& latex);
+    void set_report(const std::string& report, const std::string& latex,
+                    const std::string& latex_report = "");
 
 private:
     wxNotebook* book_ = nullptr;

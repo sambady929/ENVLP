@@ -33,6 +33,8 @@ struct RootInfo {
     double q = 0.0;      // quality factor for complex pairs
     std::string label;   // "R1*C1" when recognizable, else ""
     std::string factor_text;
+    std::string latex_label;  // LaTeX for the time-constant expression
+    std::string latex_factor; // LaTeX for the (1 + s*tau) factor
 };
 
 struct Pruned {

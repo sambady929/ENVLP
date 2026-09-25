@@ -160,4 +160,39 @@ std::string format_report(const AnalysisResult& r) {
     return out;
 }
 
+// One pole/zero line in LaTeX: the numeric corner frequency as \mathrm{}
+// text, the time-constant expression typeset with \cdot and \parallel.
+std::string pole_zero_latex(const RootInfo& r, int i) {
+    std::string line = std::to_string(i) + ")\\ \\omega = ";
+    if (r.omega == 0.0) {
+        line += "0\\ \\mathrm{(origin)}";
+    } else {
+        double hz = std::fabs(r.omega) / (2.0 * M_PI);
+        line += "\\mathrm{" + fmt_rads(r.omega) + "}";
+        line += "\\ \\mathrm{(" + fmt_hz(hz) + ")}";
+        if (!r.latex_label.empty())
+            line += ",\\quad \\tau = " + r.latex_label;
+    }
+    return line;
+}
+
+std::string format_report_latex(const AnalysisResult& r) {
+    std::string out;
+    out += "Poles:\n";
+    if (r.pruned.poles.empty()) {
+        out += "\\mathrm{none}\n";
+    } else {
+        for (size_t i = 0; i < r.pruned.poles.size(); ++i)
+            out += pole_zero_latex(r.pruned.poles[i], int(i + 1)) + "\n";
+    }
+    out += "Zeros:\n";
+    if (r.pruned.zeros.empty()) {
+        out += "\\mathrm{none}\n";
+    } else {
+        for (size_t i = 0; i < r.pruned.zeros.size(); ++i)
+            out += pole_zero_latex(r.pruned.zeros[i], int(i + 1)) + "\n";
+    }
+    return out;
+}
+
 } // namespace syms

@@ -38,6 +38,8 @@ struct Root {
     double q = 0.0;
     std::string label;  // "(R1||R2)*C1"
     std::string factor;
+    std::string latex_label;  // LaTeX for the time-constant expression
+    std::string latex_factor; // LaTeX for the (1 + s*tau) factor
 };
 
 struct LowEntropy {

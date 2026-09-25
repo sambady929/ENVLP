@@ -694,6 +694,7 @@ void MainFrame::run_card(int index) {
 
     std::string report;
     std::string latex;
+    std::string latex_report;
     std::unique_ptr<syms::AnalysisResult> keep;
 
     auto run_one = [&](int i) {
@@ -719,6 +720,7 @@ void MainFrame::run_card(int index) {
         report += cr.report;
         report += "\n";
         if (!cr.latex.empty()) latex = cr.latex;
+        if (!cr.latex_report.empty()) latex_report = cr.latex_report;
         if (cr.has_transfer) {
             keep = std::make_unique<syms::AnalysisResult>(cr.transfer);
         }
@@ -754,7 +756,7 @@ void MainFrame::run_card(int index) {
     // Results tab = the plain-text report. Math tab = the same report
     // typeset (the transfer function as real stacked fractions with proper
     // subscripts, the poles/zeros as a formatted list).
-    rf->set_report(report, latex);
+    rf->set_report(report, latex, latex_report);
     result_ = std::move(keep);
     // The bode tab shows the most recent card's title so the user can tell
     // what each plot represents when they switch back to it. Run-all uses

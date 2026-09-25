@@ -102,6 +102,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     cr.latex = res.pruned.latex;
     cr.summary = res.output_desc + " -- " + res.pruned.text;
     cr.report = res.report;
+    cr.latex_report = format_report_latex(res);
     return cr;
 }
 

@@ -58,18 +58,22 @@ MathPanel::MathPanel(wxWindow* parent) : wxPanel(parent) {
 void MathPanel::set_latex(const std::string& latex) {
     latex_ = latex;
     report_.clear();
+    latex_report_.clear();
     render();
 }
 
-void MathPanel::set_report(const std::string& report, const std::string& latex) {
+void MathPanel::set_report(const std::string& report, const std::string& latex,
+                           const std::string& latex_report) {
     report_ = report;
     latex_ = latex;
+    latex_report_ = latex_report;
     render();
 }
 
 void MathPanel::clear() {
     latex_.clear();
     report_.clear();
+    latex_report_.clear();
     if (view_) view_->SetPage(kEmptyPage, "");
 }
 
@@ -102,6 +106,7 @@ const char* kReportCss =
     "        margin: 22px 0 6px 0; }"
     "p.line { margin: 5px 0; font-size: 13.5px; line-height: 1.55;"
     "        color: #2a3140; }"
+    ".line { margin: 5px 0; }"
     "p.line.mono { font-family: 'Cascadia Mono', 'Consolas', monospace;"
     "        font-size: 12.5px; white-space: pre; }"
     ".note { color: #8a6d1a; background: #fdf6e0; border: 1px solid"
@@ -151,11 +156,37 @@ std::string render_report_html(const std::string& report) {
     flush();
     return out;
 }
+// Render the typeset poles/zeros report. Lines ending in ':' are section
+// headings; everything else is a typeset math line (the time-constant and
+// factor expressions with \cdot / \parallel).
+std::string render_latex_report(const std::string& lr) {
+    std::string out;
+    std::string cur;
+    auto flush = [&]() {
+        while (!cur.empty() &&
+               (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
+            cur.pop_back();
+        if (!cur.empty()) {
+            if (cur.size() < 40 && cur.back() == ':')
+                out += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
+            else
+                out += "<div class=\"line math\">" +
+                       latex_render_line(cur) + "</div>";
+        }
+        cur.clear();
+    };
+    for (char c : lr) {
+        if (c == '\n') flush();
+        else cur += c;
+    }
+    flush();
+    return out;
+}
 } // namespace
 
 void MathPanel::render() {
     if (!view_) return;
-    if (latex_.empty() && report_.empty()) {
+    if (latex_.empty() && report_.empty() && latex_report_.empty()) {
         view_->SetPage(kEmptyPage, "");
         return;
     }
@@ -168,6 +199,7 @@ void MathPanel::render() {
         body += latex_render_line(latex_);
         body += "</div>";
     }
+    if (!latex_report_.empty()) body += render_latex_report(latex_report_);
     if (!report_.empty()) body += render_report_html(report_);
     std::string page;
     page += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>";

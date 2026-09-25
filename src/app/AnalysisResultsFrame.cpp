@@ -45,8 +45,9 @@ void AnalysisResultsFrame::set_latex(const std::string& latex) {
 }
 
 void AnalysisResultsFrame::set_report(const std::string& report,
-                                      const std::string& latex) {
-    if (math_) math_->set_report(report, latex);
+                                      const std::string& latex,
+                                      const std::string& latex_report) {
+    if (math_) math_->set_report(report, latex, latex_report);
 }
 
 } // namespace symcirc

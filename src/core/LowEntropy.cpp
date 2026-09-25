@@ -17,6 +17,12 @@ using GiNaC::exmap;
 using GiNaC::is_a;
 using GiNaC::numeric;
 
+namespace {
+// LaTeX printer with explicit \cdot between multiplied factors (defined
+// below; forward-declared so the root-table builder can use it).
+std::string to_latex_cdot(const ex& e);
+}
+
 // ---------------------------------------------------------------------------
 // numeric evaluation
 // ---------------------------------------------------------------------------
@@ -541,6 +547,8 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             Root r;
             r.label = "origin";
             r.factor = f.text;
+            r.latex_factor = to_latex_cdot(f.expr);
+            r.latex_label = "s";
             out.push_back(r);
             continue;
         }
@@ -553,6 +561,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             ex tau_n = pt.eval_real(tau_ex);
             Root r;
             r.factor = f.text;
+            r.latex_factor = to_latex_cdot(f.expr);
             if (is_a<numeric>(tau_n)) r.tau = GiNaC::ex_to<numeric>(tau_n).to_double();
             if (r.tau != 0.0) {
                 r.omega = 1.0 / r.tau;
@@ -563,6 +572,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
                 // factor common terms so a pole reads as "(Rd||ro)*(Cgd+CL)"
                 ex lab = factor_common_impl(tau_ex);
                 r.label = pretty(lab);
+                r.latex_label = to_latex_cdot(lab);
             }
             out.push_back(r);
         } else if (deg >= 2) {
@@ -577,6 +587,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             for (const auto& z : poly_roots(coeffs)) {
                 Root r;
                 r.factor = f.text;
+                r.latex_factor = to_latex_cdot(f.expr);
                 if (std::abs(z.imag()) < 1e-6 * (1.0 + std::abs(z.real()))) {
                     r.real = true;
                     r.tau = -1.0 / z.real();
@@ -716,6 +727,49 @@ ex factor_common_impl(const ex& e) {
     return cpart * rest;
 }
 
+// Collapse a parallel combination to its dominant argument when the other is
+// negligible. par(a,b) = a*b/(a+b); if b >> a then par -> a (the smaller
+// resistance wins in parallel -- the big resistor is negligible), and if
+// a >> b then par -> b. This is the "ignore negligible for parallel terms"
+// rule the user asked for, and the capacitor dual falls out naturally: a
+// parallel combination of *capacitances* never appears as par() (they sum),
+// while a series combination of resistors never appears as par() either, so
+// this only ever fires on genuine parallel resistor pairs.
+ex prune_parallel(const ex& e, const ParamTable& pt, double threshold_db) {
+    if (is_parallel(e)) {
+        std::vector<ex> args = parallel_args(e);
+        if (args.size() == 2) {
+            double ma = num_mag(args[0], pt);
+            double mb = num_mag(args[1], pt);
+            double lim = std::pow(10.0, threshold_db / 20.0);
+            if (ma > 0.0 && mb > 0.0) {
+                // par(a,b) = a*b/(a+b): the SMALLER resistance carries the
+                // current, so the bigger one is negligible. When b >> a the
+                // combination tends to a; when a >> b it tends to b.
+                if (mb > ma * lim)
+                    return prune_parallel(args[0], pt, threshold_db);
+                if (ma > mb * lim)
+                    return prune_parallel(args[1], pt, threshold_db);
+            }
+        }
+        GiNaC::exvector a2;
+        for (const auto& a : args)
+            a2.push_back(prune_parallel(a, pt, threshold_db));
+        return make_parallel(a2);
+    }
+    if (is_a<GiNaC::add>(e) || is_a<GiNaC::mul>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(prune_parallel(e.op(i), pt, threshold_db));
+        if (is_a<GiNaC::add>(e)) return ex(GiNaC::add(ops));
+        return ex(GiNaC::mul(ops));
+    }
+    if (is_a<GiNaC::power>(e)) {
+        return GiNaC::pow(prune_parallel(e.op(0), pt, threshold_db), e.op(1));
+    }
+    return e;
+}
+
 // Wrap a factor's text in parentheses when it is a sum or a ratio, so a
 // product of factors prints unambiguously: "(a+b)" not "a+b". The text path
 // uses an ASCII `*` (see core/Print.cpp); `pruned.latex` is built separately
@@ -781,22 +835,83 @@ std::string to_latex(const ex& e) {
     return os.str();
 }
 
+namespace {
+// LaTeX printer that inserts an explicit `\cdot` between every multiplied
+// factor, so `Cds_M1 ro_M1` (juxtaposition) becomes `Cds_M1\cdot ro_M1` and
+// never reads as a single term. Fractions and everything GiNaC already
+// handles well (subscripts, \left..\right, \frac, \parallel) are delegated to
+// GiNaC's own print_latex; we only special-case the plain product / sum
+// nodes. A `mul` that contains a negative-power factor (a ratio) is left to
+// print_latex so it renders as \frac{..}{..} rather than a\cdot b^{-1}.
+std::string to_latex_cdot(const ex& e) {
+    if (is_a<GiNaC::mul>(e)) {
+        bool has_denominator = false;
+        for (size_t i = 0; i < e.nops(); ++i) {
+            const ex& op = e.op(i);
+            if (is_a<GiNaC::power>(op)) {
+                const ex& xp = op.op(1);
+                if (is_a<numeric>(xp) &&
+                    GiNaC::ex_to<numeric>(xp).is_negative())
+                    has_denominator = true;
+            }
+        }
+        if (has_denominator) {
+            std::ostringstream os;
+            e.print(GiNaC::print_latex(os));
+            return os.str();
+        }
+        // Separate the numeric coefficient from the symbolic factors.
+        ex coeff = 1;
+        std::vector<ex> sym;
+        for (size_t i = 0; i < e.nops(); ++i) {
+            const ex& op = e.op(i);
+            if (is_a<numeric>(op)) coeff = coeff * op;
+            else sym.push_back(op);
+        }
+        bool neg = false;
+        if (is_a<numeric>(coeff)) {
+            numeric nc = GiNaC::ex_to<numeric>(coeff);
+            if (nc.is_negative()) { neg = true; coeff = -coeff; }
+        }
+        std::string body;
+        if (!coeff.is_equal(ex(1))) body += to_latex_cdot(coeff);
+        for (size_t i = 0; i < sym.size(); ++i) {
+            if (i > 0 || !body.empty()) body += "\\cdot ";
+            body += to_latex_cdot(sym[i]);
+        }
+        return (neg ? "-" : "") + body;
+    }
+    if (is_a<GiNaC::add>(e)) {
+        std::string out;
+        for (size_t i = 0; i < e.nops(); ++i) {
+            std::string t = to_latex_cdot(e.op(i));
+            bool tneg = !t.empty() && t[0] == '-';
+            if (tneg) t = t.substr(1);
+            if (i == 0) out += (tneg ? "-" : "") + t;
+            else out += (tneg ? " - " : " + ") + t;
+        }
+        return out;
+    }
+    std::ostringstream os;
+    e.print(GiNaC::print_latex(os));
+    return os.str();
+}
+} // namespace
+
 std::string low_entropy_latex(const LowEntropy& le) {
     std::ostringstream os;
     os << "H(s) = ";
-    std::string K = to_latex(le.gain);
+    std::string K = to_latex_cdot(le.gain);
     // A factor is wrapped in \left(...\right) when it's a sum (so an additive
     // group stays visually distinct from the product around it). Products get
-    // an explicit \cdot between factors: `R1 ro_M1` (juxtaposition) is
-    // technically valid TeX but reads ambiguously next to `R1\parallel ro_M1`,
-    // whereas `R1\cdot ro_M1` does not. The plain-text form has always used an
-    // explicit `*`; this keeps the LaTeX view just as unambiguous.
+    // an explicit \cdot between factors (to_latex_cdot) so `Cds_M1 ro_M1`
+    // never reads as one term.
     auto is_sum = [](const GiNaC::ex& f) {
         return GiNaC::is_a<GiNaC::add>(f) ||
                GiNaC::is_a<GiNaC::add>(f.expand());
     };
     auto factor_tex = [&](const GiNaC::ex& f) {
-        std::string tex = to_latex(f);
+        std::string tex = to_latex_cdot(f);
         if (is_sum(f)) return "\\left(" + tex + "\\right)";
         return tex;
     };
@@ -877,20 +992,13 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         d = (d / c0d).normal();
     }
 
-    // 3. magnitude pruning (optional)
-    if (opts.prune) {
-        ex np = n, dp = d;
-        prune_poly(np, s, params, opts, "numerator", R.dropped);
-        prune_poly(dp, s, params, opts, "denominator", R.dropped);
-        if (!dp.expand().is_zero()) {
-            n = np;
-            d = dp;
-        }
-    }
-
-    // 4. parallel rewrite, applied per s-coefficient. Coefficients are clean
-    //    rationals where Rd*ro/(Rd+ro) appears as a whole, so matching there
-    //    is reliable (matching the raw ratio would false-positive).
+    // 3. parallel rewrite (moved before magnitude pruning), applied per
+    //    s-coefficient, followed by a parallel-aware collapse. The parallel
+    //    structure must be recovered BEFORE magnitude pruning: pruning a
+    //    series-form `R1 + ro` would drop the small resistor, but that same
+    //    expression is the denominator of a parallel `R1||ro = R1*ro/(R1+ro)`,
+    //    where the BIG resistor is the negligible one. Recovering `R1||ro`
+    //    first lets prune_parallel drop the right term.
     if (opts.use_parallel) {
         auto poly_par = [&](const ex& poly) -> ex {
             int deg = 0;
@@ -900,8 +1008,6 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
             for (int k = 0; k <= deg; ++k) {
                 ex c = poly.coeff(s, k);
                 if (c.is_zero()) continue;
-                // expand so (a+b)*x/y becomes a*x/y + b*x/y, letting each
-                // term be matched for the parallel pattern independently
                 c = c.expand();
                 if (is_a<GiNaC::add>(c)) {
                     ex cc = 0;
@@ -917,6 +1023,21 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         };
         n = poly_par(n);
         d = poly_par(d);
+        if (opts.prune) {
+            n = prune_parallel(n, params, opts.threshold_db);
+            d = prune_parallel(d, params, opts.threshold_db);
+        }
+    }
+
+    // 4. magnitude pruning (optional)
+    if (opts.prune) {
+        ex np = n, dp = d;
+        prune_poly(np, s, params, opts, "numerator", R.dropped);
+        prune_poly(dp, s, params, opts, "denominator", R.dropped);
+        if (!dp.expand().is_zero()) {
+            n = np;
+            d = dp;
+        }
     }
 
     // 5. normalize the denominator again (the rewrite can reintroduce a scale)
@@ -940,6 +1061,31 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         ex df = factor_common_impl(d);
         if (!nf.is_zero()) n = nf;
         if (!df.is_zero()) d = df;
+    }
+
+    // 5b. Re-reduce the ratio so any common factor the pruning / parallel
+    //     rewrite left behind cancels to 1. E.g. an output impedance
+    //     R1*ro / (ro + s*R1*ro*Cds) has `ro` in both numerator and
+    //     denominator; dividing both by ro yields the simplest form
+    //     R1 / (1 + s*R1*Cds). The par() function is a held atom, so this
+    //     reduction never expands R1||R2 back out. Reducing a rational ratio
+    //     can pull the DC scale back into the denominator, so re-normalize
+    //     straight after when normalization is on.
+    {
+        ex Hred = (n / d).normal();
+        ex nr = Hred.numer().expand();
+        ex dr = Hred.denom().expand();
+        if (!nr.is_zero() && !dr.is_zero()) {
+            n = nr;
+            d = dr;
+        }
+        if (opts.normalize) {
+            ex c0 = d.coeff(s, 0);
+            if (!c0.is_zero() && !c0.is_equal(ex(1))) {
+                n = (n / c0).normal();
+                d = (d / c0).normal();
+            }
+        }
     }
 
     R.num_poly = n;

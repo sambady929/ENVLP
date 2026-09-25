@@ -39,5 +39,9 @@ std::vector<double> sweep_hz(double f0, double f1, int npoints);
 std::vector<double> sweep_points(const SweepSpec& s);
 
 std::string format_report(const AnalysisResult& r);
+// LaTeX report for the poles/zeros (typeset form for the Math tab): the
+// time-constant and factor expressions rendered with \cdot and \parallel,
+// with the numeric corner frequency kept as plain \mathrm{} text.
+std::string format_report_latex(const AnalysisResult& r);
 
 } // namespace syms

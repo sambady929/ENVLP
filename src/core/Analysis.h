@@ -58,6 +58,7 @@ struct CardResult {
     std::string text;    // low-entropy form (or DC value)
     std::string latex;   // LaTeX
     std::string report;  // full multi-line report
+    std::string latex_report; // LaTeX report for the Math tab (poles/zeros)
     // only meaningful for transfer-like analyses
     bool has_transfer = false;
     AnalysisResult transfer;
