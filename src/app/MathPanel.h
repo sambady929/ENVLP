@@ -22,11 +22,10 @@ public:
 
     // Show one LaTeX expression (may contain newlines for several lines).
     void set_latex(const std::string& latex);
-    // Show the full text report along with the math expression: lines that
-    // look like LaTeX (start with `\` or contain `\frac` etc.) get rendered
-    // as math; other lines render as plain text.
-    void set_report(const std::string& report, const std::string& latex,
-                    const std::string& latex_report = "");
+    // Show the typeset result: the transfer-function LaTeX plus the
+    // poles/zeros LaTeX report. The plain-text version lives in the separate
+    // "Results (Text)" tab and is not rendered here (no duplicate).
+    void set_report(const std::string& latex, const std::string& latex_report);
     void clear();
     // Re-render whatever latex was last set; called when the popup comes
     // back from hidden, because the Chromium-backed webview may have torn
@@ -38,7 +37,6 @@ private:
 
     wxWebView* view_ = nullptr;
     std::string latex_;
-    std::string report_;
     std::string latex_report_;
     bool ready_ = false;
 };

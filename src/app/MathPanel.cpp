@@ -57,14 +57,12 @@ MathPanel::MathPanel(wxWindow* parent) : wxPanel(parent) {
 
 void MathPanel::set_latex(const std::string& latex) {
     latex_ = latex;
-    report_.clear();
     latex_report_.clear();
     render();
 }
 
-void MathPanel::set_report(const std::string& report, const std::string& latex,
+void MathPanel::set_report(const std::string& latex,
                            const std::string& latex_report) {
-    report_ = report;
     latex_ = latex;
     latex_report_ = latex_report;
     render();
@@ -72,7 +70,6 @@ void MathPanel::set_report(const std::string& report, const std::string& latex,
 
 void MathPanel::clear() {
     latex_.clear();
-    report_.clear();
     latex_report_.clear();
     if (view_) view_->SetPage(kEmptyPage, "");
 }
@@ -124,38 +121,6 @@ std::string esc_html(const std::string& s) {
     return e;
 }
 
-// Turn the plain-text report into formatted HTML. The transfer-function
-// line is skipped -- the Math tab already shows it typeset above, so
-// repeating it as text would be the duplicate the user flagged. Short lines
-// ending in ':' become section headings; the rest are body lines.
-std::string render_report_html(const std::string& report) {
-    std::string out;
-    std::string cur;
-    auto flush = [&]() {
-        while (!cur.empty() &&
-               (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
-            cur.pop_back();
-        if (!cur.empty()) {
-            bool heading = cur.size() < 40 && cur.back() == ':';
-            bool equation = cur.rfind("H(s) = ", 0) == 0 ||
-                            cur.rfind("Zin = ", 0) == 0 ||
-                            cur.rfind("Zout = ", 0) == 0 ||
-                            cur.rfind("Isc", 0) == 0 ||
-                            cur.rfind("T(s) = ", 0) == 0;
-            if (heading)
-                out += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
-            else if (!equation)
-                out += "<p class=\"line\">" + esc_html(cur) + "</p>";
-        }
-        cur.clear();
-    };
-    for (char c : report) {
-        if (c == '\n') flush();
-        else cur += c;
-    }
-    flush();
-    return out;
-}
 // Render the typeset poles/zeros report. Lines ending in ':' are section
 // headings; everything else is a typeset math line (the time-constant and
 // factor expressions with \cdot / \parallel).
@@ -186,7 +151,7 @@ std::string render_latex_report(const std::string& lr) {
 
 void MathPanel::render() {
     if (!view_) return;
-    if (latex_.empty() && report_.empty() && latex_report_.empty()) {
+    if (latex_.empty() && latex_report_.empty()) {
         view_->SetPage(kEmptyPage, "");
         return;
     }
@@ -200,7 +165,9 @@ void MathPanel::render() {
         body += "</div>";
     }
     if (!latex_report_.empty()) body += render_latex_report(latex_report_);
-    if (!report_.empty()) body += render_report_html(report_);
+    // The plain-text report is deliberately NOT rendered here: it lives in
+    // the separate "Results (Text)" tab, so showing it again would duplicate
+    // the poles/zeros the user already sees typeset above.
     std::string page;
     page += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>";
     page += kReportCss;

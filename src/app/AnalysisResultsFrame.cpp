@@ -10,8 +10,10 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     math_ = new MathPanel(book_);
     bode_ = new BodePanel(book_);
     lua_ = new LuaConsole(book_);
-    book_->AddPage(results_, "Results", true);
-    book_->AddPage(math_, "Math");
+    // "Results" is the typeset (LaTeX) view and comes first; the plain-text
+    // dump is the secondary "Results (Text)" tab.
+    book_->AddPage(math_, "Results", true);
+    book_->AddPage(results_, "Results (Text)");
     book_->AddPage(bode_, "Bode");
     book_->AddPage(lua_, "Lua");
 
@@ -39,15 +41,13 @@ void AnalysisResultsFrame::select_page(int idx) {
     if (idx >= 0 && idx < int(book_->GetPageCount()))
         book_->SetSelection(idx);
 }
-
 void AnalysisResultsFrame::set_latex(const std::string& latex) {
     if (math_) math_->set_latex(latex);
 }
 
-void AnalysisResultsFrame::set_report(const std::string& report,
-                                      const std::string& latex,
+void AnalysisResultsFrame::set_report(const std::string& latex,
                                       const std::string& latex_report) {
-    if (math_) math_->set_report(report, latex, latex_report);
+    if (math_) math_->set_report(latex, latex_report);
 }
 
 } // namespace symcirc

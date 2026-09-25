@@ -756,7 +756,7 @@ void MainFrame::run_card(int index) {
     // Results tab = the plain-text report. Math tab = the same report
     // typeset (the transfer function as real stacked fractions with proper
     // subscripts, the poles/zeros as a formatted list).
-    rf->set_report(report, latex, latex_report);
+    rf->set_report(latex, latex_report);
     result_ = std::move(keep);
     // The bode tab shows the most recent card's title so the user can tell
     // what each plot represents when they switch back to it. Run-all uses
@@ -777,7 +777,7 @@ void MainFrame::run_card(int index) {
     rf->bode()->set_result(result_.get());
     rf->lua()->set_result(result_.get());
     rf->popup();
-    rf->select_page(1); // land on the Math tab: that's the readable output
+    rf->select_page(0); // land on the "Results" (typeset) tab
     SetStatusText("Analysis OK -- see the results window.", 0);
 }
 

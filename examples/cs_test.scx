@@ -1,17 +1,25 @@
 symcirc 1
 req "V1" "V(out)" 1 1e+09 0 10 1 1 1 1
 comp "M1" "NMOS" 360 270 0 0 0 0 ""
-param "M1" "Cgd" 0 "330f" 0
+param "M1" "Cds" 0 "" 0
+param "M1" "Cgd" 1 "330f" 0
 param "M1" "Cgs" 0 "" 0
-comp "V1" "V" 250 320 0 0 0 0 ""
-comp "GND1" "GND" 250 360 0 0 0 0 ""
-comp "R1" "R" 360 150 90 0 0 0 ""
+comp "V1" "V" 190 320 0 0 0 0 ""
+comp "GND1" "GND" 190 360 0 0 0 0 ""
+comp "R1" "R" 360 150 90 0 0 0 "1M"
 comp "VDD" "VDD" 360 110 0 0 0 0 ""
 comp "GND2" "GND" 360 330 0 0 0 0 ""
-wire 250,290 250,270 320,270 pin:V1:0 pin:M1:1
-wire 250,360 250,350 pin:GND1:0 pin:V1:1
-wire 360,230 360,180 pin:M1:0 free
+comp "C1" "C" 440 270 90 0 0 0 "100f"
+comp "GND3" "GND" 440 300 0 0 0 0 ""
+comp "R2" "R" 230 270 180 0 0 0 "10k"
+wire 360,230 360,180 pin:M1:0 pin:R1:0
 wire 360,110 360,120 pin:VDD:0 pin:R1:1
 wire 360,330 360,310 pin:GND2:0 pin:M1:2
-netlabel 280.245,270 289.825,259.25 "in" 9
+wire 440,240 440,230 360,230 pin:C1:1 pin:M1:0
+wire 190,360 190,350 pin:GND1:0 pin:V1:1
+wire 260,270 320,270 pin:R2:0 pin:M1:1
+wire 190,290 190,270 200,270 pin:V1:0 pin:R2:1
 netlabel 360,209.7 372.37,209.7 "out" 9
+netlabel 190,275.266 199.58,264.516 "in" 9
+netlabel 302.671,270 302.671,259.25 "vg" 9
+card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Output impedance" 0

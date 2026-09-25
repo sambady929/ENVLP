@@ -161,7 +161,9 @@ std::string format_report(const AnalysisResult& r) {
 }
 
 // One pole/zero line in LaTeX: the numeric corner frequency as \mathrm{}
-// text, the time-constant expression typeset with \cdot and \parallel.
+// text, the time-constant expression typeset with \cdot and \parallel, and
+// the (1 + s*tau) factor on a second indented line (matching the plain-text
+// view).
 std::string pole_zero_latex(const RootInfo& r, int i) {
     std::string line = std::to_string(i) + ")\\ \\omega = ";
     if (r.omega == 0.0) {
@@ -173,6 +175,8 @@ std::string pole_zero_latex(const RootInfo& r, int i) {
         if (!r.latex_label.empty())
             line += ",\\quad \\tau = " + r.latex_label;
     }
+    if (!r.latex_factor.empty())
+        line += "\n\\quad \\mathrm{factor:}\\ " + r.latex_factor;
     return line;
 }
 
