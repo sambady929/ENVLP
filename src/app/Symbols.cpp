@@ -495,7 +495,10 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
         if (any) {
             dc.SetTextForeground(wxColour(170, 60, 20));
             double my = stack_y + (val_text.IsEmpty() ? 0 : lh) + lh;
-            dc.DrawText("\u00b6", wxPoint(int(tx), int(my)));
+            // Use an explicitly constructed Unicode char: a raw "\u00b6"
+            // narrow literal is UTF-8 (0xC2 0xB6) and wxString's implicit
+            // conversion misreads it as two Latin-1 bytes ("Â¶").
+            dc.DrawText(wxString(wxUniChar(0x00B6)), wxPoint(int(tx), int(my)));
         }
     }
 }
