@@ -654,17 +654,18 @@ void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
 // This is deliberately conservative -- it only fires on sums that contain an
 // explicit gm*ro term, so ordinary polynomials are untouched.
 bool looks_like_gm_ro(const ex& e, const ParamTable& pt) {
-    // The term must contain at least one gm-class and one ro-class symbol --
-    // that's the structural signature of "a transconductance times an output
-    // resistance", regardless of magnitude. The numerical gate below is a
-    // separate check on whether this term actually dominates its siblings.
+    // The term must contain a *transconductance* gm_* symbol AND an *output
+    // resistance* ro_* symbol -- that is the structural signature of "a
+    // transconductance times an output resistance". It must NOT match a gm
+    // times an ordinary load resistor (gm_M1 * R1), which is the forward gain
+    // and is not >> 1 in the same way gm*ro is; treating it as gm*ro would
+    // wrongly drop the Miller feedforward zero s*Cgd*R beside it.
     bool has_gm = false, has_ro = false;
-    for (const auto& kv : pt.cls) {
-        auto sit = pt.syms.find(kv.first);
-        if (sit == pt.syms.end()) continue;
-        if (!e.has(sit->second)) continue;
-        if (kv.second == UnitClass::Siemens) has_gm = true;
-        if (kv.second == UnitClass::Ohm) has_ro = true;
+    for (const auto& kv : pt.syms) {
+        if (!e.has(kv.second)) continue;
+        const std::string& name = kv.first;
+        if (name.rfind("gm_", 0) == 0) has_gm = true;
+        else if (name.rfind("ro_", 0) == 0) has_ro = true;
     }
     return has_gm && has_ro;
 }

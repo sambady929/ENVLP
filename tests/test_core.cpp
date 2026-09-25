@@ -932,6 +932,34 @@ static void test_pole_zero_60db_threshold() {
     CHECK(poles_at(1e-10) == 1); // 80 dB apart -> far pole dropped
 }
 
+// The Miller feedforward zero (s = gm/Cgd) from a gate-drain capacitance is a
+// *significant* zero: it must survive "ignore negligible", not be dropped as
+// if gm*Rd (the forward gain) were a gm*ro intrinsic-gain term.
+static void test_miller_zero_survives_pruning() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["Cgd"] = true;   m.param_text["Cgd"] = "100f";
+    m.param_on["ro"] = false;
+    m.param_on["Cgs"] = false;
+    m.param_on["Cds"] = false;
+    m.param_text["gm"] = "1m";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.prune = true;
+    AnalysisResult r = analyze(c, req);
+
+    CHECK(r.pruned.zeros.size() == 1);
+    if (!r.pruned.zeros.empty())
+        CHECK(r.pruned.zeros[0].label.find("Cgd") != std::string::npos);
+    CHECK(r.pruned.text.find("Cgd") != std::string::npos);
+}
+
 // Series resistors collapse at 20 dB (10 + 1 -> 10), so a resistor 40 dB
 // below its series partner is dropped -- unlike a pole 40 dB away, which the
 // 60 dB pole/zero rule keeps.
@@ -985,6 +1013,7 @@ int main(int argc, char** argv) {
         {"cs_input_pole_cgs", test_cs_input_pole_is_cgs_not_c1},
         {"pole_zero_60db", test_pole_zero_60db_threshold},
         {"series_20db", test_series_reduction_20db},
+        {"miller_zero_survives", test_miller_zero_survives_pruning},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
