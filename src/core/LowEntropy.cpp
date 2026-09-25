@@ -62,25 +62,15 @@ ex factor_common_impl(const ex& e);
 ex gm_ro_idealize(const ex& e, const ParamTable& pt);
 
 // Exact polynomial divisibility of `num` (a polynomial in `s`) by `fac`.
-// GiNaC's ex::degree() drops rational coefficients, so (a+b)*x/y and similar
-// rational coefficients are *not* seen as polynomials; clear the denominator
-// first, then ask GiNaC for the remainder.
+// GiNaC's rem() fails when a coefficient is a held function (par(R1,ro)), so
+// instead reduce the ratio with normal() and ask whether any power of `s`
+// remains in the denominator. normal() cancels the gcd, so fac divides num
+// exactly when the reduced denominator is free of `s`. (The candidates are
+// monic 1 + tau*s, so a constant denominator cannot hide a non-divisor.)
 bool poly_remainder_is_zero(const ex& num, const ex& fac, const ex& s) {
     if (fac.is_zero()) return false;
     ex q = (num / fac).normal();
-    ex numc = q.numer().expand(); // polynomial part
-    ex denc = q.denom().expand(); // symbolic denominator (may be 1)
-    try {
-        ex r = GiNaC::rem(numc, fac, s);
-        if (!r.is_zero()) return false;
-        if (!denc.is_equal(ex(1)) && !denc.is_zero()) {
-            ex r2 = GiNaC::rem(denc, fac, s);
-            if (!r2.is_zero()) return false;
-        }
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return !q.denom().has(s);
 }
 } // namespace
 

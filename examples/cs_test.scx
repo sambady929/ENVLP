@@ -1,7 +1,7 @@
 symcirc 1
 req "V1" "V(out)" 1 1e+09 0 10 1 1 1 1
 comp "M1" "NMOS" 360 270 0 0 0 0 ""
-param "M1" "Cds" 1 "" 0
+param "M1" "Cds" 0 "" 0
 param "M1" "Cgd" 0 "330f" 0
 param "M1" "Cgs" 1 "" 0
 comp "V1" "V" 190 320 0 0 0 0 ""
@@ -23,3 +23,4 @@ netlabel 360,209.7 372.37,209.7 "out" 9
 netlabel 190,275.266 199.58,264.516 "in" 9
 netlabel 302.671,270 302.671,259.25 "vg" 9
 card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Output impedance" 0
+card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Transfer function (H(s))" 1
