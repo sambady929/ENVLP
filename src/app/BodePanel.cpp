@@ -31,10 +31,11 @@ constexpr double kFstart = 1.0;
 constexpr double kFend = 1e8;
 constexpr int kMaxPoints = 4000;
 
-// Continuous phase unwrap: if successive phase samples jump by more than
-// pi radians, add/subtract multiples of 2pi to keep the curve continuous.
-// Returns a vector the same length as `phase_in` with the same starting
-// value but jumps removed.
+// Continuous phase unwrap. The input is in DEGREES (atan2 output in
+// (-180, 180]), so the jump threshold is 180 deg and the correction 360 deg.
+// The previous version used M_PI (radians) as the threshold, so every >3 deg
+// step got "unwrapped" by 360 -- the phase curve was a staircase of garbage
+// bearing no relation to the transfer function.
 std::vector<double> unwrap_phase(const std::vector<double>& phase_in) {
     std::vector<double> out(phase_in.size(), 0.0);
     if (phase_in.empty()) return out;
@@ -43,8 +44,8 @@ std::vector<double> unwrap_phase(const std::vector<double>& phase_in) {
     for (size_t i = 1; i < phase_in.size(); ++i) {
         double cur = phase_in[i];
         double d = cur - prev;
-        if (d > M_PI) cur -= 2 * M_PI * std::floor((d + M_PI) / (2 * M_PI));
-        else if (d < -M_PI) cur += 2 * M_PI * std::floor((-d + M_PI) / (2 * M_PI));
+        while (d > 180.0) { cur -= 360.0; d -= 360.0; }
+        while (d < -180.0) { cur += 360.0; d += 360.0; }
         out[i] = cur;
         prev = cur;
     }
@@ -405,20 +406,24 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
             double f = std::pow(10.0, e);
             if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
             int x = int(x_of(f));
-            dc.SetPen(wxPen(wxColour(210, 210, 215)));
-            dc.DrawLine(x, mT, x, mT + Hh);
-            dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
+            if (show_major_grid_) {
+                dc.SetPen(wxPen(wxColour(210, 210, 215)));
+                dc.DrawLine(x, mT, x, mT + Hh);
+                dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
+            }
             dc.SetTextForeground(wxColour(110, 110, 118));
             wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
             dc.DrawText(lbl, x + 2, mT + Hh + 14 + Hp + 4);
             // minor at 2..9 in this decade
-            dc.SetPen(wxPen(wxColour(240, 240, 244)));
-            for (int k = 2; k <= 9; ++k) {
-                double f2 = f * k;
-                if (f2 < f_lo || f2 > f_hi) continue;
-                int x2 = int(x_of(f2));
-                dc.DrawLine(x2, mT, x2, mT + Hh);
-                dc.DrawLine(x2, mT + Hh + 14, x2, mT + Hh + 14 + Hp);
+            if (show_minor_grid_) {
+                dc.SetPen(wxPen(wxColour(240, 240, 244)));
+                for (int k = 2; k <= 9; ++k) {
+                    double f2 = f * k;
+                    if (f2 < f_lo || f2 > f_hi) continue;
+                    int x2 = int(x_of(f2));
+                    dc.DrawLine(x2, mT, x2, mT + Hh);
+                    dc.DrawLine(x2, mT + Hh + 14, x2, mT + Hh + 14 + Hp);
+                }
             }
         }
     }
@@ -434,8 +439,10 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     for (; db <= mag_hi; db += int(db_step)) {
         int y = int(y_mag(db));
         if (y < mT || y > mT + Hh) continue;
-        dc.SetPen(wxPen(wxColour(240, 240, 244)));
-        dc.DrawLine(mL, y, mL + W, y);
+        if (show_major_grid_) {
+            dc.SetPen(wxPen(wxColour(240, 240, 244)));
+            dc.DrawLine(mL, y, mL + W, y);
+        }
         dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%+d dB", db), 4, y - 6);
     }
@@ -451,11 +458,14 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     for (; deg <= ph_hi; deg += ph_step) {
         int y = int(y_ph(deg));
         if (y < mT + Hh + 14 || y > mT + Hh + 14 + Hp) continue;
-        dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
-                                 : wxColour(240, 240, 244)));
-        dc.DrawLine(mL, y, mL + W, y);
+        if (show_major_grid_) {
+            dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
+                                     : wxColour(240, 240, 244)));
+            dc.DrawLine(mL, y, mL + W, y);
+        }
         dc.SetTextForeground(wxColour(110, 110, 118));
-        dc.DrawText(wxString::Format("%d\u00b0", deg), 6, y - 6);
+        dc.DrawText(wxString::Format("%d", deg) + wxString(wxUniChar(0x00B0)),
+                    6, y - 6);
     }
 
     // magnitude curve
@@ -602,7 +612,8 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
                                  : wxColour(240, 240, 244)));
         dc.DrawLine(x, mT, x, mT + H);
         dc.SetTextForeground(wxColour(110, 110, 118));
-        dc.DrawText(wxString::Format("%d\u00b0", deg), x - 8, mT + H + 4);
+        dc.DrawText(wxString::Format("%d", deg) + wxString(wxUniChar(0x00B0)),
+                    x - 8, mT + H + 4);
     }
     // constant-magnitude horizontal grid
     int db_step = 20;
@@ -654,6 +665,10 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* csv = new wxButton(this, wxID_ANY, "Save CSV...");
     auto_box_ = new wxCheckBox(this, wxID_ANY, "Auto scale");
     auto_box_->SetValue(true);
+    major_grid_ = new wxCheckBox(this, wxID_ANY, "Major grid");
+    major_grid_->SetValue(true);
+    minor_grid_ = new wxCheckBox(this, wxID_ANY, "Minor grid");
+    minor_grid_->SetValue(true);
     // Frequency / magnitude range fields. Text controls (not spin controls)
     // so the user can type arbitrary values like "1e6" or "-40"; the spin
     // controls' integer-only range made entering a frequency impossible.
@@ -666,6 +681,8 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
              wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     bar->Add(mode, 0, wxRIGHT, 8);
     bar->Add(auto_box_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    bar->Add(major_grid_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
+    bar->Add(minor_grid_, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
     bar->Add(new wxStaticText(this, wxID_ANY, "f:"), 0,
              wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 2);
     bar->Add(xmin_, 0, wxRIGHT, 2);
@@ -697,6 +714,12 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     });
 
     auto_box_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { apply_axis(); });
+    major_grid_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        plot_->set_grid(major_grid_->GetValue(), minor_grid_->GetValue());
+    });
+    minor_grid_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        plot_->set_grid(major_grid_->GetValue(), minor_grid_->GetValue());
+    });
     // Editing any range field takes the plot out of auto-scale so the typed
     // value is actually used (otherwise "Auto scale" would ignore it).
     auto on_edit = [this](wxCommandEvent&) {

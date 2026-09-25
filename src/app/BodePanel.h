@@ -32,6 +32,15 @@ public:
     double y_lo() const { return y_lo_; }
     double y_hi() const { return y_hi_; }
 
+    // Toggle the major (decade / dB) and minor (sub-decade) grid lines.
+    void set_grid(bool major, bool minor) {
+        show_major_grid_ = major;
+        show_minor_grid_ = minor;
+        Refresh();
+    }
+    bool show_major_grid() const { return show_major_grid_; }
+    bool show_minor_grid() const { return show_minor_grid_; }
+
     // Title shown above the plot (card name, e.g. "Transfer function (H(s))").
     void set_title(const std::string& t) { title_ = t; Refresh(); }
     const std::string& title() const { return title_; }
@@ -56,6 +65,8 @@ private:
     bool auto_range_ = true;
     double x_lo_ = 1.0, x_hi_ = 1e8;     // Hz bounds for Bode/Nichols x
     double y_lo_ = -40.0, y_hi_ = 40.0;   // dB bounds for Bode/Nichols y
+    bool show_major_grid_ = true;
+    bool show_minor_grid_ = true;
 
     void paint_bode(wxDC& dc, const wxSize& sz) const;
     void paint_nyquist(wxDC& dc, const wxSize& sz) const;
@@ -80,6 +91,8 @@ private:
     wxTextCtrl* ymin_ = nullptr;
     wxTextCtrl* ymax_ = nullptr;
     wxCheckBox* auto_box_ = nullptr;
+    wxCheckBox* major_grid_ = nullptr;
+    wxCheckBox* minor_grid_ = nullptr;
 
     void apply_axis();
     void sync_axis_controls();
