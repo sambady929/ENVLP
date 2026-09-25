@@ -249,6 +249,7 @@ bool BodeCanvas::save_png(const std::string& path) const {
         wxMemoryDC dc(bmp);
         dc.SetBackground(wxBrush(*wxWHITE));
         dc.Clear();
+        dc.SetBrush(*wxTRANSPARENT_BRUSH); // frame rectangles must not fill
         switch (mode_) {
             case PlotMode::Bode: paint_bode(dc, sz); break;
             case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
@@ -278,6 +279,7 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
     wxSize sz = GetClientSize();
     dc.SetBackground(*wxWHITE);
     dc.Clear();
+    dc.SetBrush(*wxTRANSPARENT_BRUSH); // frame rectangles must not fill
 
     if (!res_) {
         dc.SetTextForeground(wxColour(150, 150, 155));
