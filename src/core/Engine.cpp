@@ -2,6 +2,7 @@
 #include "core/Eng.h"
 #include "core/Print.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -87,7 +88,15 @@ namespace {
 
 std::string fmt_hz(double hz) {
     if (hz <= 0.0) return "0";
-    return eng::format_si(hz) + " Hz";
+    // Engineering number + prefix ("159M"), then reattach as "159 MHz".
+    std::string s = eng::format_eng(hz, 3);
+    std::string prefix;
+    if (!s.empty() && std::isalpha((unsigned char)s.back())) {
+        prefix = s.substr(s.size() - 1);
+        s = s.substr(0, s.size() - 1);
+    }
+    if (prefix.empty()) return s + " Hz";
+    return s + " " + prefix + "Hz";
 }
 
 std::string fmt_rads(double w) {
@@ -111,13 +120,13 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
         double hz = std::fabs(r.omega) / (2.0 * M_PI);
         if (r.real_root) {
             std::snprintf(buf, sizeof(buf),
-                          "    %d) w = %-16s (%s)   tau = %s\n", i,
-                          fmt_rads(r.omega).c_str(), fmt_hz(hz).c_str(),
+                          "    %d) %s (%s)   tau = %s\n", i,
+                          fmt_hz(hz).c_str(), fmt_rads(r.omega).c_str(),
                           r.label.empty() ? "-" : r.label.c_str());
         } else {
             std::snprintf(buf, sizeof(buf),
-                          "    %d) wn = %-14s (%s)   Q = %.2f   wn^2 = %s\n", i,
-                          fmt_rads(r.omega).c_str(), fmt_hz(hz).c_str(), r.q,
+                          "    %d) %s (%s)   Q = %.2f   wn^2 = %s\n", i,
+                          fmt_hz(hz).c_str(), fmt_rads(r.omega).c_str(), r.q,
                           r.label.empty() ? "-" : r.label.c_str());
         }
         out += buf;
@@ -165,13 +174,14 @@ std::string format_report(const AnalysisResult& r) {
 // the (1 + s*tau) factor on a second indented line (matching the plain-text
 // view).
 std::string pole_zero_latex(const RootInfo& r, int i) {
-    std::string line = std::to_string(i) + ")\\ \\omega = ";
+    std::string line = std::to_string(i) + ")\\ ";
     if (r.omega == 0.0) {
-        line += "0\\ \\mathrm{(origin)}";
+        line += "\\mathrm{0\\ Hz}\\ \\mathrm{(origin)}";
     } else {
         double hz = std::fabs(r.omega) / (2.0 * M_PI);
-        line += "\\mathrm{" + fmt_rads(r.omega) + "}";
-        line += "\\ \\mathrm{(" + fmt_hz(hz) + ")}";
+        // Hz first (engineering notation), rad/s in parentheses (exponent).
+        line += "\\mathrm{" + fmt_hz(hz) + "}";
+        line += "\\ \\mathrm{(" + fmt_rads(r.omega) + ")}";
         if (!r.latex_label.empty())
             line += ",\\quad \\tau = " + r.latex_label;
     }

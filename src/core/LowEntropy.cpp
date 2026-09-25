@@ -1133,6 +1133,15 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // 9. root tables
     roots_from_factors(R.den_factors, params, s, R.poles);
     roots_from_factors(R.num_factors, params, s, R.zeros);
+    // List poles/zeros lowest corner frequency first (the origin, then
+    // ascending omega), so a 1e6 pole sorts before a 1e8 pole.
+    auto sort_roots = [](std::vector<Root>& v) {
+        std::sort(v.begin(), v.end(), [](const Root& a, const Root& b) {
+            return a.omega < b.omega;
+        });
+    };
+    sort_roots(R.poles);
+    sort_roots(R.zeros);
 
     // 9. display text (compound numerator/denominator get parentheses)
     std::string Kt = pretty(R.gain);

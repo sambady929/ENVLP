@@ -135,22 +135,34 @@ std::string format_eng(double v, int sig) {
         {1e-3, "m"}, {1e-6, "\xC2\xB5"}, /* µ */ {1e-9, "n"}, {1e-12, "p"},
         {1e-15, "f"},
     };
-    const Unit* u = &units[sizeof(units) / sizeof(units[0]) - 1];
-    for (const Unit* p = units; p < units + sizeof(units) / sizeof(units[0]); ++p) {
-        if (a >= p->scale) { u = p; break; }
+    const int n_units = int(sizeof(units) / sizeof(units[0]));
+    const Unit* u = &units[4]; // default: no prefix
+    for (int i = 0; i < n_units; ++i) {
+        if (a >= units[i].scale) { u = &units[i]; break; }
     }
 
+    auto render = [&](double mant) {
+        // digits in the integer part (1..3); decimals = remaining sig figs.
+        int int_digits = mant >= 100.0 ? 3 : (mant >= 10.0 ? 2 : 1);
+        int decimals = sig - int_digits;
+        if (decimals < 0) decimals = 0;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.*f", decimals, mant);
+        std::string s(buf);
+        if (s.find('.') != std::string::npos) {
+            while (!s.empty() && s.back() == '0') s.pop_back();
+            if (!s.empty() && s.back() == '.') s.pop_back();
+        }
+        return s;
+    };
+
     double mant = a / u->scale;
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.*g", sig, mant);
-    // guard 999.9999 -> "1000" overflow of the chosen decade
-    double check = std::strtod(buf, nullptr);
-    if (check >= 1000.0 && u != units + sizeof(units) / sizeof(units[0]) - 1) {
-        ++u;
-        mant = a / u->scale;
-        std::snprintf(buf, sizeof(buf), "%.*g", sig, mant);
+    std::string s = render(mant);
+    // Round-off overflow: 999.6 -> "1000" must bump to the next prefix.
+    if (std::strtod(s.c_str(), nullptr) >= 1000.0 && u > units) {
+        --u;
+        s = render(a / u->scale);
     }
-    std::string s(buf);
     if (v < 0.0) s = "-" + s;
     return s + u->suffix;
 }

@@ -16,7 +16,10 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     book_->AddPage(results_, "Results (Text)");
     book_->AddPage(bode_, "Plot");
     // The Lua console tab is hidden for now (messy); the object stays alive
-    // so the existing lua()->set_result() plumbing doesn't null-deref.
+    // so the existing lua()->set_result() plumbing doesn't null-deref, but a
+    // child wxPanel that isn't a notebook page still paints at (0,0), so
+    // Hide() it explicitly.
+    lua_->Hide();
 
     // Closing the window just hides it; the next analysis brings it back.
     Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& e) {

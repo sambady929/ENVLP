@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <utility>
 #include <vector>
 #include <wx/dcbuffer.h>
 #include <wx/filedlg.h>
@@ -359,12 +360,10 @@ void compute_axes(const syms::AnalysisResult& res, const Curve& c,
 }
 
 void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
-    const int mL = 56, mR = 12, mT = 12, mB = 42;
+    const int mL = 72, mR = 16, mT = 16, mB = 44;
     const int W = sz.x - mL - mR;
     // Magnitude and phase share the available height evenly (minus the gap
-    // between them and the bottom margin for the frequency axis). Previously
-    // Hp was the *full* remaining height, which pushed the phase plot and the
-    // x-axis labels below the bottom of the canvas.
+    // between them and the bottom margin for the frequency axis).
     const int Hh = (sz.y - mT - mB - 14) / 2;
     const int Hp = (sz.y - mT - mB - 14) / 2;
     if (W < 50 || Hh < 30) return;
@@ -407,7 +406,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
             if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
             int x = int(x_of(f));
             if (show_major_grid_) {
-                dc.SetPen(wxPen(wxColour(210, 210, 215)));
+                dc.SetPen(wxPen(wxColour(188, 192, 202)));
                 dc.DrawLine(x, mT, x, mT + Hh);
                 dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
             }
@@ -495,12 +494,19 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         }
     }
 
+    // Axis titles. "Magnitude (dB)" and "Phase (deg)" are drawn rotated
+    // (vertical) in the left margin, so the graph never runs through them;
+    // "Frequency (Hz)" sits centred below the phase plot's tick labels.
     dc.SetTextForeground(wxColour(200, 40, 40));
-    dc.DrawText("Magnitude", mL + 6, mT + 4);
+    dc.DrawRotatedText("Magnitude (dB)", wxPoint(26, mT + Hh / 2), 90.0);
     dc.SetTextForeground(wxColour(40, 90, 200));
-    dc.DrawText("Phase", mL + 6, mT + Hh + 18);
-    dc.SetTextForeground(wxColour(110, 110, 118));
-    dc.DrawText("frequency [Hz]", mL + W - 78, mT + Hh + 14 + Hp + 4);
+    dc.DrawRotatedText("Phase (deg)", wxPoint(26, mT + Hh + 14 + Hp / 2), 90.0);
+    dc.SetTextForeground(wxColour(90, 90, 98));
+    {
+        wxString fl = "Frequency (Hz)";
+        wxSize fs = dc.GetTextExtent(fl);
+        dc.DrawText(fl, mL + (W - fs.x) / 2, mT + Hh + 14 + Hp + 22);
+    }
 }
 
 void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
@@ -508,19 +514,19 @@ void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
     sample_curve(res_, c, *this);
     if (c.f.empty()) return;
 
-    // auto-scale the real/imag extents with a little margin
-    double lo = 1e300, hi = -1e300;
+    // Symmetric auto-scale that always includes the critical point -1 + j0
+    // (the Nyquist stability criterion is about encircling it), plus a small
+    // margin around the data.
+    double maxr = 0.0;
     for (size_t i = 0; i < c.f.size(); ++i) {
         if (!std::isfinite(c.re[i]) || !std::isfinite(c.im[i])) continue;
-        lo = std::min({lo, c.re[i], c.im[i]});
-        hi = std::max({hi, c.re[i], c.im[i]});
+        maxr = std::max(maxr, std::fabs(c.re[i]));
+        maxr = std::max(maxr, std::fabs(c.im[i]));
     }
-    if (lo > hi) return;
-    double span = std::max(hi - lo, 1e-12);
-    lo -= span * 0.08;
-    hi += span * 0.08;
+    double lim = std::max(maxr * 1.15, 1.25);
+    double lo = -lim, hi = lim;
 
-    const int mL = 48, mR = 16, mT = 16, mB = 30;
+    const int mL = 56, mR = 16, mT = 16, mB = 30;
     int W = sz.x - mL - mR, H = sz.y - mT - mB;
     if (W < 50 || H < 50) return;
     auto X = [&](double v) { return mL + (v - lo) / (hi - lo) * W; };
@@ -543,9 +549,18 @@ void BodeCanvas::paint_nyquist(wxDC& dc, const wxSize& sz) const {
         dc.DrawLine(int(X(v)), mT, int(X(v)), mT + H);
         dc.DrawLine(mL, int(Y(v)), mL + W, int(Y(v)));
     }
+    // axes through the origin
     dc.SetPen(wxPen(wxColour(160, 160, 168)));
     dc.DrawLine(int(X(0)), mT, int(X(0)), mT + H);
     dc.DrawLine(mL, int(Y(0)), mL + W, int(Y(0)));
+    // the critical point -1 + j0, drawn as a marker
+    int cx = int(X(-1)), cy = int(Y(0));
+    dc.SetPen(wxPen(wxColour(220, 20, 20), 1));
+    dc.SetBrush(wxBrush(wxColour(220, 20, 20)));
+    dc.DrawCircle(cx, cy, 3);
+    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+    dc.SetTextForeground(wxColour(200, 20, 20));
+    dc.DrawText("-1", cx - 4, cy + 4);
     dc.SetTextForeground(wxColour(110, 110, 118));
     dc.DrawText("Re", mL + W - 18, int(Y(0)) - 16);
     dc.DrawText("Im", int(X(0)) + 4, mT + 4);
@@ -577,14 +592,20 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     sample_curve(res_, c, *this);
     if (c.f.empty()) return;
 
-    double f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi;
-    compute_axes(*res_, c, auto_range_, x_lo_, x_hi_, y_lo_, y_hi_,
-                 f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi);
-    // For Nichols we want phase as x and magnitude as y; the auto/manual
-    // range uses frequency on x, so swap the labels accordingly. The y
-    // bounds stay magnitude; for x we use phase since the user usually
-    // wants to see phase extent rather than frequency.
-    double nx_lo = ph_lo, nx_hi = ph_hi, ny_lo = mag_lo, ny_hi = mag_hi;
+    // Auto-zoom to the full curve: phase on x, magnitude on y, with margin.
+    double nx_lo = 1e300, nx_hi = -1e300, ny_lo = 1e300, ny_hi = -1e300;
+    for (size_t i = 0; i < c.f.size(); ++i) {
+        if (!std::isfinite(c.mag[i]) || !std::isfinite(c.ph[i])) continue;
+        nx_lo = std::min(nx_lo, c.ph[i]);
+        nx_hi = std::max(nx_hi, c.ph[i]);
+        ny_lo = std::min(ny_lo, c.mag[i]);
+        ny_hi = std::max(ny_hi, c.mag[i]);
+    }
+    if (nx_lo > nx_hi || ny_lo > ny_hi) return;
+    double phspan = std::max(nx_hi - nx_lo, 20.0);
+    double mspan = std::max(ny_hi - ny_lo, 20.0);
+    nx_lo -= phspan * 0.06; nx_hi += phspan * 0.06;
+    ny_lo -= mspan * 0.08; ny_hi += mspan * 0.08;
 
     const int mL = 56, mR = 16, mT = 16, mB = 34;
     int W = sz.x - mL - mR, H = sz.y - mT - mB;
@@ -602,28 +623,104 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
 
     dc.SetPen(wxPen(wxColour(225, 225, 230)));
     dc.DrawRectangle(mL, mT, W, H);
-    // constant-phase vertical grid
+
+    // The Nichols chart grid: constant closed-loop magnitude (M) contours and
+    // constant closed-loop phase (N) contours, not a plain Cartesian grid.
+    // The chart lines are drawn faint; the data curve is drawn on top.
+    auto chart_pen = [&](bool emphasized) {
+        return wxPen(emphasized ? wxColour(200, 205, 216)
+                                : wxColour(238, 238, 244));
+    };
+    auto draw_contour = [&](std::vector<std::pair<double, double>>& pts) {
+        bool started = false;
+        wxPoint prev(0, 0);
+        for (auto& q : pts) {
+            double db = 20.0 * std::log10(std::max(q.second, 1e-9));
+            if (db < ny_lo || db > ny_hi) { started = false; continue; }
+            wxPoint p(int(X(q.first * 180.0 / M_PI)), int(Y(db)));
+            if (started) dc.DrawLine(prev, p);
+            prev = p;
+            started = true;
+        }
+    };
+
+    // M contours: constant closed-loop magnitude m (linear).
+    //   g = [m^2 cos(phi) +/- m sqrt(1 - m^2 sin^2(phi))] / (1 - m^2)
+    for (double m_db : {-12.0, -6.0, -3.0, 0.0, 3.0, 6.0, 12.0}) {
+        double m = std::pow(10.0, m_db / 20.0);
+        std::vector<std::pair<double, double>> pts;
+        if (std::fabs(m - 1.0) < 1e-9) {
+            // 0 dB closed-loop: |L| = -1/(2 cos(phi)), cos(phi) < 0.
+            for (int k = -360; k <= 0; ++k) {
+                double phi = k * M_PI / 180.0;
+                double cp = std::cos(phi);
+                if (cp >= -1e-9) continue;
+                double g = -1.0 / (2.0 * cp);
+                pts.push_back({phi, g});
+            }
+        } else {
+            for (int k = -720; k <= 0; ++k) {
+                double phi = k * M_PI / 180.0;
+                double cp = std::cos(phi), sp = std::sin(phi);
+                double disc = 1.0 - m * m * sp * sp;
+                if (disc < 0.0) continue;
+                double root = m * std::sqrt(disc);
+                double g = (m * m * cp + root) / (1.0 - m * m);
+                if (g > 0.0) pts.push_back({phi, g});
+            }
+        }
+        dc.SetPen(chart_pen(m_db == 0.0));
+        draw_contour(pts);
+        // the second branch (for the +3,+6,+12 dB contours)
+        if (m > 1.0) {
+            pts.clear();
+            for (int k = -720; k <= 0; ++k) {
+                double phi = k * M_PI / 180.0;
+                double cp = std::cos(phi), sp = std::sin(phi);
+                double disc = 1.0 - m * m * sp * sp;
+                if (disc < 0.0) continue;
+                double root = m * std::sqrt(disc);
+                double g = (m * m * cp - root) / (1.0 - m * m);
+                if (g > 0.0) pts.push_back({phi, g});
+            }
+            dc.SetPen(chart_pen(false));
+            draw_contour(pts);
+        }
+    }
+    // N contours: constant closed-loop phase alpha (deg).
+    for (double alpha : {-150.0, -120.0, -90.0, -60.0, -30.0, 0.0,
+                         30.0, 60.0, 90.0, 120.0, 150.0}) {
+        double ta = std::tan(alpha * M_PI / 180.0);
+        std::vector<std::pair<double, double>> pts;
+        for (int k = -720; k <= 0; ++k) {
+            double phi = k * M_PI / 180.0;
+            double den = std::sin(phi) - ta * std::cos(phi);
+            if (std::fabs(den) < 1e-9) continue;
+            double g = ta / den;
+            if (g > 0.0) pts.push_back({phi, g});
+        }
+        dc.SetPen(chart_pen(false));
+        draw_contour(pts);
+    }
+
+    // axis tick labels (light Cartesian axis for orientation)
     int ph_step = 45;
-    if (nx_hi - nx_lo > 720) ph_step = 90;
     int deg = int(std::ceil(nx_lo / ph_step)) * ph_step;
     for (; deg <= nx_hi; deg += ph_step) {
         int x = int(X(deg));
-        dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
-                                 : wxColour(240, 240, 244)));
+        dc.SetPen(wxPen(wxColour(232, 232, 238)));
         dc.DrawLine(x, mT, x, mT + H);
         dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%d", deg) + wxString(wxUniChar(0x00B0)),
                     x - 8, mT + H + 4);
     }
-    // constant-magnitude horizontal grid
     int db_step = 20;
     if (ny_hi - ny_lo > 200) db_step = 50;
     else if (ny_hi - ny_lo < 40) db_step = 5;
     int db = int(std::ceil(ny_lo / db_step)) * db_step;
     for (; db <= ny_hi; db += db_step) {
         int y = int(Y(db));
-        dc.SetPen(wxPen(db == 0 ? wxColour(205, 205, 212)
-                                 : wxColour(240, 240, 244)));
+        dc.SetPen(wxPen(wxColour(232, 232, 238)));
         dc.DrawLine(mL, y, mL + W, y);
         dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%+d dB", db), 4, y - 6);
