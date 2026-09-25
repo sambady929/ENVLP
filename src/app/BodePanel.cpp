@@ -417,7 +417,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
         int x = int(x_of(f));
         if (show_major_grid_) {
-            dc.SetPen(wxPen(wxColour(178, 184, 196)));
+            dc.SetPen(wxPen(wxColour(140, 148, 166)));
             dc.DrawLine(x, top, x, top + Hh);
             dc.DrawLine(x, top + Hh + gap, x, top + Hh + gap + Hp);
         }
@@ -425,7 +425,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
         dc.DrawText(lbl, x + 2, top + Hh + gap + Hp + 4);
         if (show_minor_grid_) {
-            dc.SetPen(wxPen(wxColour(232, 234, 240)));
+            dc.SetPen(wxPen(wxColour(205, 210, 220)));
             for (int k = 2; k <= 9; ++k) {
                 double f2 = f * k;
                 if (f2 < f_lo || f2 > f_hi) continue;
@@ -437,7 +437,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     }
 
     // ---- magnitude horizontal grid + frame ----
-    dc.SetPen(wxPen(wxColour(200, 202, 210)));
+    dc.SetPen(wxPen(wxColour(120, 128, 145)));
     dc.DrawRectangle(mL, top, W, Hh);
     double db_step = 20.0;
     if (mag_hi - mag_lo > 200) db_step = 50;
@@ -448,7 +448,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         int y = int(y_mag(db));
         if (y < top || y > top + Hh) continue;
         if (show_major_grid_) {
-            dc.SetPen(wxPen(wxColour(230, 232, 238)));
+            dc.SetPen(wxPen(wxColour(205, 210, 220)));
             dc.DrawLine(mL, y, mL + W, y);
         }
         dc.SetTextForeground(wxColour(110, 110, 118));
@@ -456,7 +456,7 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     }
 
     // ---- phase horizontal grid + frame ----
-    dc.SetPen(wxPen(wxColour(200, 202, 210)));
+    dc.SetPen(wxPen(wxColour(120, 128, 145)));
     dc.DrawRectangle(mL, top + Hh + gap, W, Hp);
     int ph_step = 45;
     if (ph_hi - ph_lo > 720) ph_step = 90;
@@ -467,8 +467,8 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         int y = int(y_ph(deg));
         if (y < top + Hh + gap || y > top + Hh + gap + Hp) continue;
         if (show_major_grid_) {
-            dc.SetPen(wxPen(deg == 0 ? wxColour(196, 198, 208)
-                                     : wxColour(230, 232, 238)));
+            dc.SetPen(wxPen(deg == 0 ? wxColour(150, 156, 172)
+                                     : wxColour(205, 210, 220)));
             dc.DrawLine(mL, y, mL + W, y);
         }
         dc.SetTextForeground(wxColour(110, 110, 118));

@@ -17,7 +17,7 @@ ResultsPanel::ResultsPanel(wxWindow* parent) : wxPanel(parent) {
     auto* sizer = new wxBoxSizer(wxVERTICAL);
 
     text_ = new wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition, wxDefaultSize,
-                           wxTE_MULTILINE | wxTE_READONLY | wxTE_RICH2);
+                           wxTE_MULTILINE | wxTE_READONLY);
     wxFont f(10, wxFONTFAMILY_TELETYPE, wxFONTSTYLE_NORMAL,
              wxFONTWEIGHT_NORMAL);
     text_->SetFont(f);
