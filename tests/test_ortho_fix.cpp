@@ -259,6 +259,36 @@ int main() {
         CHECK(!backtrack);
     }
 
+    // ----- collinear collapse: three collinear vertices collapse to two. -----
+    // ortho_fix can introduce a corner that, combined with neighbouring
+    // segments, makes 3 collinear vertices -- collapse_collinear trims
+    // them back to 2 so the polyline stays minimal.
+    {
+        std::vector<symcirc::Pt> w = {{100,100},{150,100},{200,100},{200,200}};
+        auto collinear = [](symcirc::Pt a, symcirc::Pt b, symcirc::Pt c) {
+            return (std::fabs(a.first - b.first) < 1e-6 &&
+                    std::fabs(b.first - c.first) < 1e-6) ||
+                   (std::fabs(a.second - b.second) < 1e-6 &&
+                    std::fabs(b.second - c.second) < 1e-6);
+        };
+        std::vector<symcirc::Pt> out = {w[0]};
+        for (size_t i = 1; i + 1 < w.size(); ++i) {
+            if (collinear(w[i-1], w[i], w[i+1])) continue;
+            out.push_back(w[i]);
+        }
+        out.push_back(w.back());
+        w = std::move(out);
+        // (100,100), (200,100), (200,200) -- the middle collinear vertex
+        // collapsed away.
+        CHECK(w.size() == 3);
+        CHECK(std::fabs(w[0].first - 100) < 1e-6 &&
+              std::fabs(w[0].second - 100) < 1e-6);
+        CHECK(std::fabs(w[1].first - 200) < 1e-6 &&
+              std::fabs(w[1].second - 100) < 1e-6);
+        CHECK(std::fabs(w[2].first - 200) < 1e-6 &&
+              std::fabs(w[2].second - 200) < 1e-6);
+    }
+
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "ORTHO FAILED" : "ortho ok", g_fail);
     return g_fail == 0 ? 0 : 1;

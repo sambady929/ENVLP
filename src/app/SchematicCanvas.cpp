@@ -274,6 +274,11 @@ Pt SchematicCanvas::to_view(Pt p) const {
     return {(p.first - view_x_) * zoom_, (p.second - view_y_) * zoom_};
 }
 
+wxPoint SchematicCanvas::to_screen(Pt p) const {
+    return wxPoint(int((p.first - view_x_) * zoom_),
+                  int((p.second - view_y_) * zoom_));
+}
+
 Pt SchematicCanvas::snap(Pt p) const {
     return {std::round(p.first / kGrid) * kGrid,
             std::round(p.second / kGrid) * kGrid};
@@ -766,35 +771,47 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         draw_symbol(dc, tmp, pl, false);
     }
 
-    // Net-name tooltip near the cursor (not snapped to the grid; floats with
-    // the cursor as the user moves it across a wire or a pin). Drawn last so
-    // it sits on top of everything else.
-    if (!hover_net_.empty() && has_mouse_) {
-        // Remember the DC font so we can restore it; the canvas's default font
-        // is shared with the components' value/ref labels (the text on each
-        // symbol), so an unrestored font would make them reflow between paints.
-        wxFont old = dc.GetFont();
-        wxFont f(12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL,
-                 wxFONTWEIGHT_BOLD);
-        dc.SetFont(f);
-        wxString txt = wxString::FromUTF8(hover_net_);
-        wxSize ts = dc.GetTextExtent(txt);
-        // Anchor the tooltip up-and-to-the-left of the cursor in *screen*
-        // units, so it stays glued to the cursor regardless of zoom and never
-        // sits under the cursor (where it would obscure the wire).
-        int tx = mouse_.x - ts.x - 12;
-        int ty = mouse_.y - ts.y - 12;
-        // If the tooltip would go off the left/top edge, flip it.
-        if (tx < 0) tx = mouse_.x + 14;
-        if (ty < 0) ty = mouse_.y + 14;
-        dc.SetPen(wxPen(wxColour(80, 80, 90)));
-        dc.SetBrush(wxBrush(wxColour(255, 252, 220)));
-        dc.DrawRectangle(wxRect(tx - 4, ty - 2, ts.x + 8, ts.y + 4));
-        dc.SetTextForeground(wxColour(40, 40, 40));
-        dc.DrawText(txt, wxPoint(tx, ty));
-        dc.SetTextForeground(*wxBLACK);
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
-        dc.SetFont(old);
+    // Net-name tooltip near the cursor. The hover net is the net whose
+    // pin or wire vertex is at the world coordinate under the cursor -- so
+    // during a pan or zoom, the world point under the cursor changes, and
+    // pinning the tooltip to the cursor's screen position leaves a stale
+    // tooltip floating while the canvas scrolls. We pin the tooltip to
+    // the *world* point instead: compute the world coordinate of the
+    // hovered net and place the tooltip there in document space. That way
+    // pan/zoom carries the tooltip along naturally. Also skip it during
+    // panning -- mid-pan the user's intent isn't "hover", it's "pan", so
+    // showing a tooltip during the drag is visual noise.
+    if (!hover_net_.empty() && has_mouse_ && !panning_) {
+        // The hovered net was just resolved -- the caller (on_motion /
+        // set_zoom / clamp_view) passes the matching world point in
+        // hover_world_ so we can anchor the tooltip there.
+        Pt wp = hover_world_;
+        if (std::isfinite(wp.first) && std::isfinite(wp.second)) {
+            wxPoint screen = to_screen(wp);
+            // Remember the DC font so we can restore it; the canvas's
+            // default font is shared with the components' value/ref labels
+            // (the text on each symbol), so an unrestored font would make
+            // them reflow between paints.
+            wxFont old = dc.GetFont();
+            wxFont f(12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL,
+                     wxFONTWEIGHT_BOLD);
+            dc.SetFont(f);
+            wxString txt = wxString::FromUTF8(hover_net_);
+            wxSize ts = dc.GetTextExtent(txt);
+            // Anchor up-and-to-the-left of the wire's hit point.
+            int tx = screen.x - ts.x - 12;
+            int ty = screen.y - ts.y - 12;
+            if (tx < 0) tx = screen.x + 14;
+            if (ty < 0) ty = screen.y + 14;
+            dc.SetPen(wxPen(wxColour(80, 80, 90)));
+            dc.SetBrush(wxBrush(wxColour(255, 252, 220)));
+            dc.DrawRectangle(wxRect(tx - 4, ty - 2, ts.x + 8, ts.y + 4));
+            dc.SetTextForeground(wxColour(40, 40, 40));
+            dc.DrawText(txt, wxPoint(tx, ty));
+            dc.SetTextForeground(*wxBLACK);
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.SetFont(old);
+        }
     }
 }
 
@@ -1282,22 +1299,46 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
     // cursor smoothly and is painted in on_paint, so we need a repaint
     // whenever the hover net changes or the cursor moves while one is shown.
     std::string hn;
+    Pt world_for_tooltip{-1e18, -1e18};
     {
         std::string ref;
         int pin = hit_any_pin(p, ref);
         if (pin >= 0) {
             hn = net_name_pin_cached(ref, pin);
+            if (pin >= 0) {
+                const Component* c = doc_->circuit.find(ref);
+                auto pl = doc_->placements.find(ref);
+                if (c && pl != doc_->placements.end())
+                    world_for_tooltip = pin_world(*c, pl->second, pin);
+            }
         } else {
             int wi = -1;
             if (hit_wire(p, wi)) hn = net_name_wire_cached(wi);
+            if (wi >= 0 && wi < int(doc_->wires.size())) {
+                // Anchor the tooltip on the wire vertex nearest the cursor
+                // so the box stays glued to the conductor across pan/zoom.
+                const auto& w = doc_->wires[wi].pts;
+                double best = 1e300;
+                Pt bestp{-1e18, -1e18};
+                for (const auto& v : w) {
+                    double d = (v.first - p.first) * (v.first - p.first) +
+                               (v.second - p.second) * (v.second - p.second);
+                    if (d < best) { best = d; bestp = v; }
+                }
+                world_for_tooltip = bestp;
+            }
         }
     }
     if (hn != hover_net_) {
         hover_net_ = hn;
+        hover_world_ = world_for_tooltip;
         Refresh(false);
     } else if (!hn.empty()) {
         // tooltip follows the cursor smoothly: repaint every motion while a
-        // net is hovered.
+        // net is hovered. Also refresh the world anchor -- the cursor moved,
+        // so the nearest wire vertex is a different document point and the
+        // tooltip should ride along instead of getting left behind.
+        hover_world_ = world_for_tooltip;
         Refresh(false);
     }
     if (wiring_ || tool_ == Tool::Place || tool_ == Tool::Label ||
@@ -1318,6 +1359,12 @@ void SchematicCanvas::on_right_up(wxMouseEvent&) {
     if (panning_) {
         panning_ = false;
         if (HasCapture()) ReleaseMouse();
+        // Force the hover to re-resolve at the (new) cursor world point so
+        // the tooltip reappears in the right place after a pan rather than
+        // carrying along an anchor that no longer matches the hovered net.
+        hover_net_.clear();
+        hover_world_ = {-1e18, -1e18};
+        Refresh(false);
         // a click without a real drag cancels the current tool / wire
         if (pan_total_ <= 3) {
             if (wiring_ || placing_ || tool_ == Tool::Label) {
@@ -1354,9 +1401,20 @@ void SchematicCanvas::on_mousewheel(wxMouseEvent& e) {
     // steps, which is what made it feel like F was being pressed repeatedly.
     if (factor < 1.0 && nz < kMinZoom) {
         zoom_to_fit();
+        // The cursor is still in the same screen position; force the hover
+        // to re-resolve at the new viewBox so the tooltip snaps to the new
+        // conductor rather than riding out of view with the old one.
+        hover_net_.clear();
+        hover_world_ = {-1e18, -1e18};
         return;
     }
     set_zoom(nz, e.GetPosition());
+    // set_zoom already refreshes; also clear the cached hover so the next
+    // motion event re-resolves the (new) nearest net. Without this the
+    // tooltip stays at the old world coordinate and slides away from the
+    // conductor as the user zooms.
+    hover_net_.clear();
+    hover_world_ = {-1e18, -1e18};
 }
 
 void SchematicCanvas::on_leave(wxMouseEvent&) {
@@ -1364,8 +1422,9 @@ void SchematicCanvas::on_leave(wxMouseEvent&) {
     // is outside the window (#3).
     if (tool_ == Tool::Place || wiring_ || tool_ == Tool::Label) Refresh(false);
     // Hide the hover tooltip when the cursor leaves the canvas.
-    if (!hover_net_.empty()) {
+    if (!hover_net_.empty() || std::isfinite(hover_world_.first)) {
         hover_net_.clear();
+        hover_world_ = {-1e18, -1e18};
         Refresh(false);
     }
 }
@@ -1411,26 +1470,44 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
 
     for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
         auto& w = doc_->wires[wi];
+        // Move ONLY the vertices that coincide with an old pin position --
+        // the others (junctions, label anchors, far-end terminals) must
+        // stay put. The wire then needs to be re-routed from the new pin
+        // positions to those unmoved vertices. Without this, dragging a
+        // component translated the whole wire -- including vertices that
+        // were anchoring it to other nets -- which then disconnected the
+        // moved component from those other nets.
+        //
+        // Example: wire [(440,200),(440,140),(600,140)] anchored to a
+        // component pin at (440,200) and a net label "out" at (600,140).
+        // Moving the pin straight to (612,347) should produce a wire from
+        // (612,347) to the still-anchored vertices at (440,140) and
+        // (600,140), not a translated version of the original.
+        std::vector<bool> vertex_at_pin(w.pts.size(), false);
         bool touched = false;
-        for (auto& v : w.pts) {
+        for (size_t v = 0; v < w.pts.size(); ++v) {
             for (size_t i = 0; i < old_pins.size(); ++i) {
-                if (dist(v, old_pins[i]) <= 1.0) {
-                    v.first += dx;
-                    v.second += dy;
+                if (dist(w.pts[v], old_pins[i]) <= 1.0) {
+                    w.pts[v].first += dx;
+                    w.pts[v].second += dy;
+                    vertex_at_pin[v] = true;
                     touched = true;
                     break;
                 }
             }
         }
-        // Cadence-style: any wire that had a vertex dragged along with the
-        // component is re-routed so the wire stays orthogonal. Without this,
-        // a component moving perpendicular to its attached wire leaves a
-        // diagonal stub between the pin and the first un-touched corner,
-        // which looks broken and breaks the "follow the wire" intuition.
-        // We pass the other wires' segments so the corner can be placed on
-        // the side that doesn't create an unintended T-junction (and a
-        // stray solder dot) on a bystander wire.
-        if (touched) ortho_fix_wire(w.pts, build_other_segs(wi));
+        if (!touched) continue;
+
+        // Re-route the wire so it stays connected to every vertex that
+        // wasn't pinned to the moved component. The classic L-route from
+        // each unmoved vertex to the nearest moved vertex (or between two
+        // moved vertices) is enough: walk the polyline, and at every
+        // junction between a moved and an unmoved vertex, drop a corner on
+        // the axis-aligned L that keeps the rest of the polyline shape.
+        // We do this with a single ortho_fix_wire call, then collapse any
+        // duplicated collinear vertices the new corners introduced.
+        ortho_fix_wire(w.pts, build_other_segs(wi));
+        collapse_collinear(w.pts);
     }
     for (auto& l : doc_->labels) {
         for (size_t i = 0; i < old_pins.size(); ++i)
@@ -1444,6 +1521,34 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
                 break;
             }
     }
+}
+
+// Drop a vertex that lies on the straight line between its neighbours --
+// orthogonalise_wire adds corners at every diagonal segment, but if two
+// adjacent corners happen to be collinear the resulting 3-vertex run
+// describes a single straight line; collapsing it back to 2 vertices keeps
+// the polyline minimal and prevents the "tons of vertices" complaint.
+void SchematicCanvas::collapse_collinear(std::vector<Pt>& pts) {
+    if (pts.size() < 3) return;
+    std::vector<Pt> out;
+    out.push_back(pts[0]);
+    auto collinear = [](Pt a, Pt b, Pt c) {
+        // three points are collinear iff the cross product of (b-a) and (c-b)
+        // is zero. With axis-aligned segments, this is also: same x OR same y.
+        return (std::fabs(a.first - b.first) < 1e-9 &&
+                std::fabs(b.first - c.first) < 1e-9) ||
+               (std::fabs(a.second - b.second) < 1e-9 &&
+                std::fabs(b.second - c.second) < 1e-9);
+    };
+    for (size_t i = 1; i + 1 < pts.size(); ++i) {
+        if (collinear(pts[i - 1], pts[i], pts[i + 1])) {
+            // skip pts[i]
+            continue;
+        }
+        out.push_back(pts[i]);
+    }
+    out.push_back(pts.back());
+    pts = std::move(out);
 }
 
 void SchematicCanvas::notify_doc() {
@@ -1521,9 +1626,13 @@ void SchematicCanvas::rotate_ghost(int delta) {
             new_pins.push_back(pin_world(*c, pl->second, i));
 
         // For each touched wire, snap every old-pin vertex to its new pin
-        // and orthogonalise the result. This is the same logic as
-        // move_component, but per-component so a multi-component selection
-        // re-routes cleanly.
+        // and orthogonalise the result. Only vertices coincident with the
+        // component's pins are moved; vertices anchored to other nets (label
+        // anchors, T-junctions with other wires, the far end of the wire)
+        // must stay put -- otherwise rotating the component would yank the
+        // entire wire along with it and disconnect it from those other
+        // nets. The orthogonaliser then re-routes the wire from the new
+        // pin positions to those unmoved anchors.
         for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
             auto& w = doc_->wires[wi];
             bool touched = false;
@@ -1545,6 +1654,7 @@ void SchematicCanvas::rotate_ghost(int delta) {
                     other_segs.push_back({ow.pts[k - 1], ow.pts[k]});
             }
             ortho_fix_wire(w.pts, other_segs);
+            collapse_collinear(w.pts);
         }
         any = true;
     }

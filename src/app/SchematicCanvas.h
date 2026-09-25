@@ -138,7 +138,12 @@ private:
     bool has_mouse_ = false; // mouse_ has seen at least one event
     std::string hover_;
     std::string hover_net_; // resolved net name at the cursor, "" if none
-    std::string hover_net_pos_; // "wire" or "pin:REF" for tooltip anchor
+    Pt hover_world_{-1e18, -1e18}; // world point of the hovered conductor;
+                                   // used to anchor the tooltip so it tracks
+                                   // the document, not the cursor -- which is
+                                   // what makes pan/zoom carry it naturally
+                                   // instead of leaving a stale box floating
+                                   // in screen space.
 
     // Cached union-find net map, rebuilt lazily and invalidated on edits.
     // The hover tooltip needs the resolved net name on *every* mouse move, and
@@ -159,6 +164,7 @@ private:
     // geometry helpers
     Pt to_doc(const wxPoint& p) const;
     Pt to_view(Pt p) const; // document -> client (for hit testing)
+    wxPoint to_screen(Pt p) const; // document -> integer screen (for labels)
     std::string hit_component(Pt p) const;
     int hit_pin(const std::string& ref, Pt p) const; // -1 if none
     int hit_any_pin(Pt p, std::string& ref) const;
@@ -178,6 +184,7 @@ private:
     // Move `ref` to a new origin, carrying any wire endpoints that were
     // attached to its pins along with it.
     void move_component(const std::string& ref, double nx, double ny);
+    void collapse_collinear(std::vector<Pt>& pts);
 
     void notify_doc();
     void notify_sel();
