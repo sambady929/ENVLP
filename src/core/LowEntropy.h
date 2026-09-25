@@ -61,7 +61,7 @@ struct LowEntropyOptions {
     // parallel combinations are collapsed into || form.
     bool prune = true;
     double f0_hz = 1e3;
-    double threshold_db = 40.0;
+    double threshold_db = 20.0;
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
     bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product

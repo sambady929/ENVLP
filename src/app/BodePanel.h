@@ -72,6 +72,7 @@ private:
     void paint_nyquist(wxDC& dc, const wxSize& sz) const;
     void paint_nichols(wxDC& dc, const wxSize& sz) const;
     void on_paint(wxPaintEvent& e);
+    void on_size(wxSizeEvent& e);
     wxDECLARE_EVENT_TABLE();
 };
 

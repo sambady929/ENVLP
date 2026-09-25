@@ -240,6 +240,12 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"rd", "1k", true, false, "Ohm", "series/ohmic resistance"},
         {"Cd", "10p", true, true, "F", "junction capacitance"},
     };
+    // Op-amps / gain blocks: the DC gain lives in value_text (edited as
+    // "Gain"); GBW is the gain-bandwidth product (Hz) that sets the single
+    // dominant pole at w0 = 2*pi*GBW/gain.
+    static const std::vector<ParamDef> opamp = {
+        {"GBW", "1M", false, true, "Hz", "gain-bandwidth product"},
+    };
 
     switch (k) {
         case Kind::NMOS: return nmos;
@@ -248,6 +254,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         case Kind::PNP: return pnp;
         case Kind::D: return diode;
         case Kind::K: return coupling;
+        case Kind::OPAMP:
+        case Kind::FDOPAMP:
+        case Kind::AMP: return opamp;
         default: return none;
     }
 }

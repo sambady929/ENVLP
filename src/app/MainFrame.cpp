@@ -416,6 +416,16 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
                                                    : syms::Kind::NMOS;
         return place(nxt);
     }
+    case 'Q': case 'q': {
+        // Q selects the NPN BJT first; pressing Q again (while placing)
+        // toggles to the PNP, mirroring the M / NMOS-PMOS behaviour.
+        syms::Kind cur = canvas_->tool() == Tool::Place
+                             ? canvas_->place_kind()
+                             : syms::Kind::PNP; // first press -> NPN
+        syms::Kind nxt = (cur == syms::Kind::NPN) ? syms::Kind::PNP
+                                                   : syms::Kind::NPN;
+        return place(nxt);
+    }
     case 'I':
         show_instance_menu();
         return true;
@@ -454,8 +464,8 @@ void MainFrame::show_instance_menu() {
         {"Diode\tD", syms::Kind::D},
         {"N-MOSFET\tM", syms::Kind::NMOS},
         {"P-MOSFET\tM (again)", syms::Kind::PMOS},
-        {"NPN BJT", syms::Kind::NPN},
-        {"PNP BJT", syms::Kind::PNP},
+        {"NPN BJT\tQ", syms::Kind::NPN},
+        {"PNP BJT\tQ (again)", syms::Kind::PNP},
         {"Transformer\tT", syms::Kind::T},
         {"Inductor coupling\tK", syms::Kind::K},
         {"Op-amp (single out)", syms::Kind::OPAMP},

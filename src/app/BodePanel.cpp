@@ -24,6 +24,7 @@ namespace symcirc {
 
 wxBEGIN_EVENT_TABLE(BodeCanvas, wxPanel)
     EVT_PAINT(BodeCanvas::on_paint)
+    EVT_SIZE(BodeCanvas::on_size)
 wxEND_EVENT_TABLE()
 
 namespace {
@@ -290,6 +291,12 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
     }
 }
 
+void BodeCanvas::on_size(wxSizeEvent& e) {
+    // Re-render at the new client size so the plot scales with the window.
+    Refresh();
+    e.Skip();
+}
+
 namespace {
 // shared: sample magnitude/phase then give the caller the raw re/im too,
 // with phase unwrapped so the curve is continuous across +/-pi boundaries.
@@ -360,12 +367,13 @@ void compute_axes(const syms::AnalysisResult& res, const Curve& c,
 }
 
 void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
-    const int mL = 72, mR = 16, mT = 16, mB = 44;
+    const int mL = 72, mR = 16;
+    const int top = 34;    // y of the magnitude plot's top (title + label above)
+    const int gap = 20;    // gap between the two plots, holds the phase label
+    const int bottom = 44; // bottom margin for the frequency tick labels
     const int W = sz.x - mL - mR;
-    // Magnitude and phase share the available height evenly (minus the gap
-    // between them and the bottom margin for the frequency axis).
-    const int Hh = (sz.y - mT - mB - 14) / 2;
-    const int Hp = (sz.y - mT - mB - 14) / 2;
+    const int Hh = (sz.y - top - gap - bottom) / 2;
+    const int Hp = Hh;
     if (W < 50 || Hh < 30) return;
 
     Curve c;
@@ -376,13 +384,18 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     compute_axes(*res_, c, auto_range_, x_lo_, x_hi_, y_lo_, y_hi_,
                  f_lo, f_hi, mag_lo, mag_hi, ph_lo, ph_hi);
 
+    // Title, then the axis labels above each figure.
     if (!title_.empty()) {
         dc.SetTextForeground(wxColour(40, 40, 45));
         wxFont bold = dc.GetFont(); bold.SetWeight(wxFONTWEIGHT_BOLD);
         dc.SetFont(bold);
-        dc.DrawText(wxString::FromUTF8(title_), mL, mT - 2);
+        dc.DrawText(wxString::FromUTF8(title_), mL, 2);
         dc.SetFont(wxNullFont);
     }
+    dc.SetTextForeground(wxColour(200, 40, 40));
+    dc.DrawText("Magnitude (dB)", mL, top - 16);
+    dc.SetTextForeground(wxColour(40, 90, 200));
+    dc.DrawText("Phase (deg)", mL, top + Hh + gap - 16);
 
     double loglo = std::log10(f_lo), loghi = std::log10(f_hi);
     auto x_of = [&](double f) {
@@ -390,46 +403,42 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         return mL + t * W;
     };
     auto y_mag = [&](double db) {
-        return mT + Hh - (db - mag_lo) / (mag_hi - mag_lo) * Hh;
+        return top + Hh - (db - mag_lo) / (mag_hi - mag_lo) * Hh;
     };
     auto y_ph = [&](double deg) {
-        return mT + Hh + 14 + Hp - (deg - ph_lo) / (ph_hi - ph_lo) * Hp;
+        return top + Hh + gap + Hp - (deg - ph_lo) / (ph_hi - ph_lo) * Hp;
     };
 
-    // major + minor decade vertical grid lines
-    {
-        dc.SetPen(wxPen(wxColour(225, 225, 230)));
-        int e0 = int(std::floor(loglo - 1e-9));
-        int e1 = int(std::ceil(loghi + 1e-9));
-        for (int e = e0; e <= e1; ++e) {
-            double f = std::pow(10.0, e);
-            if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
-            int x = int(x_of(f));
-            if (show_major_grid_) {
-                dc.SetPen(wxPen(wxColour(188, 192, 202)));
-                dc.DrawLine(x, mT, x, mT + Hh);
-                dc.DrawLine(x, mT + Hh + 14, x, mT + Hh + 14 + Hp);
-            }
-            dc.SetTextForeground(wxColour(110, 110, 118));
-            wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
-            dc.DrawText(lbl, x + 2, mT + Hh + 14 + Hp + 4);
-            // minor at 2..9 in this decade
-            if (show_minor_grid_) {
-                dc.SetPen(wxPen(wxColour(240, 240, 244)));
-                for (int k = 2; k <= 9; ++k) {
-                    double f2 = f * k;
-                    if (f2 < f_lo || f2 > f_hi) continue;
-                    int x2 = int(x_of(f2));
-                    dc.DrawLine(x2, mT, x2, mT + Hh);
-                    dc.DrawLine(x2, mT + Hh + 14, x2, mT + Hh + 14 + Hp);
-                }
+    // ---- vertical grid lines (major decades + minor 2..9 within each) ----
+    int e0 = int(std::floor(loglo - 1e-9));
+    int e1 = int(std::ceil(loghi + 1e-9));
+    for (int e = e0; e <= e1; ++e) {
+        double f = std::pow(10.0, e);
+        if (f < f_lo * 0.999 || f > f_hi * 1.001) continue;
+        int x = int(x_of(f));
+        if (show_major_grid_) {
+            dc.SetPen(wxPen(wxColour(178, 184, 196)));
+            dc.DrawLine(x, top, x, top + Hh);
+            dc.DrawLine(x, top + Hh + gap, x, top + Hh + gap + Hp);
+        }
+        dc.SetTextForeground(wxColour(110, 110, 118));
+        wxString lbl = wxString::FromUTF8(syms::eng::format_eng(f, 1));
+        dc.DrawText(lbl, x + 2, top + Hh + gap + Hp + 4);
+        if (show_minor_grid_) {
+            dc.SetPen(wxPen(wxColour(232, 234, 240)));
+            for (int k = 2; k <= 9; ++k) {
+                double f2 = f * k;
+                if (f2 < f_lo || f2 > f_hi) continue;
+                int x2 = int(x_of(f2));
+                dc.DrawLine(x2, top, x2, top + Hh);
+                dc.DrawLine(x2, top + Hh + gap, x2, top + Hh + gap + Hp);
             }
         }
     }
 
-    // magnitude horizontal grid
-    dc.SetPen(wxPen(wxColour(225, 225, 230)));
-    dc.DrawRectangle(mL, mT, W, Hh);
+    // ---- magnitude horizontal grid + frame ----
+    dc.SetPen(wxPen(wxColour(200, 202, 210)));
+    dc.DrawRectangle(mL, top, W, Hh);
     double db_step = 20.0;
     if (mag_hi - mag_lo > 200) db_step = 50;
     else if (mag_hi - mag_lo > 80) db_step = 20;
@@ -437,18 +446,18 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     int db = int(std::floor(mag_lo / db_step) * int(db_step));
     for (; db <= mag_hi; db += int(db_step)) {
         int y = int(y_mag(db));
-        if (y < mT || y > mT + Hh) continue;
+        if (y < top || y > top + Hh) continue;
         if (show_major_grid_) {
-            dc.SetPen(wxPen(wxColour(240, 240, 244)));
+            dc.SetPen(wxPen(wxColour(230, 232, 238)));
             dc.DrawLine(mL, y, mL + W, y);
         }
         dc.SetTextForeground(wxColour(110, 110, 118));
         dc.DrawText(wxString::Format("%+d dB", db), 4, y - 6);
     }
 
-    // phase horizontal grid
-    dc.SetPen(wxPen(wxColour(225, 225, 230)));
-    dc.DrawRectangle(mL, mT + Hh + 14, W, Hp);
+    // ---- phase horizontal grid + frame ----
+    dc.SetPen(wxPen(wxColour(200, 202, 210)));
+    dc.DrawRectangle(mL, top + Hh + gap, W, Hp);
     int ph_step = 45;
     if (ph_hi - ph_lo > 720) ph_step = 90;
     else if (ph_hi - ph_lo > 240) ph_step = 60;
@@ -456,10 +465,10 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     int deg = int(std::ceil(ph_lo / ph_step)) * ph_step;
     for (; deg <= ph_hi; deg += ph_step) {
         int y = int(y_ph(deg));
-        if (y < mT + Hh + 14 || y > mT + Hh + 14 + Hp) continue;
+        if (y < top + Hh + gap || y > top + Hh + gap + Hp) continue;
         if (show_major_grid_) {
-            dc.SetPen(wxPen(deg == 0 ? wxColour(205, 205, 212)
-                                     : wxColour(240, 240, 244)));
+            dc.SetPen(wxPen(deg == 0 ? wxColour(196, 198, 208)
+                                     : wxColour(230, 232, 238)));
             dc.DrawLine(mL, y, mL + W, y);
         }
         dc.SetTextForeground(wxColour(110, 110, 118));
@@ -494,18 +503,11 @@ void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
         }
     }
 
-    // Axis titles. "Magnitude (dB)" and "Phase (deg)" are drawn rotated
-    // (vertical) in the left margin, so the graph never runs through them;
-    // "Frequency (Hz)" sits centred below the phase plot's tick labels.
-    dc.SetTextForeground(wxColour(200, 40, 40));
-    dc.DrawRotatedText("Magnitude (dB)", wxPoint(26, mT + Hh / 2), 90.0);
-    dc.SetTextForeground(wxColour(40, 90, 200));
-    dc.DrawRotatedText("Phase (deg)", wxPoint(26, mT + Hh + 14 + Hp / 2), 90.0);
     dc.SetTextForeground(wxColour(90, 90, 98));
     {
         wxString fl = "Frequency (Hz)";
         wxSize fs = dc.GetTextExtent(fl);
-        dc.DrawText(fl, mL + (W - fs.x) / 2, mT + Hh + 14 + Hp + 22);
+        dc.DrawText(fl, mL + (W - fs.x) / 2, top + Hh + gap + Hp + 22);
     }
 }
 
@@ -628,8 +630,8 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     // constant closed-loop phase (N) contours, not a plain Cartesian grid.
     // The chart lines are drawn faint; the data curve is drawn on top.
     auto chart_pen = [&](bool emphasized) {
-        return wxPen(emphasized ? wxColour(200, 205, 216)
-                                : wxColour(238, 238, 244));
+        return wxPen(emphasized ? wxColour(160, 168, 188)
+                                : wxColour(210, 214, 226));
     };
     auto draw_contour = [&](std::vector<std::pair<double, double>>& pts) {
         bool started = false;

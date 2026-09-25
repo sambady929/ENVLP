@@ -6,21 +6,22 @@ param "M1" "Cgd" 0 "330f" 0
 param "M1" "Cgs" 1 "" 0
 comp "V1" "V" 190 320 0 0 0 0 ""
 comp "GND1" "GND" 190 360 0 0 0 0 ""
-comp "R1" "R" 360 150 90 0 0 0 "1M"
+comp "R1" "R" 360 150 90 0 0 0 "1k"
 comp "VDD" "VDD" 360 110 0 0 0 0 ""
 comp "GND2" "GND" 360 330 0 0 0 0 ""
 comp "C1" "C" 440 270 90 0 0 0 "100f"
 comp "GND3" "GND" 440 300 0 0 0 0 ""
-comp "R2" "R" 230 270 180 0 0 0 "10k"
+comp "R2" "R" 240 270 180 0 0 0 "10k"
 wire 360,230 360,180 pin:M1:0 pin:R1:0
 wire 360,110 360,120 pin:VDD:0 pin:R1:1
 wire 360,330 360,310 pin:GND2:0 pin:M1:2
 wire 440,240 440,230 360,230 pin:C1:1 pin:M1:0
 wire 190,360 190,350 pin:GND1:0 pin:V1:1
-wire 260,270 320,270 pin:R2:0 pin:M1:1
-wire 190,290 190,270 200,270 pin:V1:0 pin:R2:1
-netlabel 360,209.7 372.37,209.7 "out" 9
+wire 270,270 310,270 320,270 pin:R2:0 pin:M1:1
+wire 190,290 190,270 210,270 pin:V1:0 pin:R2:1
+netlabel 360,209.7 380,200 "out" 9
 netlabel 190,275.266 199.58,264.516 "in" 9
 netlabel 302.671,270 302.671,259.25 "vg" 9
 card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Output impedance" 0
 card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Transfer function (H(s))" 1
+card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Short-circuit current" 1

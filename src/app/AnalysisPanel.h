@@ -25,7 +25,7 @@ struct AnalysisCard {
     // "Ignore negligible terms": when off the exact (unpruned) form is shown.
     bool prune = true;
     // dB below the dominant term at which a term is considered negligible.
-    double threshold_db = 40.0;
+    double threshold_db = 20.0;
     bool global_ref = false;
     bool use_parallel = true;
     bool gm_ro = true;

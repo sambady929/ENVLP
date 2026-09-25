@@ -54,7 +54,7 @@ struct Pruned {
 
 struct PruneOptions {
     double f0_hz = 1e3;
-    double threshold_db = 40.0;
+    double threshold_db = 20.0;
     bool global_ref = false; // true => rank against the whole polynomial at f0
     bool prune = true;       // false => keep every symbolic term (exact)
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2

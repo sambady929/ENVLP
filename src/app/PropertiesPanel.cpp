@@ -281,7 +281,14 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     int exp = 0;
     decompose(v, mant, exp);
 
-    sizer->Add(new wxStaticText(this, wxID_ANY, "Value"), 0,
+    // Op-amps / gain blocks: their "value" is the DC gain, so label it
+    // "Gain" (GBW is a separate parameter shown below).
+    const char* label = (comp->kind == syms::Kind::OPAMP ||
+                         comp->kind == syms::Kind::FDOPAMP ||
+                         comp->kind == syms::Kind::AMP)
+                            ? "Gain"
+                            : "Value";
+    sizer->Add(new wxStaticText(this, wxID_ANY, label), 0,
                wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
     auto* man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
