@@ -20,6 +20,7 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     PruneOptions o;
     o.f0_hz = s.f0_hz;
     o.threshold_db = s.threshold_db;
+    o.pole_zero_threshold_db = s.pole_zero_threshold_db;
     o.global_ref = s.global_ref;
     o.prune = s.prune;
     // Parallelizing terms (R1||R2) is hardcoded on for now (#6).
@@ -45,6 +46,7 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     r.output = out;
     r.f0_hz = s.f0_hz;
     r.threshold_db = s.threshold_db;
+    r.pole_zero_threshold_db = s.pole_zero_threshold_db;
     r.global_ref = s.global_ref;
     r.prune = s.prune;
     r.use_parallel = s.use_parallel;

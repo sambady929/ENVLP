@@ -15,6 +15,7 @@ Pruned prune_low_entropy(const ex& num, const ex& den, ParamTable& params,
     lo.prune = opts.prune;
     lo.f0_hz = opts.f0_hz;
     lo.threshold_db = opts.threshold_db;
+    lo.pole_zero_threshold_db = opts.pole_zero_threshold_db;
     lo.global_ref = opts.global_ref;
     lo.use_parallel = opts.use_parallel;
     lo.gm_ro_assume = opts.gm_ro_assume;

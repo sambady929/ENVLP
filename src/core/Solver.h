@@ -29,7 +29,8 @@ struct AnalysisRequest {
     std::string input_ref;  // which ideal source drives the circuit
     std::string output;     // "V(node)" or "I(ref)"
     double f0_hz = 1000.0;  // frequency the low-entropy form is tuned to
-    double threshold_db = 20.0; // drop terms more than this far below dominant
+    double threshold_db = 20.0; // series/parallel component reduction (dB)
+    double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
     bool global_ref = false; // false => rank within each s-coefficient
                              // true => rank against whole polynomial
     bool prune = true;       // false => keep every symbolic term (exact)

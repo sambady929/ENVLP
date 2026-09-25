@@ -318,7 +318,10 @@ static void test_cs_amp_parasitics() {
 
 // ---------------------------------------------------------------------------
 static void test_prune_series_r() {
-    // V -> R1(10k) -> R2(10) -> C(1n) -> gnd.  C*R2 is60 dB below C*R1.
+    // V -> R1(10k) -> R2(10) -> C(1n) -> gnd.  C*R2 is 60 dB below C*R1.
+    // The series resistor R2 is collapsed at the 20 dB structural threshold,
+    // so the denominator reads 1 + s*R1*C1 (series reduction is a silent
+    // structural simplification, not a reported "neglected term").
     Circuit c;
     c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
     c.comps.push_back(comp(Kind::R, "R1", {"in", "a"}, "10k"));
@@ -330,12 +333,6 @@ static void test_prune_series_r() {
     req.input_ref = "V1";
     req.output = "V(out)";
     AnalysisResult r = analyze(c, req);
-
-    CHECK(!r.pruned.dropped.empty());
-    bool dropped_r2 = false;
-    for (const auto& d : r.pruned.dropped)
-        if (d.term.find("R2") != std::string::npos) dropped_r2 = true;
-    CHECK(dropped_r2);
 
     ex s = S(r, "s");
     ex den_expect = ex(1) + s * S(r, "R1") * S(r, "C1");
@@ -871,6 +868,88 @@ static void test_psrr_vdd() {
 }
 
 // ---------------------------------------------------------------------------
+// Low-entropy correctness: structural pole attribution and the two thresholds.
+// ---------------------------------------------------------------------------
+
+// The lower (input) pole of a common-source stage driven through a source
+// resistor R2 is Cgs*R2, not C1*R2. Cgs and C1 share the same numeric value
+// (100 f) but different resistors, so the attribution must be structural --
+// the engine must not let the reduction collapse Cgs into C1.
+static void test_cs_input_pole_is_cgs_not_c1() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "vg", "0"}, "");
+    m.param_on["Cgs"] = true;   m.param_text["Cgs"] = "100f";
+    m.param_on["Cgd"] = false;
+    m.param_on["Cds"] = false;
+    m.param_on["ro"] = true;    m.param_text["ro"] = "100k";
+    m.param_text["gm"] = "1m";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "R1", {"out", "VDD"}, "1k"));
+    c.comps.push_back(comp(Kind::VDD, "VDD1", {"VDD"}));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "100f"));
+    c.comps.push_back(comp(Kind::R, "R2", {"vg", "in"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    sp.f0_hz = 1.0;
+    sp.sweep.f_start_hz = 1.0;
+    sp.sweep.f_stop_hz = 1e9;
+
+    CardResult cr = run_analysis(c, sp);
+    const auto& r = cr.transfer;
+
+    CHECK(r.pruned.poles.size() == 2);
+    if (r.pruned.poles.size() == 2) {
+        // poles are sorted ascending omega; the lower is the input pole.
+        CHECK(r.pruned.poles[0].label.find("Cgs") != std::string::npos);
+        CHECK(r.pruned.poles[0].label.find("R2") != std::string::npos);
+        CHECK(r.pruned.poles[0].label.find("C1") == std::string::npos);
+        CHECK(r.pruned.poles[1].label.find("C1") != std::string::npos);
+    }
+}
+
+// Pole/zero reduction is 60 dB along the frequency axis: a pole 1000x (60 dB)
+// away is dropped, a pole 100x (40 dB) away is kept.
+static void test_pole_zero_60db_threshold() {
+    auto poles_at = [](double tau2) {
+        ParamTable pt;
+        ex s = pt.get("s");
+        ex R1 = pt.get("R1"), C1 = pt.get("C1"), R2 = pt.get("R2"), C2 = pt.get("C2");
+        pt.set("R1", 1e3, UnitClass::Ohm);
+        pt.set("C1", 1e-9, UnitClass::Farad); // tau1 = 1 us
+        pt.set("R2", 1e3, UnitClass::Ohm);
+        pt.set("C2", tau2 / 1e3, UnitClass::Farad);
+        ex den = (1 + s * R1 * C1) * (1 + s * R2 * C2);
+        LowEntropyOptions o; o.prune = true; o.f0_hz = 1e3;
+        return low_entropy(ex(1), den, pt, o).poles.size();
+    };
+    CHECK(poles_at(1e-8) == 2);  // 40 dB apart -> both kept
+    CHECK(poles_at(1e-9) == 1);  // 60 dB apart -> far pole dropped
+    CHECK(poles_at(1e-10) == 1); // 80 dB apart -> far pole dropped
+}
+
+// Series resistors collapse at 20 dB (10 + 1 -> 10), so a resistor 40 dB
+// below its series partner is dropped -- unlike a pole 40 dB away, which the
+// 60 dB pole/zero rule keeps.
+static void test_series_reduction_20db() {
+    ParamTable pt;
+    ex s = pt.get("s");
+    ex R1 = pt.get("R1"), R2 = pt.get("R2"), C1 = pt.get("C1");
+    pt.set("R1", 1e4, UnitClass::Ohm);
+    pt.set("R2", 100.0, UnitClass::Ohm); // 40 dB below R1
+    pt.set("C1", 1e-9, UnitClass::Farad);
+    ex den = 1 + s * (R1 + R2) * C1;
+    LowEntropyOptions o; o.prune = true; o.f0_hz = 1e3;
+    LowEntropy le = low_entropy(ex(1), den, pt, o);
+    CHECK(le.text.find("R2") == std::string::npos);
+    CHECK(le.text.find("R1") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
     std::vector<Test> tests = {
@@ -903,6 +982,9 @@ int main(int argc, char** argv) {
         {"noise_input_referred", test_noise_analysis_input_referred},
         {"loop_gain_opamp", test_loop_gain_opamp},
         {"psrr_vdd", test_psrr_vdd},
+        {"cs_input_pole_cgs", test_cs_input_pole_is_cgs_not_c1},
+        {"pole_zero_60db", test_pole_zero_60db_threshold},
+        {"series_20db", test_series_reduction_20db},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";

@@ -61,7 +61,18 @@ struct LowEntropyOptions {
     // parallel combinations are collapsed into || form.
     bool prune = true;
     double f0_hz = 1e3;
+    // Series/parallel component reduction threshold: collapse R1||R2 and
+    // R1+R2 when one argument is more than this far (dB) below the other in
+    // magnitude. This is a *structural* rule that only ever fires on genuine
+    // parallel/series resistor pairs, so a small (20 dB) margin is right.
     double threshold_db = 20.0;
+    // Pole/zero reduction threshold: a pole (or zero) is dropped only when it
+    // lies more than this far (dB) along the frequency axis from the dominant
+    // one. 60 dB == a 1000x frequency ratio, so a 100 kHz pole dominates a
+    // 100 MHz pole, but a 10 MHz pole (100x, 40 dB) is still kept. This is
+    // the threshold used by magnitude pruning of the s-polynomial terms that
+    // determine the poles/zeros.
+    double pole_zero_threshold_db = 60.0;
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
     bool gm_ro_assume = true; // idealize "+1" beside a gm*ro product

@@ -34,7 +34,8 @@ struct AnalysisSpec {
     std::string output;      // "V(node)" or "I(ref)"
     std::string probe_ref;   // reference element for loop gain
     double f0_hz = 1e3;      // legacy tuning frequency (kept for compatibility)
-    double threshold_db = 20.0;
+    double threshold_db = 20.0; // series/parallel component reduction (dB)
+    double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
     bool global_ref = false;
     bool prune = true;
     bool use_parallel = true;

@@ -54,7 +54,8 @@ struct Pruned {
 
 struct PruneOptions {
     double f0_hz = 1e3;
-    double threshold_db = 20.0;
+    double threshold_db = 20.0; // series/parallel component reduction (dB)
+    double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
     bool global_ref = false; // true => rank against the whole polynomial at f0
     bool prune = true;       // false => keep every symbolic term (exact)
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2

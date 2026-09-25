@@ -222,12 +222,17 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
 
     std::vector<char> keep(entries.size(), 1);
     std::vector<double> refs(entries.size(), 0.0);
+    // "At or beyond the threshold" (a 1000x frequency ratio == 60 dB) is
+    // dropped, so a pole at 100 MHz is ignored against a 100 kHz pole while a
+    // 10 MHz pole (100x, 40 dB) is kept. The +1e-9 tolerates the floating-point
+    // error at an exact power-of-ten boundary.
+    const double eps = 1e-9;
     if (o.global_ref) {
         double ref = finite_max(entries);
         for (size_t i = 0; i < entries.size(); ++i) {
             refs[i] = ref;
             if (std::isnan(entries[i].db)) continue;
-            if (entries[i].db < ref - o.threshold_db) keep[i] = 0;
+            if (entries[i].db <= ref - o.pole_zero_threshold_db + eps) keep[i] = 0;
         }
     } else {
         for (size_t i = 0; i < entries.size(); ++i) {
@@ -237,7 +242,7 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
             double ref = finite_max(group);
             refs[i] = ref;
             if (std::isnan(entries[i].db)) continue;
-            if (entries[i].db < ref - o.threshold_db) keep[i] = 0;
+            if (entries[i].db <= ref - o.pole_zero_threshold_db + eps) keep[i] = 0;
         }
     }
     bool any = false;
@@ -595,6 +600,55 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
     }
 }
 
+// Drop poles/zeros that lie more than threshold_db (60 dB) along the frequency
+// axis from the dominant (lowest-frequency) one. A 100 kHz pole dominates a
+// 100 MHz pole (1000x, 60 dB) so the latter is dropped; a 10 MHz pole (100x,
+// 40 dB) is kept. Operates on the already-factored (1 + s*tau) factors, so the
+// reduction is done per time constant -- never by chopping terms out of the
+// expanded polynomial (which would leave an inconsistent, mis-factored form).
+void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
+                      const ex& s, double threshold_db, const std::string& where,
+                      std::vector<Dropped>& dropped) {
+    if (factors.size() <= 1) return;
+    std::vector<double> tau(factors.size(), 0.0);
+    double max_tau = 0.0;
+    for (size_t i = 0; i < factors.size(); ++i) {
+        if (factors[i].origin) continue;
+        int deg = 0;
+        try { deg = factors[i].expr.degree(s); } catch (...) { continue; }
+        if (deg != 1) continue;
+        ex c1 = factors[i].expr.coeff(s, 1);
+        ex c0 = factors[i].expr.coeff(s, 0);
+        if (c0.is_zero()) continue;
+        ex te = (c1 / c0).normal();
+        ex tv = pt.eval_real(te);
+        if (is_a<numeric>(tv)) {
+            double v = GiNaC::ex_to<numeric>(tv).to_double();
+            if (v > 0.0 && std::isfinite(v)) {
+                tau[i] = v;
+                max_tau = std::max(max_tau, v);
+            }
+        }
+    }
+    if (max_tau <= 0.0) return;
+    double lim = std::pow(10.0, threshold_db / 20.0);
+    std::vector<Factor> kept;
+    for (size_t i = 0; i < factors.size(); ++i) {
+        // "At or beyond" the threshold is dropped (60 dB == 1000x), so a
+        // 100 MHz pole is ignored against a 100 kHz pole, while a 10 MHz pole
+        // (100x, 40 dB) is kept. The *1.000001 tolerates floating-point error
+        // at an exact power-of-ten ratio.
+        bool far = tau[i] > 0.0 && tau[i] <= max_tau / lim * 1.000001;
+        if (far) {
+            dropped.push_back({where + ", factor", factors[i].text,
+                               20.0 * std::log10(tau[i] / max_tau)});
+        } else {
+            kept.push_back(factors[i]);
+        }
+    }
+    factors = kept;
+}
+
 // gm*ro >> 1 idealization pass: inside a sum, if exactly one term is a
 // gm*ro product (or a multiple of one) and it dominates, drop the rest.
 // This is deliberately conservative -- it only fires on sums that contain an
@@ -777,6 +831,100 @@ ex prune_parallel(const ex& e, const ParamTable& pt, double threshold_db) {
     if (is_a<GiNaC::power>(e)) {
         return GiNaC::pow(prune_parallel(e.op(0), pt, threshold_db), e.op(1));
     }
+    return e;
+}
+
+// Does an expression contain a negative (inverse) power, e.g. R1^(-1) or
+// (R1+ro)^(-1)? An inverse of an Ohm expression is a *conductance*, not a
+// resistance, so it must never be mistaken for a series resistor.
+static bool has_negative_power(const ex& e) {
+    if (is_a<GiNaC::power>(e)) {
+        if (is_a<numeric>(e.op(1)) && GiNaC::ex_to<numeric>(e.op(1)).is_negative())
+            return true;
+        return has_negative_power(e.op(0));
+    }
+    if (is_a<GiNaC::add>(e) || is_a<GiNaC::mul>(e)) {
+        for (size_t i = 0; i < e.nops(); ++i)
+            if (has_negative_power(e.op(i))) return true;
+    }
+    return false;
+}
+
+// A sum whose every term is purely resistive (no Farad/Siemens symbol, and no
+// inverse power)? This is the structural signature of a series resistance:
+// R1 + R2. Capacitors add in parallel (C1 + C2 is *not* resistive) and a
+// conductance 1/R is not a resistance, so both are excluded.
+static bool is_resistor_sum(const ex& e, const ParamTable& pt) {
+    if (!is_a<GiNaC::add>(e)) return false;
+    for (size_t i = 0; i < e.nops(); ++i) {
+        const ex& t = e.op(i);
+        if (has_negative_power(t)) return false;
+        for (const auto& kv : pt.cls) {
+            if (kv.second == UnitClass::Ohm) continue;
+            auto sit = pt.syms.find(kv.first);
+            if (sit == pt.syms.end()) continue;
+            if (t.has(sit->second)) return false; // a non-resistor symbol
+        }
+    }
+    return true;
+}
+
+// Keep only the dominant resistor(s) of a resistive sum (drop those more than
+// threshold_db below the largest). 10 + 1 -> 10, R1 + R2 -> R1 (R2 << R1).
+static ex drop_small_resistors(const ex& sum, const ParamTable& pt,
+                               double threshold_db) {
+    double lim = std::pow(10.0, threshold_db / 20.0);
+    double best = -1e300;
+    for (size_t i = 0; i < sum.nops(); ++i)
+        best = std::max(best, num_mag(sum.op(i), pt));
+    ex acc = 0;
+    for (size_t i = 0; i < sum.nops(); ++i)
+        if (num_mag(sum.op(i), pt) >= best / lim) acc += sum.op(i);
+    return acc.is_zero() ? sum : acc;
+}
+
+// Collapse a series combination of resistors to the dominant one (20 dB):
+// R1 + R2 -> R1 when R2 << R1, and R1*C + R2*C -> R1*C. This is the series
+// dual of prune_parallel, and it runs at the same (20 dB) structural threshold
+// -- distinct from the 60 dB pole/zero reduction applied after factoring.
+ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
+    if (is_a<GiNaC::add>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(prune_series(e.op(i), pt, threshold_db));
+        ex sum = GiNaC::add(ops);
+        if (!is_a<GiNaC::add>(sum)) return sum;
+        if (is_resistor_sum(sum, pt))
+            return drop_small_resistors(sum, pt, threshold_db);
+        // R1*C + R2*C factors to C*(R1 + R2) (or (R1+R2)*C -- GiNaC's operand
+        // order depends on symbol serial numbers, so scan for the residual add
+        // rather than assuming it is the last factor). Reduce the residual sum.
+        ex fc = factor_common_impl(sum);
+        if (is_a<GiNaC::mul>(fc) && fc.nops() >= 2) {
+            ex inner = 0, common = 1;
+            for (size_t i = 0; i < fc.nops(); ++i) {
+                if (is_a<GiNaC::add>(fc.op(i))) inner = fc.op(i);
+                else common = common * fc.op(i);
+            }
+            if (!inner.is_zero() && is_resistor_sum(inner, pt)) {
+                ex reduced = drop_small_resistors(inner, pt, threshold_db);
+                if (!reduced.is_equal(inner))
+                    return common * reduced;
+            }
+        }
+        return sum;
+    }
+    if (is_a<GiNaC::mul>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(prune_series(e.op(i), pt, threshold_db));
+        return ex(GiNaC::mul(ops));
+    }
+    // NOTE: do NOT recurse into power(). A negative power like (R1+ro)^(-1) is
+    // the denominator of a *parallel* combination R1||ro = R1*ro/(R1+ro); the
+    // sum R1+ro there must stay intact (collapsing it to ro would corrupt the
+    // parallel resistance). Only genuine series sums -- R1 + R2 at the top of a
+    // coefficient, or R1*C + R2*C -- are series-reduced.
     return e;
 }
 
@@ -1036,10 +1184,30 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         if (opts.prune) {
             n = prune_parallel(n, params, opts.threshold_db);
             d = prune_parallel(d, params, opts.threshold_db);
+            // series reduction is per s-coefficient: the DC "1" term otherwise
+            // blocks factoring the common C out of R1*C + R2*C.
+            auto poly_series = [&](const ex& poly) -> ex {
+                int deg = 0;
+                try { deg = poly.has(s) ? poly.degree(s) : 0; } catch (...) { return poly; }
+                if (deg < 0 || deg > 64) return poly;
+                ex acc = 0;
+                for (int k = 0; k <= deg; ++k) {
+                    ex c = poly.coeff(s, k);
+                    if (c.is_zero()) continue;
+                    c = prune_series(c, params, opts.threshold_db);
+                    acc += c * GiNaC::pow(s, k);
+                }
+                return acc;
+            };
+            n = poly_series(n);
+            d = poly_series(d);
         }
     }
 
-    // 4. magnitude pruning (optional)
+    // 4. higher-order term pruning (band ranking). Terms whose magnitude is
+    //    far below the dominant one across the sweep are dropped here, but the
+    //    pole/zero reduction itself happens later on the factored time
+    //    constants (drop_far_factors), so a genuine pole 40 dB away survives.
     if (opts.prune) {
         ex np = n, dp = d;
         prune_poly(np, s, params, opts, "numerator", R.dropped);
@@ -1129,6 +1297,28 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     peel_factors(nn, cands, params, s, R.num_factors, opts.approx_factor,
                  any_numeric);
     R.numeric_factors = any_numeric;
+
+    // 8b. drop poles/zeros that are more than 60 dB away in frequency. This is
+    //     the pole/zero reduction, done on the time constants (factors) -- not
+    //     by chopping terms out of the expanded polynomial, which would leave
+    //     an inconsistent polynomial whose numeric re-factoring mis-attributes
+    //     the surviving pole (Cgs*R2 -> C1*R2).
+    if (opts.prune) {
+        drop_far_factors(R.den_factors, params, s, opts.pole_zero_threshold_db,
+                         "denominator", R.dropped);
+        drop_far_factors(R.num_factors, params, s, opts.pole_zero_threshold_db,
+                         "numerator", R.dropped);
+        // Rebuild the pruned polynomials from the kept factors so text_poly
+        // stays consistent with the dropped (factored) text.
+        ex den_poly = ex(1);
+        for (const auto& f : R.den_factors)
+            if (!f.origin) den_poly = den_poly * f.expr;
+        R.den_poly = den_poly.expand();
+        ex num_poly = R.gain;
+        for (const auto& f : R.num_factors)
+            if (!f.origin) num_poly = num_poly * f.expr;
+        R.num_poly = num_poly.expand();
+    }
 
     // 9. root tables
     roots_from_factors(R.den_factors, params, s, R.poles);

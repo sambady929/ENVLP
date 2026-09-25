@@ -21,6 +21,7 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.params = std::move(sv.params);
     r.opts.f0_hz = req.f0_hz;
     r.opts.threshold_db = req.threshold_db;
+    r.opts.pole_zero_threshold_db = req.pole_zero_threshold_db;
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
     r.opts.use_parallel = true; // hardcoded on (#6)
