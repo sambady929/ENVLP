@@ -14,7 +14,6 @@
 #include <wx/filedlg.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
-#include <wx/spinctrl.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -361,8 +360,12 @@ void compute_axes(const syms::AnalysisResult& res, const Curve& c,
 void BodeCanvas::paint_bode(wxDC& dc, const wxSize& sz) const {
     const int mL = 56, mR = 12, mT = 12, mB = 42;
     const int W = sz.x - mL - mR;
+    // Magnitude and phase share the available height evenly (minus the gap
+    // between them and the bottom margin for the frequency axis). Previously
+    // Hp was the *full* remaining height, which pushed the phase plot and the
+    // x-axis labels below the bottom of the canvas.
     const int Hh = (sz.y - mT - mB - 14) / 2;
-    const int Hp = sz.y - mT - mB - 14;
+    const int Hp = (sz.y - mT - mB - 14) / 2;
     if (W < 50 || Hh < 30) return;
 
     Curve c;
@@ -651,18 +654,13 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* csv = new wxButton(this, wxID_ANY, "Save CSV...");
     auto_box_ = new wxCheckBox(this, wxID_ANY, "Auto scale");
     auto_box_->SetValue(true);
-    xmin_ = new wxSpinCtrl(this, wxID_ANY, "1",
-                           wxDefaultPosition, wxSize(70, -1),
-                           wxSP_ARROW_KEYS, 1, 1e12, 1);
-    xmax_ = new wxSpinCtrl(this, wxID_ANY, "100000000",
-                           wxDefaultPosition, wxSize(80, -1),
-                           wxSP_ARROW_KEYS, 1, 1e15, 100000000);
-    ymin_ = new wxSpinCtrl(this, wxID_ANY, "-40",
-                           wxDefaultPosition, wxSize(60, -1),
-                           wxSP_ARROW_KEYS, -1000, 1000, -40);
-    ymax_ = new wxSpinCtrl(this, wxID_ANY, "40",
-                           wxDefaultPosition, wxSize(60, -1),
-                           wxSP_ARROW_KEYS, -1000, 1000, 40);
+    // Frequency / magnitude range fields. Text controls (not spin controls)
+    // so the user can type arbitrary values like "1e6" or "-40"; the spin
+    // controls' integer-only range made entering a frequency impossible.
+    xmin_ = new wxTextCtrl(this, wxID_ANY, "1", wxDefaultPosition, wxSize(70, -1));
+    xmax_ = new wxTextCtrl(this, wxID_ANY, "1e8", wxDefaultPosition, wxSize(80, -1));
+    ymin_ = new wxTextCtrl(this, wxID_ANY, "-40", wxDefaultPosition, wxSize(60, -1));
+    ymax_ = new wxTextCtrl(this, wxID_ANY, "40", wxDefaultPosition, wxSize(60, -1));
 
     bar->Add(new wxStaticText(this, wxID_ANY, "Plot:"), 0,
              wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
@@ -698,22 +696,21 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
         }
     });
 
-    auto apply_axis = [this](wxCommandEvent&) {
-        if (auto_box_->GetValue()) plot_->set_auto_range(true);
-        else {
-            plot_->set_x_range(xmin_->GetValue(), xmax_->GetValue());
-            plot_->set_y_range(ymin_->GetValue(), ymax_->GetValue());
-        }
+    auto_box_->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { apply_axis(); });
+    // Editing any range field takes the plot out of auto-scale so the typed
+    // value is actually used (otherwise "Auto scale" would ignore it).
+    auto on_edit = [this](wxCommandEvent&) {
+        if (auto_box_->GetValue()) auto_box_->SetValue(false);
+        apply_axis();
     };
-    auto_box_->Bind(wxEVT_CHECKBOX, apply_axis);
-    xmin_->Bind(wxEVT_SPINCTRL, apply_axis);
-    xmax_->Bind(wxEVT_SPINCTRL, apply_axis);
-    ymin_->Bind(wxEVT_SPINCTRL, apply_axis);
-    ymax_->Bind(wxEVT_SPINCTRL, apply_axis);
-    xmin_->Bind(wxEVT_TEXT, apply_axis);
-    xmax_->Bind(wxEVT_TEXT, apply_axis);
-    ymin_->Bind(wxEVT_TEXT, apply_axis);
-    ymax_->Bind(wxEVT_TEXT, apply_axis);
+    xmin_->Bind(wxEVT_TEXT, on_edit);
+    xmax_->Bind(wxEVT_TEXT, on_edit);
+    ymin_->Bind(wxEVT_TEXT, on_edit);
+    ymax_->Bind(wxEVT_TEXT, on_edit);
+    xmin_->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent&) { apply_axis(); });
+    xmax_->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent&) { apply_axis(); });
+    ymin_->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent&) { apply_axis(); });
+    ymax_->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent&) { apply_axis(); });
 
     svg->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         wxFileDialog dlg(this, "Save plot", "", "plot.svg",
@@ -738,6 +735,23 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     });
 }
 
+void BodePanel::apply_axis() {
+    if (auto_box_->GetValue()) {
+        plot_->set_auto_range(true);
+        return;
+    }
+    // Parse the four text fields; ignore (keep auto) on any parse failure so a
+    // half-typed value doesn't blank the plot.
+    double x0, x1, y0, y1;
+    bool ok = xmin_->GetValue().ToDouble(&x0) &&
+              xmax_->GetValue().ToDouble(&x1) &&
+              ymin_->GetValue().ToDouble(&y0) &&
+              ymax_->GetValue().ToDouble(&y1);
+    if (!ok) return;
+    plot_->set_x_range(x0, x1);
+    plot_->set_y_range(y0, y1);
+}
+
 void BodePanel::set_result(const syms::AnalysisResult* r) {
     plot_->set_result(r);
     Refresh();
@@ -748,9 +762,18 @@ void BodePanel::set_title(const std::string& t) {
 }
 
 void BodePanel::sync_axis_controls() {
-    // unused; bindings are direct lambdas. Kept so the declaration in the
-    // header can stay (we used to wire this through wxEVENT_TABLE).
-    (void)xmin_; (void)xmax_; (void)ymin_; (void)ymax_; (void)auto_box_;
+    // Reflect the plot's current range back into the text fields (so an
+    // auto-scaled plot shows the bounds the user can then edit).
+    if (!plot_) return;
+    auto fmt = [](double v) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%g", v);
+        return wxString(buf);
+    };
+    if (xmin_) xmin_->ChangeValue(fmt(plot_->x_lo()));
+    if (xmax_) xmax_->ChangeValue(fmt(plot_->x_hi()));
+    if (ymin_) ymin_->ChangeValue(fmt(plot_->y_lo()));
+    if (ymax_) ymax_->ChangeValue(fmt(plot_->y_hi()));
 }
 
 } // namespace symcirc

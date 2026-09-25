@@ -2,7 +2,6 @@
 #include "core/Engine.h"
 
 #include <wx/wx.h>
-#include <wx/spinctrl.h>
 
 #include <string>
 #include <vector>
@@ -66,7 +65,7 @@ private:
 };
 
 // Bottom-panel tab: the plot canvas plus a toolbar with mode selector, axis
-// spin controls, and save buttons.
+// range text fields, and save buttons.
 class BodePanel : public wxPanel {
 public:
     explicit BodePanel(wxWindow* parent);
@@ -76,12 +75,13 @@ public:
 
 private:
     BodeCanvas* plot_ = nullptr;
-    wxSpinCtrl* xmin_ = nullptr;
-    wxSpinCtrl* xmax_ = nullptr;
-    wxSpinCtrl* ymin_ = nullptr;
-    wxSpinCtrl* ymax_ = nullptr;
+    wxTextCtrl* xmin_ = nullptr;
+    wxTextCtrl* xmax_ = nullptr;
+    wxTextCtrl* ymin_ = nullptr;
+    wxTextCtrl* ymax_ = nullptr;
     wxCheckBox* auto_box_ = nullptr;
 
+    void apply_axis();
     void sync_axis_controls();
 };
 

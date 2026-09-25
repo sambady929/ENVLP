@@ -14,7 +14,7 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     // dump is the secondary "Results (Text)" tab.
     book_->AddPage(math_, "Results", true);
     book_->AddPage(results_, "Results (Text)");
-    book_->AddPage(bode_, "Bode");
+    book_->AddPage(bode_, "Plot");
     book_->AddPage(lua_, "Lua");
 
     // Closing the window just hides it; the next analysis brings it back.

@@ -13,6 +13,48 @@ using GiNaC::ex;
 using GiNaC::is_a;
 using GiNaC::numeric;
 
+// Pull a common multiplicative factor out of a sum of products:
+// a*x + a*y -> a*(x+y). Mirrors LowEntropy.cpp's factor_common_impl so the
+// pretty-printer preserves the factored form the engine produced (a bare
+// `expand()` in pretty_in_s would otherwise undo it). Only polynomial factors
+// are extracted -- never a factor that lives in a denominator.
+ex factor_sum(const ex& e) {
+    if (!is_a<GiNaC::add>(e)) return e;
+    std::vector<std::vector<ex>> terms;
+    for (size_t i = 0; i < e.nops(); ++i) {
+        std::vector<ex> fs;
+        const ex& t = e.op(i);
+        if (is_a<GiNaC::mul>(t))
+            for (size_t j = 0; j < t.nops(); ++j) fs.push_back(t.op(j));
+        else
+            fs.push_back(t);
+        terms.push_back(fs);
+    }
+    if (terms.empty()) return e;
+    std::vector<ex> common;
+    for (const ex& f : terms[0]) {
+        if (is_a<GiNaC::power>(f)) {
+            const ex& xp = f.op(1);
+            if (is_a<numeric>(xp) && GiNaC::ex_to<numeric>(xp).is_negative())
+                continue;
+        }
+        bool inall = true;
+        for (size_t i = 1; i < terms.size() && inall; ++i) {
+            bool found = false;
+            for (const ex& g : terms[i])
+                if (g.is_equal(f)) { found = true; break; }
+            if (!found) inall = false;
+        }
+        if (inall) common.push_back(f);
+    }
+    if (common.empty()) return e;
+    ex cpart = ex(1);
+    for (const ex& f : common) cpart = cpart * f;
+    ex rest = (e / cpart).normal();
+    if (!is_a<GiNaC::add>(rest)) return e;
+    return cpart * rest;
+}
+
 // Multiplication sign in plain-text output. This is the *text* path, so use
 // an ASCII `*` -- no Unicode, no LaTeX. The Math tab gets the real
 // multiplication dot from the separate LaTeX string (pruned.latex), so the
@@ -191,6 +233,9 @@ std::string pretty_in_s(const ex& e, const ex& s) {
     for (int k = 0; k <= deg; ++k) {
         ex c = pe.coeff(s, k);
         if (c.is_zero()) continue;
+        // Factor common terms out of the coefficient so s*(R1*ro*Cds +
+        // C1*R1*ro) reads s*R1*ro*(Cds + C1) instead of the expanded sum.
+        c = factor_sum(c);
 
         std::string body;
         bool neg = false;

@@ -727,6 +727,26 @@ ex factor_common_impl(const ex& e) {
     return cpart * rest;
 }
 
+// Factor each s-coefficient of a polynomial separately. factor_common_impl
+// only pulls a factor common to *every* term of the whole polynomial, so for
+// an impedance whose constant term is a sum (e.g. R1 + ro + s*R1*ro*Cds +
+// s*C1*R1*ro) it leaves the s^1 coefficient un-factored. Factoring per power
+// of s turns that into R1 + ro + s*R1*ro*(Cds + C1), which is the compact
+// form the pole/time-constant labels also use.
+ex factor_coeffs(const ex& poly, const ex& s) {
+    int deg = 0;
+    try { deg = poly.has(s) ? poly.degree(s) : 0; } catch (...) { return poly; }
+    if (deg < 0 || deg > 64) return poly;
+    ex acc = 0;
+    for (int k = 0; k <= deg; ++k) {
+        ex c = poly.coeff(s, k);
+        if (c.is_zero()) continue;
+        ex fc = factor_common_impl(c);
+        acc += (fc.is_zero() ? c : fc) * GiNaC::pow(s, k);
+    }
+    return acc;
+}
+
 // Collapse a parallel combination to its dominant argument when the other is
 // negligible. par(a,b) = a*b/(a+b); if b >> a then par -> a (the smaller
 // resistance wins in parallel -- the big resistor is negligible), and if
@@ -1049,18 +1069,10 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         }
     }
 
-    // 4b. gm*ro >> 1 idealization, then pull common factors out of the
-    //     numerator/denominator so the printed form is as compact as possible
-    //     (e.g. x*a + x*b -> x*(a+b)).
+    // 4b. gm*ro >> 1 idealization (drop the "+1" beside a dominant gm*ro).
     if (opts.prune && opts.gm_ro_assume) {
         n = gm_ro_idealize(n, params);
         d = gm_ro_idealize(d, params);
-    }
-    if (opts.prune) {
-        ex nf = factor_common_impl(n);
-        ex df = factor_common_impl(d);
-        if (!nf.is_zero()) n = nf;
-        if (!df.is_zero()) d = df;
     }
 
     // 5b. Re-reduce the ratio so any common factor the pruning / parallel
@@ -1086,6 +1098,20 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                 d = (d / c0).normal();
             }
         }
+    }
+
+    // 5c. Pull common factors out of the numerator/denominator so the printed
+    //     form is as compact as possible. Done AFTER the ratio reduction (so
+    //     the reduction's .expand() doesn't immediately undo it): the whole-
+    //     polynomial factor (x*a + x*b -> x*(a+b)) plus a per-s-coefficient
+    //     factor (s*R1*ro*Cds + s*C1*R1*ro -> s*R1*ro*(Cds + C1)).
+    if (opts.prune) {
+        ex nf = factor_common_impl(n);
+        ex df = factor_common_impl(d);
+        if (!nf.is_zero()) n = nf;
+        if (!df.is_zero()) d = df;
+        n = factor_coeffs(n, s);
+        d = factor_coeffs(d, s);
     }
 
     R.num_poly = n;
