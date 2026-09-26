@@ -60,7 +60,7 @@ bool symbol_for(const std::string& name, std::string& out) {
         {"leftarrow", "&larr;"},{"cdots", "&middot;&middot;&middot;"},
         {"ldots", "&#8230;"},
         {"circ", "&deg;"},      {"degree", "&deg;"},
-        {"infty", "&infin;"},   {"partial", "&part;"},
+        {"infty", "&infin;"},   {"partial", "&part;"},  {"angle", "&ang;"},
         {",", "&thinsp;"},      {";", "&thinsp;"},     {" ", "&nbsp;"},
         {"quad", "&emsp;"},     {"qquad", "&emsp;&emsp;"},
         {"!", ""},

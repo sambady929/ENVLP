@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 
 namespace syms {
@@ -581,15 +582,44 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // Stability (item 7): keep it up with the other headline results, before
     // the gain/bandwidth block.
     std::string stab;
+    // Symbolic phase margin. For a loop that is effectively single-pole up to
+    // the crossover -- T(s) = K/(1 + s*tau_p) with every other pole at least
+    // 60 dB beyond -- the phase margin is exactly 90 degrees and the crossover
+    // is K/tau_p. Otherwise PM is only known numerically (it is set by the
+    // relative pole/zero positions), so no closed form is offered.
+    std::string pm_sym, pm_sym_latex;
+    if (pm >= 0.0 && !Tp.poles.empty() &&
+        Tp.poles.front().omega != 0.0 && !Tp.poles.front().omega_expr.is_zero()) {
+        // are all other poles far above the dominant one?
+        bool single = true;
+        double f0p = std::fabs(Tp.poles.front().omega) / (2.0 * M_PI);
+        for (size_t i = 1; i < Tp.poles.size(); ++i) {
+            if (Tp.poles[i].omega == 0.0 ||
+                std::fabs(Tp.poles[i].omega) / (2.0 * M_PI) <
+                    f0p * std::pow(10.0, s.pole_zero_threshold_db / 20.0)) {
+                single = false;
+                break;
+            }
+        }
+        if (single && Tp.zeros.empty()) {
+            pm_sym = "PM = 90 deg  (single-pole loop: the phase is -90 deg at "
+                     "every frequency past the dominant pole)";
+            pm_sym_latex =
+                "\\mathrm{PM} = 90\\degree\\quad (\\mathrm{single\\ pole:}"
+                "\\ \\angle T = -90\\degree\\ \\mathrm{above}\\ \\omega_{p0})";
+        }
+    }
+
     if (pm >= 0.0) {
-        char b[160];
+        char b[200];
         std::snprintf(b, sizeof(b),
-                      "  unity-gain at %s, phase margin = %.1f deg\n",
+                      "  Unity-Gain Frequency: %s\n  Phase Margin: %.1f deg\n",
                       eng::format_hz(ugf).c_str(), pm);
         stab = b;
+        if (!pm_sym.empty()) stab += "  " + pm_sym + "\n";
     } else {
-        stab = "  T never crosses 0 dB within the sweep (no unity-gain "
-               "frequency)\n";
+        stab = "  T never crosses 0 dB within the sweep (no Unity-Gain "
+               "Frequency)\n";
     }
 
     // Closed-loop gain assembled from the asymptotic-gain formula, so the
@@ -635,10 +665,11 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     if (pm >= 0.0) {
         char b[192];
         std::snprintf(b, sizeof(b),
-                      "\\mathrm{unity-gain\\ at}\\ \\mathrm{%s}"
-                      ",\\quad \\mathrm{phase\\ margin} = %.1f\\degree\n",
+                      "\\mathrm{Unity-Gain\\ Frequency} = \\mathrm{%s},"
+                      "\\quad \\mathrm{Phase\\ Margin} = %.1f\\degree\n",
                       eng::format_hz(ugf).c_str(), pm);
         lrep += b;
+        if (!pm_sym_latex.empty()) lrep += pm_sym_latex + "\n";
     } else {
         lrep += "\\mathrm{T\\ never\\ crosses\\ 0\\ dB\\ within\\ the\\ sweep}\n";
     }
@@ -646,7 +677,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     lrep += format_report_latex(res);
 
     cr.text = "T(s) = " + Tp.text;
-    cr.latex = "T(s) = " + latex_rhs(Tp.latex);
+    // No headline expression: the return-ratio section already shows T(s), so
+    // the typeset tab leads straight with the report and does not repeat it.
+    cr.latex.clear();
     cr.latex_report = lrep;
     cr.summary = "H_inf = " + ideal.text + " ;  T = " + Tp.text;
     cr.report = rep;
@@ -783,14 +816,54 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
 
     // Sum the output noise contributions: for each noisy element add a
     // current/voltage source, propagate it to the output, and add powers.
-    RawTF sig = raw_tf(c, s.input_ref, s.output);
-    ex s_sym = sig.params.get("s");
-
-    // signal gain magnitude at f0 (for input referral)
+    //
+    // Noise is an output-referred quantity; the signal gain is only needed to
+    // refer it to the input, and that needs a valid ideal input source. When
+    // the card's input is not an ideal source (e.g. a current-driven TIA whose
+    // excitation is a current source not named as the input), still report the
+    // output-referred noise -- just skip the input referral.
+    ParamTable pt;
     double w0 = 2.0 * M_PI * s.f0_hz;
-    ex Hsig = (sig.num / sig.den).normal();
-    double gain = std::abs(eval_complex(Hsig, sig.params, w0));
-    if (!(gain > 0.0)) gain = 1e-30;
+    double gain = 0.0;
+    bool have_gain = false;
+    // Preferred excitation is the card's input source; when that is not an
+    // ideal source (or is absent) fall back to any ideal source in the circuit.
+    // The noise transfer functions only depend on the network, so any source
+    // works -- the gain is used solely to refer noise to the input.
+    std::vector<std::string> candidates;
+    if (!s.input_ref.empty()) candidates.push_back(s.input_ref);
+    for (const auto& cc : c.comps)
+        if (is_independent_source(cc.kind) && cc.ref != s.input_ref)
+            candidates.push_back(cc.ref);
+    for (const auto& src : candidates) {
+        try {
+            RawTF sig = raw_tf(c, src, s.output);
+            ex Hsig = (sig.num / sig.den).normal();
+            double g = std::abs(eval_complex(Hsig, sig.params, w0));
+            if (g > 0.0) {
+                pt = sig.params;
+                gain = g;
+                have_gain = true;
+                break;
+            }
+        } catch (const std::exception&) {
+            // not a usable source; try the next
+        }
+    }
+    if (pt.est.empty()) {
+        // No source worked: register the component symbols via a raw solve so
+        // the noise transfer functions can still be evaluated numerically.
+        for (const auto& cc : c.comps) {
+            try {
+                MnaSystem sys = build_mna(c, cc.ref);
+                pt = sys.params;
+                break;
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    ex s_sym = pt.get("s");
+    if (!have_gain) gain = 1e-30;
 
     double vout2 = 0.0;
     int nsrc = 0;
@@ -857,7 +930,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
 
     for (const auto& n : noise) {
         ex zt = z_from_current(n.node_a, n.node_b);
-        double z2 = std::norm(eval_complex(zt, sig.params, w0));
+        double z2 = std::norm(eval_complex(zt, pt, w0));
         double contrib = n.i2 * z2;
         vout2 += contrib;
         per_source.push_back({n.ref, contrib});
@@ -872,7 +945,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     }
 
     if (nsrc == 0) {
-        cr.summary = "no noise sources (no resistors or devices found)";
+        cr.summary = "No noise sources (no resistors or devices found)";
         cr.report = cr.summary + "\n";
         return cr;
     }
@@ -886,32 +959,60 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         return x > 0 ? 10.0 * std::log10(x) : -1e300;
     };
 
-    std::string rep = "Noise analysis @ " + eng::format_eng(s.f0_hz, 3) +
-                      " Hz   (" + std::to_string(nsrc) +
-                      " sources: thermal + channel/shot)\n";
-    rep += "----------------------------------------\n";
-    rep += detail;
-    rep += "  signal gain |H(f0)|: " + eng::format_eng(gain, 3) + "  (" +
-           eng::format_db(db20(gain), 2) + ")\n";
-    rep += "\n  Integrated output noise density:\n";
-    char buf[512];
-    std::snprintf(buf, sizeof(buf),
-                  "    output-referred: %.4g V/sqrt(Hz)  (%.2f dBV, %.2f "
-                  "dBV^2/Hz)\n"
-                  "    input-referred:  %.4g V/sqrt(Hz)  (%.2f dBV)\n",
-                  vout_rms, db20(vout_rms), db10(vout2), vin_rms,
-                  db20(vin_rms));
-    rep += buf;
-    rep += "\n  Per-source contribution to the output noise power:\n";
     // sort descending by contribution
     std::sort(per_source.begin(), per_source.end(),
               [](const auto& a, const auto& b) { return a.second > b.second; });
     double total = vout2 > 0 ? vout2 : 1e-300;
+
+    std::string rep = "Noise Analysis @ " + eng::format_hz(s.f0_hz) + "   (" +
+                      std::to_string(nsrc) +
+                      " sources: thermal + channel/shot)\n";
+    rep += "========================================\n";
+    rep += detail;
+    rep += "  Signal Gain |H(f0)| = " + eng::format_eng(gain, 3) + "  (" +
+           eng::format_db(db20(gain), 2) + ")\n";
+    rep += "\n  Integrated Output Noise Density:\n";
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "    Output-Referred: %.4g V/sqrt(Hz)  (%.2f dBV, %.2f "
+                  "dBV^2/Hz)\n"
+                  "    Input-Referred:  %.4g V/sqrt(Hz)  (%.2f dBV)\n",
+                  vout_rms, db20(vout_rms), db10(vout2), vin_rms,
+                  db20(vin_rms));
+    rep += buf;
+    rep += "\n  Per-Source Contribution to the Output Noise Power:\n";
     for (const auto& ps : per_source) {
         char sb[160];
         std::snprintf(sb, sizeof(sb), "    %-8s %8.2f %%   %.3g V^2/Hz\n",
                       ps.first.c_str(), 100.0 * ps.second / total, ps.second);
         rep += sb;
+    }
+
+    // The typeset headline (so the "Results" (LaTeX) tab is not blank) and a
+    // short LaTeX report of the noise density.
+    {
+        std::ostringstream lx;
+        lx << "\\mathrm{V_{n,out}} = " << eng::format_si(vout_rms, 4)
+           << "\\ \\mathrm{V/\\sqrt{Hz}}";
+        lx << "\\quad\\mathrm{V_{n,in}} = " << eng::format_si(vin_rms, 4)
+           << "\\ \\mathrm{V/\\sqrt{Hz}}";
+        cr.latex = lx.str();
+    }
+    {
+        std::ostringstream lr;
+        lr << "Noise @ " << eng::format_hz(s.f0_hz) << ":\n";
+        lr << "\\mathrm{V_{n,out}} = \\mathrm{" << eng::format_si(vout_rms, 4)
+           << "\\ V/\\sqrt{Hz}}\n";
+        lr << "\\mathrm{V_{n,in}} = \\mathrm{" << eng::format_si(vin_rms, 4)
+           << "\\ V/\\sqrt{Hz}}\n";
+        lr << "Signal Gain:\n";
+        lr << "|H(f_0)| = \\mathrm{" << eng::format_eng(gain, 3) << "}\\quad("
+           << eng::format_db(db20(gain), 2) << ")\n";
+        lr << "Per-Source Contribution:\n";
+        for (const auto& ps : per_source)
+            lr << "\\mathrm{" << ps.first << "} = "
+               << eng::format_si(100.0 * ps.second / total, 3) << "\\%\n";
+        cr.latex_report = lr.str();
     }
 
     cr.summary = buf;

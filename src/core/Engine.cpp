@@ -287,20 +287,20 @@ Metrics compute_metrics(const AnalysisResult& r) {
 std::string metrics_text(const AnalysisResult& r) {
     Metrics m = compute_metrics(r);
     std::string out;
-    out += "  DC gain: " + m.dc_db;
+    out += "  DC Gain: " + m.dc_db;
     if (!m.dc_sym.empty()) out += "   [" + m.dc_sym + "]";
     out += "\n";
-    out += "  -3 dB bandwidth: " + m.bw3;
+    out += "  -3 dB Bandwidth: " + m.bw3;
     if (!m.bw3_sym.empty()) out += "   [" + m.bw3_sym + "]";
     out += "\n";
-    out += "  Unity-gain (0 dB) bandwidth: " + m.ugbw;
+    out += "  Unity-Gain (0 dB) Bandwidth: " + m.ugbw;
     if (!m.ugbw_sym.empty()) out += "   [" + m.ugbw_sym + "]";
     out += "\n";
     // Symbolic pole corner frequencies (omega_p0 = 1/tau_0, ...).
     std::vector<std::string> ptxt, ptex;
     pole_wp_lines(r, ptxt, ptex);
     if (!ptxt.empty()) {
-        out += "  Pole corner frequencies:\n";
+        out += "  Pole Corner Frequencies:\n";
         for (const auto& line : ptxt) out += "    " + line + "\n";
     }
     return out;
@@ -309,16 +309,16 @@ std::string metrics_text(const AnalysisResult& r) {
 std::string metrics_latex(const AnalysisResult& r) {
     Metrics m = compute_metrics(r);
     std::string out;
-    out += "Gain / bandwidth:\n";
-    out += "\\mathrm{DC\\ gain} = " + (m.dc_sym_latex.empty()
-                                           ? "\\mathrm{" + m.dc_db + "}"
-                                           : m.dc_sym_latex) +
+    out += "Gain / Bandwidth:\n";
+    out += "\\mathrm{DC\\ Gain} = " + (m.dc_sym_latex.empty()
+                                          ? "\\mathrm{" + m.dc_db + "}"
+                                          : m.dc_sym_latex) +
            "\\quad = \\mathrm{" + m.dc_db + "}\n";
-    out += "\\mathrm{-3\\ dB\\ bandwidth} = " +
+    out += "\\mathrm{-3\\ dB\\ Bandwidth} = " +
            (m.bw3_sym_latex.empty() ? "\\mathrm{" + m.bw3 + "}"
                                     : m.bw3_sym_latex) +
            "\\quad = \\mathrm{" + m.bw3 + "}\n";
-    out += "\\mathrm{unity-gain\\ bandwidth} = " +
+    out += "\\mathrm{Unity-Gain\\ Bandwidth} = " +
            (m.ugbw_sym_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
                                      : m.ugbw_sym_latex) +
            "\\quad = \\mathrm{" + m.ugbw + "}\n";
@@ -341,7 +341,7 @@ std::string format_report(const AnalysisResult& r) {
         out += "(one or more factors are approximate: the exact denominator "
                "does not factor symbolically, so numeric estimate-based roots "
                "were used)\n";
-    out += "\nGain / bandwidth:\n";
+    out += "\nGain / Bandwidth:\n";
     out += metrics_text(r);
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
