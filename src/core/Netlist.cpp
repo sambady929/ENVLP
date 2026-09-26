@@ -2,6 +2,7 @@
 #include "core/Eng.h"
 
 #include <set>
+#include <stdexcept>
 
 namespace syms {
 
@@ -305,6 +306,9 @@ double Component::estimate() const {
 }
 
 double Component::param_estimate(const std::string& p) const {
+    // A mirror copy uses the materialised (scaled) override when present.
+    auto ov = param_override.find(p);
+    if (ov != param_override.end()) return ov->second;
     double v = 1.0;
     auto it = param_text.find(p);
     if (it != param_text.end() && !it->second.empty()) {
@@ -328,6 +332,64 @@ double Component::param_estimate(const std::string& p) const {
 
 std::string param_symbol(const Component& c, const std::string& p) {
     return p + "_" + c.ref; // gm_M1, Cgd_M2, ...
+}
+
+bool can_mirror(const Component& unit, const Component& copy) {
+    // Only real devices mirror (a resistor "copy" has no meaning), and the
+    // kinds must match exactly: an NMOS cannot copy a PMOS, a BJT cannot copy
+    // a MOSFET.
+    bool dev = unit.kind == Kind::NMOS || unit.kind == Kind::PMOS ||
+               unit.kind == Kind::NPN || unit.kind == Kind::PNP;
+    if (!dev || unit.kind != copy.kind) return false;
+    // A device that is itself a copy must mirror the same unit, never another
+    // copy, so the chain stays one level deep.
+    return unit.mirror_ref.empty();
+}
+
+double scale_mirror_estimate(UnitClass uc, double unit_value, int mult) {
+    if (mult < 1) mult = 1;
+    switch (uc) {
+        // transconductance and capacitance grow with the number of devices
+        case UnitClass::Siemens:
+        case UnitClass::Farad:
+            return unit_value * mult;
+        // a resistance formed by `mult` unit devices is divided (parallel for a
+        // current source / series for a voltage), so it scales inversely
+        case UnitClass::Ohm:
+            return unit_value / mult;
+        default:
+            return unit_value;
+    }
+}
+
+void resolve_mirrors(Circuit& c) {
+    // Clear stale overrides so repeated calls are idempotent.
+    for (auto& comp : c.comps) comp.param_override.clear();
+
+    for (auto& copy : c.comps) {
+        if (copy.mirror_ref.empty()) continue;
+        const Component* unit = c.find(copy.mirror_ref);
+        if (!unit)
+            throw std::runtime_error("mirror: unit device '" + copy.mirror_ref +
+                                     "' for '" + copy.ref + "' not found");
+        if (unit->mirror_ref == copy.ref)
+            throw std::runtime_error("mirror: cycle between '" + copy.ref +
+                                     "' and '" + copy.mirror_ref + "'");
+        if (!can_mirror(*unit, copy))
+            throw std::runtime_error(
+                "mirror: '" + copy.ref + "' (" + kind_display(copy.kind) +
+                ") cannot copy '" + copy.mirror_ref + "' (" +
+                kind_display(unit->kind) + ")");
+        int mult = copy.multiplicity();
+        for (const auto& d : param_defs(copy.kind)) {
+            double uv = unit->param_estimate(d.name);
+            copy.param_override[d.name] =
+                scale_mirror_estimate(param_unit_class(copy.kind, d.name), uv,
+                                      mult);
+            // carry the unit's enable state so the copy stamps the same model
+            copy.param_on[d.name] = unit->param_enabled(d.name);
+        }
+    }
 }
 
 std::string bjt_internal_node(const Component& c) {

@@ -304,6 +304,15 @@ syms::Circuit Document::resolved(std::string& err) const {
         out.comps[nm.pin_comp[i]].nodes[nm.pin_index[i]] = name;
     }
 
+    // Materialise mirror copies (scaled device parameters from their unit).
+    try {
+        syms::resolve_mirrors(out);
+    } catch (const std::exception& e) {
+        err = e.what();
+        syms::Circuit empty;
+        return empty;
+    }
+
     // Duplicate references can't happen (next_ref), but validate anyway.
     if (!out.validate(err)) {
         syms::Circuit empty;
@@ -678,6 +687,9 @@ std::string Document::serialize() const {
           << " " << x << " " << y << " " << rot << " " << fh << " " << fv << " "
           << c.size_db << " " << quote(c.value_text);
         for (const auto& lk : c.links) o << " " << quote(lk);
+        // Mirror copies carry "mirror=<unit> mult=<m>" after the links.
+        if (!c.mirror_ref.empty())
+            o << " mirror=" << c.mirror_ref << " mult=" << c.multiplicity();
         o << "\n";
         for (const auto& kv : c.param_on)
             o << "param " << quote(c.ref) << " " << quote(kv.first) << " "
@@ -806,9 +818,19 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             c.value_text = val;
             c.size_db = std::atoi(sdb.c_str());
             c.nodes.assign(syms::pin_count(k), "");
-            // K stores its two coupled-inductor refs at the end of the line
+            // K stores its two coupled-inductor refs at the end of the line;
+            // mirror copies append "mirror=<unit> mult=<m>".
             std::string extra;
-            while (next_token(line, i, extra)) c.links.push_back(extra);
+            while (next_token(line, i, extra)) {
+                if (extra.rfind("mirror=", 0) == 0) {
+                    c.mirror_ref = extra.substr(7);
+                } else if (extra.rfind("mult=", 0) == 0) {
+                    c.mirror_mult = std::atoi(extra.c_str() + 5);
+                    if (c.mirror_mult < 1) c.mirror_mult = 1;
+                } else {
+                    c.links.push_back(extra);
+                }
+            }
             circuit.comps.push_back(c);
             Placement pl;
             pl.x = std::atof(sx.c_str());

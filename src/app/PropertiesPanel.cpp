@@ -512,6 +512,80 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 c->kind == Kind::E || c->kind == Kind::G)
                 add_value_selector(comp, true);
 
+            // Device mirroring (MOSFETs / BJTs): a copy of another device of
+            // the same kind (a diff-pair / current-mirror leg), with a copy
+            // count that scales its parameters.
+            if (syms::is_device(c->kind) && c->kind != Kind::D) {
+                auto* sizer2 = GetSizer();
+                sizer2->Add(new wxStaticText(this, wxID_ANY, "Mirror of"), 0,
+                            wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+                auto* names = new wxArrayString();
+                names->Add("(unit device)");
+                for (const auto& cc : doc_->circuit.comps) {
+                    if (cc.ref == c->ref) continue;
+                    if (!syms::can_mirror(cc, *c)) continue;
+                    names->Add(wxString::FromUTF8(cc.ref));
+                }
+                auto* ch = new wxChoice(this, wxID_ANY, wxDefaultPosition,
+                                        wxDefaultSize, *names);
+                wxString cur = c->mirror_ref.empty()
+                                   ? wxString("(unit device)")
+                                   : wxString::FromUTF8(c->mirror_ref);
+                int sel = names->Index(cur);
+                ch->SetSelection(sel == wxNOT_FOUND ? 0 : sel);
+                sizer2->Add(ch, 1, wxEXPAND | wxRIGHT, 6);
+                ch->Bind(wxEVT_CHOICE, [this, ch](wxCommandEvent&) {
+                    if (rebuilding_) return;
+                    // `comp` is captured by the outer scope via `this`+sel_;
+                    // re-find it so a rebuild during edit is safe.
+                    syms::Component* cc = nullptr;
+                    for (auto& x : doc_->circuit.comps)
+                        if (x.ref == sel_) cc = &x;
+                    if (!cc) return;
+                    wxString v = ch->GetString(ch->GetSelection());
+                    cc->mirror_ref = (v == "(unit device)")
+                                         ? std::string()
+                                         : v.ToStdString();
+                    if (cc->mirror_mult < 1) cc->mirror_mult = 1;
+                    doc_->dirty = true;
+                    if (on_edited) on_edited();
+                });
+
+                if (!comp->mirror_ref.empty()) {
+                    auto* mc = new wxBoxSizer(wxHORIZONTAL);
+                    mc->Add(new wxStaticText(this, wxID_ANY, "Copies (m)"), 0,
+                            wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+                    auto* msc = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
+                                               wxDefaultPosition, wxDefaultSize,
+                                               wxSP_ARROW_KEYS, 1, 100000,
+                                               comp->multiplicity());
+                    mc->Add(msc, 1);
+                    sizer2->Add(mc, 0,
+                                wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
+                    msc->Bind(wxEVT_SPINCTRL, [this, msc](wxSpinEvent&) {
+                        if (rebuilding_) return;
+                        syms::Component* cc = nullptr;
+                        for (auto& x : doc_->circuit.comps)
+                            if (x.ref == sel_) cc = &x;
+                        if (!cc) return;
+                        cc->mirror_mult = msc->GetValue();
+                        doc_->dirty = true;
+                        if (on_edited) on_edited();
+                    });
+                    auto* note = new wxStaticText(
+                        this, wxID_ANY,
+                        "Parameters are inherited from the unit device, scaled "
+                        "by m.");
+                    note->SetForegroundColour(wxColour(115, 115, 120));
+                    note->Wrap(220);
+                    sizer2->Add(note, 0, wxALL, 4);
+                    sizer->AddSpacer(6);
+                    FitInside();
+                    rebuilding_ = false;
+                    return;
+                }
+            }
+
             // device model parameters: checkbox (parasitic) + mantissa/exponent
             for (const auto& pd : syms::param_defs(c->kind))
                 add_param_row(comp, pd.name, pd.unit, pd.parasitic,

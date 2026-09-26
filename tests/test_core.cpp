@@ -1187,6 +1187,51 @@ static void test_loop_gain_report_sections() {
     CHECK(cr.latex_report.find("Gain / bandwidth") != std::string::npos);
 }
 
+// Mirrored devices (multiplicity) scale their parameters from the unit device:
+// a MOSFET with m = 4 has 4x gm and 4x Cgs, while ro is divided by 4.
+static void test_mirror_multiplicity() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component unit = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    unit.param_text["gm"] = "1m";
+    unit.param_text["Cgs"] = "100f";
+    unit.param_text["ro"] = "100k";
+    unit.param_on["ro"] = true;
+    c.comps.push_back(unit);
+    Component copy = comp(Kind::NMOS, "M2", {"o2", "in", "0"}, "");
+    copy.mirror_ref = "M1";
+    copy.mirror_mult = 4;
+    c.comps.push_back(copy);
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "Rd2", {"o2", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+
+    Circuit r = c;
+    resolve_mirrors(r);
+    const Component* m2 = r.find("M2");
+    CHECK(m2 != nullptr);
+    if (m2) {
+        CHECK_CLOSE(m2->param_estimate("gm"), 4e-3, 1e-9);
+        CHECK_CLOSE(m2->param_estimate("Cgs"), 400e-15, 1e-21);
+        CHECK_CLOSE(m2->param_estimate("ro"), 25e3, 1.0);
+        // the unit's enable state propagates
+        CHECK(m2->param_enabled("ro"));
+    }
+
+    // Mismatched kinds are rejected.
+    Component bad = comp(Kind::PMOS, "M3", {"x", "in", "0"}, "");
+    bad.mirror_ref = "M1";
+    bad.mirror_mult = 2;
+    r.comps.push_back(bad);
+    bool threw = false;
+    try {
+        resolve_mirrors(r);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
@@ -1232,6 +1277,7 @@ int main(int argc, char** argv) {
         {"gbw_optional", test_gbw_optional},
         {"amp_signed_gain", test_amp_signed_gain},
         {"loop_gain_sections", test_loop_gain_report_sections},
+        {"mirror_multiplicity", test_mirror_multiplicity},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <wx/dcbuffer.h>
 
 namespace symcirc {
@@ -447,6 +448,114 @@ void SchematicCanvas::set_selection(const std::string& s) {
     Refresh();
 }
 
+// Copy the selected components (and the wires that connect only them) into the
+// in-app clipboard. A wire is copied only when both of its endpoints are pins
+// of selected components, so external wiring is not duplicated.
+void SchematicCanvas::copy_selection() {
+    clip_comps_.clear();
+    clip_wires_.clear();
+    if (sel_set_.empty() && sel_.empty()) return;
+
+    std::set<std::string> refs;
+    for (const auto& s : sel_set_)
+        if (!s.empty() && s[0] != '#') refs.insert(s);
+    if (refs.empty() && !sel_.empty() && sel_[0] != '#') refs.insert(sel_);
+    if (refs.empty()) return;
+
+    for (const auto& ref : refs) {
+        const Component* c = doc_->circuit.find(ref);
+        auto pl = doc_->placements.find(ref);
+        if (!c || pl == doc_->placements.end()) continue;
+        clip_comps_.push_back({*c, pl->second});
+    }
+    for (const auto& w : doc_->wires) {
+        auto pin_in = [&](const WireEnd& e) {
+            return e.kind == WireEnd::Kind::Pin && refs.count(e.ref) > 0;
+        };
+        if (pin_in(w.a) && pin_in(w.b)) clip_wires_.push_back({w.pts, w.a, w.b});
+    }
+    if (on_status)
+        on_status("Copied " + std::to_string(clip_comps_.size()) +
+                  " component(s)" +
+                  (clip_wires_.empty()
+                       ? std::string()
+                       : " and " + std::to_string(clip_wires_.size()) +
+                             " wire(s)"));
+}
+
+// Paste the clipboard contents near the cursor. References are renumbered,
+// wires are rebound to the new pins, and mirror/multiplicity fields survive.
+void SchematicCanvas::paste_clipboard() {
+    if (clip_comps_.empty()) return;
+    if (on_push_undo) on_push_undo();
+
+    // Anchor the paste at the cursor, snapped to the grid.
+    Pt at = has_mouse_ ? snap(to_doc(mouse_)) : Pt{0, 0};
+    // Anchor the copied cluster on the top-left of its bounding box so repeated
+    // pastes land predictably at the cursor.
+    double ox = 1e300, oy = 1e300;
+    for (const auto& cc : clip_comps_) {
+        ox = std::min(ox, cc.place.x);
+        oy = std::min(oy, cc.place.y);
+    }
+    double dx = at.first - ox, dy = at.second - oy;
+
+    // Old ref -> new ref, so wire bindings can be fixed up.
+    std::map<std::string, std::string> remap;
+    std::vector<std::string> new_refs;
+    for (const auto& cc : clip_comps_) {
+        // add() copies every field (params, mirror_ref/mult, value) and assigns
+        // a fresh reference with empty nodes.
+        std::string nr = doc_->add(cc.comp, cc.place.x + dx, cc.place.y + dy);
+        auto pl = doc_->placements.find(nr);
+        if (pl != doc_->placements.end()) {
+            pl->second.rot = cc.place.rot;
+            pl->second.flip_h = cc.place.flip_h;
+            pl->second.flip_v = cc.place.flip_v;
+        }
+        remap[cc.comp.ref] = nr;
+        new_refs.push_back(nr);
+    }
+
+    // If both a mirror copy and its unit were pasted, re-point the copy at the
+    // *pasted* unit rather than the original.
+    for (const auto& r : new_refs) {
+        for (auto& dst : doc_->circuit.comps) {
+            if (dst.ref != r) continue;
+            if (!dst.mirror_ref.empty() && remap.count(dst.mirror_ref))
+                dst.mirror_ref = remap[dst.mirror_ref];
+        }
+    }
+
+    // Copy the internal wires, rebinding their pin ends to the new refs.
+    for (const auto& cw : clip_wires_) {
+        Wire w;
+        w.pts = cw.pts;
+        for (auto& p : w.pts) { p.first += dx; p.second += dy; }
+        w.a = cw.a;
+        w.b = cw.b;
+        if (w.a.kind == WireEnd::Kind::Pin && remap.count(w.a.ref))
+            w.a.ref = remap[w.a.ref];
+        if (w.b.kind == WireEnd::Kind::Pin && remap.count(w.b.ref))
+            w.b.ref = remap[w.b.ref];
+        doc_->bind_wire_ends(w);
+        doc_->wires.push_back(w);
+    }
+
+    // Select the freshly pasted components.
+    sel_set_.clear();
+    for (const auto& r : new_refs) sel_set_.insert(r);
+    sel_ = new_refs.empty() ? "" : new_refs.front();
+    placing_ = false;
+    tool_ = Tool::Select;
+    notify_doc();
+    notify_sel();
+    Refresh();
+    if (on_status)
+        on_status("Pasted " + std::to_string(new_refs.size()) +
+                  " component(s)");
+}
+
 Selection SchematicCanvas::selection_info() const {
     Selection s;
     if (sel_.empty()) return s;
@@ -842,10 +951,9 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         }
         notify_doc();
         set_selection(ref);
-        // one component per key press: drop back to Select so the next click
-        // does not place again (and Escape is not needed)
-        placing_ = false;
-        tool_ = Tool::Select;
+        // Keep placing: the next click drops another copy of the same kind, so
+        // R -> click R1 -> click R2 -> Esc. (Switch kind by pressing its key
+        // again, e.g. M toggles NMOS/PMOS, then keep clicking.)
         break;
     }
     case Tool::Delete: {

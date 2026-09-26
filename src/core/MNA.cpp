@@ -91,7 +91,12 @@ void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
 
 } // namespace
 
-MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
+MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
+    // Resolve mirror copies into concrete scaled parameters first, so the MNA
+    // stamp and the pruner both see the materialised device model.
+    Circuit circ = cin;
+    resolve_mirrors(circ);
+
     std::string err;
     if (!circ.validate(err)) throw std::runtime_error(err);
 

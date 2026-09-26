@@ -31,6 +31,8 @@ enum {
     ID_SELECT_TOOL,
     ID_NET_LABEL,
     ID_ZOOM_FIT,
+    ID_COPY,
+    ID_PASTE,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -47,6 +49,8 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
     EVT_MENU(ID_IGNORE_NEG, MainFrame::on_ignore_neg)
     EVT_MENU(ID_ZOOM_FIT, MainFrame::on_zoom_fit)
+    EVT_MENU(ID_COPY, MainFrame::on_copy)
+    EVT_MENU(ID_PASTE, MainFrame::on_paste)
     EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
 
@@ -83,12 +87,19 @@ void MainFrame::build_menu() {
     edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection 90 deg");
     edit->Append(ID_DELETE, "&Delete\tDel", "Delete the selection");
     edit->AppendSeparator();
-    edit->Append(ID_NET_LABEL, "Place &net label(s)...\tN",
-                 "Name one or more nets");
+    edit->Append(ID_COPY, "&Copy\tCtrl+C", "Copy the selected components");
+    edit->Append(ID_PASTE, "&Paste\tCtrl+V", "Paste at the cursor");
+    edit->AppendSeparator();
+    // No bare-letter accelerators here: wxWidgets consults menu accelerators
+    // before the focused control, so "N"/"F" would fire while the user types
+    // those letters into a property field. The frame's CHAR_HOOK handles the
+    // bare letters (only when focus is NOT a text entry).
+    edit->Append(ID_NET_LABEL, "Place &net label(s)...",
+                 "Name one or more nets (also N)");
 
     auto* view = new wxMenu;
-    view->Append(ID_ZOOM_FIT, "&Fit components\tF",
-                 "Zoom to frame every component");
+    view->Append(ID_ZOOM_FIT, "&Fit components",
+                 "Zoom to frame every component (also F)");
     view->AppendSeparator();
     mi_ignore_ = view->AppendCheckItem(
         ID_IGNORE_NEG, "&Ignore negligible terms",
@@ -164,6 +175,9 @@ void MainFrame::on_zoom_fit(wxCommandEvent&) {
     canvas_->zoom_to_fit();
     SetStatusText("Zoomed to fit the components.", 0);
 }
+
+void MainFrame::on_copy(wxCommandEvent&) { canvas_->copy_selection(); }
+void MainFrame::on_paste(wxCommandEvent&) { canvas_->paste_clipboard(); }
 
 // The "Ignore negligible terms" switch is shared by the View menu, the toolbar
 // and every analysis card, so keep them in sync.
@@ -347,6 +361,9 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     // undo / redo: Ctrl+Z/Y plus Virtuoso-style U / Shift+U
     if (ctrl && !alt && code == 'Z') { on_undo_cmd(); return true; }
     if (ctrl && !alt && code == 'Y') { on_redo_cmd(); return true; }
+    // copy / paste
+    if (ctrl && !alt && code == 'C') { canvas_->copy_selection(); return true; }
+    if (ctrl && !alt && code == 'V') { canvas_->paste_clipboard(); return true; }
     if (!ctrl && !alt && (code == 'U' || code == 'u')) {
         if (shift) on_redo_cmd();
         else on_undo_cmd();
@@ -374,7 +391,7 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     auto place = [&](syms::Kind k) {
         canvas_->begin_place(k, 0);
         sync_palette();
-        SetStatusText("Placing -- Space rotates, Shift/Space flips, Esc cancels.",
+        SetStatusText("Placing -- click to drop another, Space rotates, Esc stops.",
                       0);
         return true;
     };
@@ -490,7 +507,7 @@ void MainFrame::show_instance_menu() {
         if (i < 0 || i >= n) return;
         canvas_->begin_place(ents[i].kind, 0);
         sync_palette();
-        SetStatusText("Placing -- Space rotates, Shift/Space flips, Esc cancels.",
+        SetStatusText("Placing -- click to drop another, Space rotates, Esc stops.",
                       0);
     });
     PopupMenu(&menu);

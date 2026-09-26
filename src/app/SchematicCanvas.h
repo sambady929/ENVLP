@@ -70,6 +70,8 @@ public:
     void flip_selection_h();
     void flip_selection_v();
     void delete_selection();  // Delete
+    void copy_selection();    // Ctrl+C
+    void paste_clipboard();   // Ctrl+V (paste at the cursor)
     void cancel_current();    // Escape
     bool handle_key(wxKeyEvent& e);
 
@@ -108,6 +110,20 @@ private:
     bool place_flip_h_ = false, place_flip_v_ = false;
     std::string sel_;
     std::set<std::string> sel_set_; // multi-component selection
+
+    // In-app clipboard for Ctrl+C / Ctrl+V. Holds whole components plus the
+    // wires that connect them, so pasting a diff pair or a mirror keeps its
+    // internal wiring.
+    struct ClipComp {
+        syms::Component comp;
+        Placement place;
+    };
+    struct ClipWire {
+        std::vector<Pt> pts;
+        WireEnd a, b;
+    };
+    std::vector<ClipComp> clip_comps_;
+    std::vector<ClipWire> clip_wires_;
 
     // interaction state
     bool dragging_ = false;
