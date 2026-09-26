@@ -36,6 +36,7 @@ struct RootInfo {
     std::string latex_label;  // LaTeX for the time-constant expression
     std::string latex_factor; // LaTeX for the (1 + s*tau) factor
     GiNaC::ex factor_expr;    // the (1 + s*tau) / higher-order factor itself
+    GiNaC::ex omega_expr;     // corner frequency 1/tau (simplified)
 };
 
 struct Pruned {

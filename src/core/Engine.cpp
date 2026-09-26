@@ -1,5 +1,6 @@
 #include "core/Engine.h"
 #include "core/Eng.h"
+#include "core/LowEntropy.h"
 #include "core/Print.h"
 
 #include <cctype>
@@ -144,53 +145,184 @@ std::string poles_zeros_text(const std::vector<RootInfo>& rs, bool is_pole) {
 // function over the sweep range: DC gain, the -3 dB corner, and the unity-gain
 // (0 dB) crossover. A single log-spaced scan is reused for both crossings
 // (with linear interpolation for sub-point precision).
-std::string gain_bw_text(const AnalysisResult& r) {
-    std::string out;
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Gain / bandwidth metrics, numeric AND symbolic.
+//
+// The symbolic forms exploit the factored low-entropy form
+//   H(s) = K / ((1 + s/wp0)(1 + s/wp1) ...).
+// The dominant (lowest-frequency) pole gives the -3 dB bandwidth whenever it
+// is far enough from the others that they barely move the corner. That
+// "far enough" is deliberately looser than the 60 dB pole/zero rule: a pole
+// 100x (40 dB) beyond the dominant one changes the -3 dB corner by a
+// hundredth of a dB, so it is neglected in the *bandwidth* reading even though
+// it is still listed in the pole table. Unity gain is more sensitive, so its
+// symbolic form only appears when the system is effectively single-pole across
+// the whole band (60 dB rule).
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr double kBandwidthPoleDb = 40.0; // 100x: negligible for -3 dB
+
+// LaTeX for an expression with an explicit \cdot between factors (the same
+// convention the low-entropy engine uses for its factors).
+
+
+// Symbolic corner-frequency lines w_p0 = 1/tau for each pole, using the
+// component time-constant labels the pruner already produced.
+void pole_wp_lines(const AnalysisResult& r, std::vector<std::string>& text,
+                   std::vector<std::string>& latex) {
+    for (size_t i = 0; i < r.pruned.poles.size(); ++i) {
+        const RootInfo& p = r.pruned.poles[i];
+        std::string tag = "w_p" + std::to_string(i);
+        double hz = std::fabs(p.omega) / (2.0 * M_PI);
+        if (p.omega == 0.0) {
+            text.push_back(tag + " = 0");
+            latex.push_back("\\mathrm{" + tag + "} = 0");
+        } else if (p.omega_expr.is_zero()) {
+            text.push_back(tag + " = " + fmt_hz(hz));
+            latex.push_back("\\mathrm{" + tag + "} = \\mathrm{" + fmt_hz(hz) +
+                            "}");
+        } else {
+            text.push_back(tag + " = " + pretty(p.omega_expr));
+            latex.push_back("\\mathrm{" + tag + "} = " +
+                            to_latex(p.omega_expr));
+        }
+    }
+}
+
+// Is every pole other than pole 0 at least `db` above it in frequency?
+bool others_far(const AnalysisResult& r, double db) {
+    const auto& p = r.pruned.poles;
+    if (p.empty() || p.front().omega == 0.0) return false;
+    double f0 = std::fabs(p.front().omega) / (2.0 * M_PI);
+    double lim = std::pow(10.0, db / 20.0);
+    for (size_t i = 1; i < p.size(); ++i) {
+        if (p[i].omega == 0.0) return false;
+        if (std::fabs(p[i].omega) / (2.0 * M_PI) < f0 * lim) return false;
+    }
+    return true;
+}
+
+struct Metrics {
+    std::string dc_db, dc_sym;         // DC gain (numeric dB, symbolic)
+    std::string bw3, bw3_sym;          // -3 dB bandwidth
+    std::string ugbw, ugbw_sym;        // unity-gain bandwidth
+    std::string dc_sym_latex, bw3_sym_latex, ugbw_sym_latex;
+};
+
+Metrics compute_metrics(const AnalysisResult& r) {
+    Metrics m;
     char buf[96];
 
+    // ---- DC gain ----
     double dc = mag_db_at(r, 0.0);
     if (std::isfinite(dc)) {
-        std::snprintf(buf, sizeof(buf), "  DC gain: %.2f dB\n", dc);
-        out += buf;
+        std::snprintf(buf, sizeof(buf), "%.2f dB", dc);
+        m.dc_db = buf;
     } else {
-        out += "  DC gain: n/a (zero or pole at DC)\n";
+        m.dc_db = "n/a";
     }
+    ex K = r.pruned.gain;
+    m.dc_sym = "K = " + pretty(K);
+    m.dc_sym_latex = "K = " + to_latex(K);
 
+    // ---- log-spaced magnitude scan for the numeric crossings ----
     double f0 = r.sweep.f_start_hz > 0 ? r.sweep.f_start_hz : 1.0;
     double f1 = r.sweep.f_stop_hz > f0 ? r.sweep.f_stop_hz : f0 * 1e6;
-
-    // One log-spaced magnitude sweep, reused to locate both crossings.
     const int N = 400;
-    std::vector<double> f(N), m(N);
+    std::vector<double> f(N), mag(N);
     for (int i = 0; i < N; ++i) {
         double t = double(i) / (N - 1);
         f[i] = f0 * std::pow(f1 / f0, t);
-        m[i] = mag_db_at(r, 2.0 * M_PI * f[i]);
+        mag[i] = mag_db_at(r, 2.0 * M_PI * f[i]);
     }
     auto find_cross = [&](double target_db) -> double {
-        for (int i = 1; i < N; ++i) {
-            if (std::isfinite(m[i - 1]) && std::isfinite(m[i]) &&
-                m[i - 1] > target_db && m[i] <= target_db) {
-                double frac = (m[i - 1] - target_db) / (m[i - 1] - m[i]);
+        if (std::isfinite(mag[0]) && mag[0] <= target_db) return f0; // below start
+        for (int i = 1; i < N; ++i)
+            if (std::isfinite(mag[i - 1]) && std::isfinite(mag[i]) &&
+                mag[i - 1] > target_db && mag[i] <= target_db) {
+                double frac = (mag[i - 1] - target_db) / (mag[i - 1] - mag[i]);
                 return f[i - 1] + frac * (f[i] - f[i - 1]);
             }
-        }
         return -1.0;
     };
-
     double bw3 = std::isfinite(dc) ? find_cross(dc - 3.0) : -1.0;
-    double bw0 = find_cross(0.0);
+    double ugbw = find_cross(0.0);
+    auto fmt_bw = [&](double v) -> std::string {
+        if (v < 0.0) return "> " + fmt_hz(f1);
+        if (v <= f0) return "< " + fmt_hz(f0);
+        return fmt_hz(v);
+    };
+    m.bw3 = fmt_bw(bw3);
+    m.ugbw = ugbw < 0.0 ? "none within sweep" : fmt_bw(ugbw);
 
-    if (bw3 < 0.0)
-        out += "  -3 dB bandwidth: > " + fmt_hz(f1) + "\n";
-    else
-        out += "  -3 dB bandwidth: " + fmt_hz(bw3) + "\n";
+    // ---- symbolic -3 dB: the dominant pole when the rest are far ----
+    if (others_far(r, kBandwidthPoleDb) && !r.pruned.poles.empty()) {
+        const RootInfo& p0 = r.pruned.poles.front();
+        if (!p0.omega_expr.is_zero()) {
+            std::string w = pretty(p0.omega_expr);
+            m.bw3_sym = "w_p0 = " + w + "  =>  f = " + w + "/(2*Pi)";
+            m.bw3_sym_latex = "w_{p0} = " + to_latex(p0.omega_expr) +
+                              ",\\quad f_{-3dB} = \\frac{w_{p0}}{2\\pi}";
+        }
+    }
 
-    if (bw0 < 0.0)
-        out += "  Unity-gain (0 dB) bandwidth: none within sweep\n";
-    else
-        out += "  Unity-gain (0 dB) bandwidth: " + fmt_hz(bw0) + "\n";
+    // ---- symbolic unity gain: K*w_p0/(2*Pi) when effectively single-pole ----
+    if (others_far(r, r.opts.pole_zero_threshold_db) &&
+        !r.pruned.poles.empty() && !r.pruned.poles.front().omega_expr.is_zero()) {
+        const RootInfo& p0 = r.pruned.poles.front();
+        std::string w = pretty(p0.omega_expr);
+        m.ugbw_sym = "K*w_p0/(2*Pi) with K = " + pretty(K) + ", w_p0 = " + w;
+        m.ugbw_sym_latex = "f_{0dB} = \\frac{K\\,w_{p0}}{2\\pi},\\quad K = " +
+                           to_latex(K) + ",\\ w_{p0} = " +
+                           to_latex(p0.omega_expr);
+    }
+    return m;
+}
 
+std::string metrics_text(const AnalysisResult& r) {
+    Metrics m = compute_metrics(r);
+    std::string out;
+    out += "  DC gain: " + m.dc_db;
+    if (!m.dc_sym.empty()) out += "   [" + m.dc_sym + "]";
+    out += "\n";
+    out += "  -3 dB bandwidth: " + m.bw3;
+    if (!m.bw3_sym.empty()) out += "   [" + m.bw3_sym + "]";
+    out += "\n";
+    out += "  Unity-gain (0 dB) bandwidth: " + m.ugbw;
+    if (!m.ugbw_sym.empty()) out += "   [" + m.ugbw_sym + "]";
+    out += "\n";
+    // symbolic pole corner frequencies (w_p0 = 1/tau0, ...)
+    std::vector<std::string> ptxt, ptex;
+    pole_wp_lines(r, ptxt, ptex);
+    if (!ptxt.empty()) {
+        out += "  pole corner frequencies:\n";
+        for (const auto& line : ptxt) out += "    " + line + "\n";
+    }
+    return out;
+}
+
+std::string metrics_latex(const AnalysisResult& r) {
+    Metrics m = compute_metrics(r);
+    std::string out;
+    out += "Gain / bandwidth:\n";
+    out += "\\mathrm{DC\\ gain} = " + (m.dc_sym_latex.empty()
+                                           ? "\\mathrm{" + m.dc_db + "}"
+                                           : m.dc_sym_latex) +
+           "\\quad = \\mathrm{" + m.dc_db + "}\n";
+    out += "\\mathrm{-3\\ dB\\ bandwidth} = " +
+           (m.bw3_sym_latex.empty() ? "\\mathrm{" + m.bw3 + "}"
+                                    : m.bw3_sym_latex) +
+           "\\quad = \\mathrm{" + m.bw3 + "}\n";
+    out += "\\mathrm{unity\\mbox{-}gain\\ bandwidth} = " +
+           (m.ugbw_sym_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
+                                     : m.ugbw_sym_latex) +
+           "\\quad = \\mathrm{" + m.ugbw + "}\n";
+    std::vector<std::string> ptxt, ptex;
+    pole_wp_lines(r, ptxt, ptex);
+    for (const auto& line : ptex) out += line + "\n";
     return out;
 }
 
@@ -208,7 +340,7 @@ std::string format_report(const AnalysisResult& r) {
                "does not factor symbolically, so numeric estimate-based roots "
                "were used)\n";
     out += "\nGain / bandwidth:\n";
-    out += gain_bw_text(r);
+    out += metrics_text(r);
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";
@@ -248,7 +380,8 @@ std::string pole_zero_latex(const RootInfo& r, int i) {
 
 std::string format_report_latex(const AnalysisResult& r) {
     std::string out;
-    out += "Poles:\n";
+    out += metrics_latex(r);
+    out += "\nPoles:\n";
     if (r.pruned.poles.empty()) {
         out += "\\mathrm{none}\n";
     } else {

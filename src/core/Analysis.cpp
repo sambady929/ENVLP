@@ -341,17 +341,54 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// Loop gain / return ratio (nullor-substitution / Rosenstark form).
+// Loop gain by the return-ratio (Rosenstark) method.
 //
-// Reference element X is replaced by an ideal nullor to get the ideal
-// closed-loop gain H_inf. With a nullor break the closed loop obeys
-//     H(s) = H_inf * T/(1+T) + H_0/(1+T),
-// so with no direct feedforward (H_0 = 0 -- true whenever the reference
-// element is the only forward path through the loop) the return ratio is
-//     T(s) = H / (H_inf - H).
-// The direct-feedthrough term H_0 is not synthesised here; the report notes
-// the assumption so the user can sanity-check the topology.
+// We never break the loop. The reference amplifier is:
+//   1. replaced by a nullor to get the asymptotic (ideal) closed-loop gain
+//      H_inf -- the inputs become a virtual short;
+//   2. replaced by an *independent test voltage* at its output, with its
+//      control coupling opened, so the network returns the feedback factor
+//      beta = v(ctrl+) - v(ctrl-) to its control port.
+// The return ratio is T(s) = -A(s)*beta, where A(s) = A/(1 + s*A/(2*pi*GBW))
+// is the amplifier's own single-pole gain. H_inf and T are both reported.
 // ---------------------------------------------------------------------------
+namespace {
+
+struct AmpPorts {
+    std::string cp, cn; // control port (cp - cn is the returned voltage)
+    std::string op, on; // output port the test source drives
+    bool ok = false;
+};
+
+AmpPorts amp_ports(const Component& c) {
+    const auto& nd = c.nodes;
+    switch (c.kind) {
+        case Kind::OPAMP:
+            if (nd.size() >= 3) return {nd[0], nd[1], nd[2], "0", true};
+            break;
+        case Kind::FDOPAMP:
+            if (nd.size() >= 4) return {nd[0], nd[1], nd[2], nd[3], true};
+            break;
+        case Kind::NULLOR:
+            if (nd.size() >= 3) return {nd[0], nd[1], nd[2], "0", true};
+            break;
+        case Kind::AMP:
+            if (nd.size() >= 2) return {nd[0], nd[1], nd[1], "0", true};
+            break;
+        case Kind::NMOS:
+        case Kind::PMOS:
+        case Kind::NPN:
+        case Kind::PNP:
+            if (nd.size() >= 3) return {nd[1], nd[2], nd[0], "0", true};
+            break;
+        default:
+            break;
+    }
+    return {};
+}
+
+} // namespace
+
 CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
     cr.kind = AnalysisKind::LoopGain;
@@ -363,17 +400,20 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         cr.report = cr.summary + "\n";
         return cr;
     }
-    if (ref->nodes.size() != 2 && ref->nodes.size() != 3) {
-        cr.summary = "reference element must be a 2- or 3-terminal device";
+    AmpPorts ports = amp_ports(*ref);
+    if (!ports.ok) {
+        cr.summary = "reference element '" + s.probe_ref +
+                     "' is not an amplifier-like device";
         cr.report = cr.summary + "\n";
         return cr;
     }
 
     // Actual closed-loop gain with the element present.
     CardResult actual = analyze_tf(c, s);
+    ParamTable pt = actual.transfer.params;
+    ex s_ex = pt.get("s");
 
-    // Replace the reference element with a nullor (ideal infinite gain) to
-    // obtain the ideal closed-loop transfer H_inf.
+    // ---- 1. H_inf: replace the amplifier with a nullor (virtual short) ----
     Circuit ci = c;
     for (auto& cc : ci.comps) {
         if (cc.ref != s.probe_ref) continue;
@@ -381,18 +421,14 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         cc.kind = Kind::NULLOR;
         if (orig == Kind::NMOS || orig == Kind::PMOS || orig == Kind::NPN ||
             orig == Kind::PNP) {
-            // gate/base = nullator input, drain/collector = norator output,
-            // source/emitter = reference of the nullator
             cc.nodes = {cc.nodes[1], cc.nodes[2], cc.nodes[0]};
         } else if (orig == Kind::OPAMP || orig == Kind::FDOPAMP) {
-            // in+, in-, out -- nullor across the input pair
             cc.nodes = {cc.nodes[0], cc.nodes[1],
                         cc.nodes.size() > 2 ? cc.nodes[2] : cc.nodes[0]};
         } else {
             cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[0]};
         }
     }
-
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
@@ -402,69 +438,114 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
-    // T = H_inf/H - 1
-    PruneOptions o = opts_of(s);
-    ParamTable pt = actual.transfer.params;
+    // ---- 2. beta: drive the output with a test voltage, control opened ----
+    Circuit ct = c;
+    for (size_t i = 0; i < ct.comps.size(); ++i) {
+        if (ct.comps[i].ref == s.probe_ref) {
+            ct.comps.erase(ct.comps.begin() + i);
+            break;
+        }
+    }
+    {
+        Component vt;
+        vt.kind = Kind::V;
+        vt.ref = "__TEST__";
+        vt.nodes = {ports.op, ports.on};
+        vt.value_text = "1";
+        ct.comps.push_back(vt);
+    }
+    auto test_v = [&](const std::string& node) -> ex {
+        if (node == "0" || node == "GND") return ex(0);
+        RawTF t = raw_tf(ct, "__TEST__", "V(" + node + ")");
+        return (t.num / t.den).normal();
+    };
+    ex beta;
+    try {
+        beta = (test_v(ports.cp) - test_v(ports.cn)).normal();
+    } catch (const std::exception& e) {
+        cr.summary = std::string("return-ratio test failed: ") + e.what();
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
 
-    ex Hact = (actual.transfer.num_raw / actual.transfer.den_raw).normal();
-    ex Hinf = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
-    ex T;
-    bool ok = true;
-    if (Hinf.is_zero()) {
-        ok = false; // no forward path through the break: no loop
-    } else if (Hact.is_zero()) {
-        T = ex(0);
-    } else {
-        ex diff = (Hinf - Hact).normal();
-        if (diff.is_zero()) {
-            ok = false; // H == H_inf everywhere: no feedback to break
-        } else {
-            T = (Hact / diff).normal();
+    // A(s) = A / (1 + s*A/(2*pi*GBW)); T = -A(s)*beta.
+    ex A_sym = pt.get("A_" + s.probe_ref);
+    pt.set("A_" + s.probe_ref, ref->estimate(), UnitClass::Plain);
+    ex gbw_sym = pt.get("GBW_" + s.probe_ref);
+    double gbw_num = ref->param_estimate("GBW");
+    pt.set("GBW_" + s.probe_ref, gbw_num, UnitClass::Plain);
+    ex T = -A_sym * beta;
+    if (gbw_num > 0.0)
+        T = (T / (1 + s_ex * A_sym / (2.0 * M_PI * gbw_sym))).normal();
+
+    PruneOptions o = opts_of(s);
+    Pruned Tp = prune_low_entropy(T.numer(), T.denom(), pt, o);
+    if (Tp.text.empty()) Tp.text = "0";
+
+    AnalysisResult res;
+    res.input_desc = "return ratio";
+    res.output_desc = "T(" + s.probe_ref + ")";
+    res.num_raw = T.numer();
+    res.den_raw = T.denom();
+    res.params = pt;
+    res.opts = o;
+    res.sweep = s.sweep;
+    res.pruned = Tp;
+    res.report = format_report(res);
+
+    // Phase margin: at the unity-gain crossover, PM = 180 + angle(T).
+    double pm = -1.0, ugf = -1.0;
+    {
+        double f0 = s.sweep.f_start_hz > 0 ? s.sweep.f_start_hz : 1.0;
+        double f1 = s.sweep.f_stop_hz > f0 ? s.sweep.f_stop_hz : f0 * 1e6;
+        const int N = 800;
+        double prev_f = f0, prev_m = mag_db_at(res, 2.0 * M_PI * f0);
+        for (int i = 1; i <= N; ++i) {
+            double t = double(i) / N;
+            double f = f0 * std::pow(f1 / f0, t);
+            double m = mag_db_at(res, 2.0 * M_PI * f);
+            if (std::isfinite(prev_m) && std::isfinite(m) && prev_m > 0.0 &&
+                m <= 0.0) {
+                double frac = (prev_m - 0.0) / (prev_m - m);
+                ugf = prev_f + frac * (f - prev_f);
+                double ph = phase_deg_at(res, 2.0 * M_PI * ugf);
+                pm = 180.0 + ph;
+                break;
+            }
+            prev_f = f;
+            prev_m = m;
         }
     }
 
-    Pruned Tp;
-    if (ok && !T.is_zero()) {
-        Tp = prune_low_entropy(T.numer(), T.denom(), pt, o);
-    } else {
-        Tp.text = ok ? "0" : "undefined (H == H_inf: nothing to break)";
-    }
-    if (Tp.text.empty()) Tp.text = "0";
-
     std::string rep = "Return-ratio / loop-gain analysis\n";
-    rep += "reference element: " + s.probe_ref + "\n";
+    rep += "reference amplifier: " + s.probe_ref + "\n";
     rep += "----------------------------------------\n";
-    rep += "Actual closed-loop gain:\n  H(s)     = " + actual.text + "\n";
-    rep += "Ideal (nullor substitution):\n  H_inf(s) = " + ideal.text + "\n";
-    rep += "  LaTeX: " + ideal.latex + "\n";
-    rep += "\nReturn ratio  T(s) = H / (H_inf - H) :\n";
-    rep += "  T(s) = " + Tp.text + "\n";
-    rep += "  LaTeX: " + Tp.latex + "\n";
+    rep += "Asymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
+    rep += "Closed-loop gain:\n  H(s)     = " + actual.text + "\n";
+    rep += "\nFeedback factor (test source at the output, control opened):\n";
+    rep += "  beta(s) = " + pretty(beta) + "\n";
+    rep += "\nReturn ratio  T(s) = -A(s)*beta(s):\n";
+    rep += res.report;
+    if (pm >= 0.0) {
+        char b[128];
+        std::snprintf(b, sizeof(b),
+                      "\nStability: unity-gain T at %s Hz, phase margin = "
+                      "%.1f deg\n",
+                      eng::format_si(ugf, 3).c_str(), pm);
+        rep += b;
+    } else {
+        rep += "\nStability: T never crosses 0 dB within the sweep "
+               "(no unity-gain frequency)\n";
+    }
     rep += "\n";
-    rep += "Assumes no direct feedthrough at the break (H_0 = 0), i.e. the\n";
-    rep += "reference element is the only forward path through the loop.\n";
-    rep += "Plot Bode / Nyquist / Nichols using the transfer function below\n";
-    rep += "(the Bode tab shows T).\n";
 
     cr.text = "T(s) = " + Tp.text;
     cr.latex = Tp.latex;
+    cr.latex_report = format_report_latex(res);
     cr.summary = "H_inf = " + ideal.text + " ;  T = " + Tp.text;
     cr.report = rep;
     cr.has_transfer = true;
-    if (ok) {
-        AnalysisResult res;
-        res.input_desc = "return ratio";
-        res.output_desc = "T(" + s.probe_ref + ")";
-        res.num_raw = T.numer();
-        res.den_raw = T.denom();
-        res.params = pt;
-        res.opts = o;
-        res.pruned = Tp;
-        res.report = format_report(res);
-        cr.transfer = res;
-    } else {
-        cr.transfer = actual.transfer;
-    }
+    cr.transfer = res;
     return cr;
 }
 

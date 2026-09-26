@@ -57,7 +57,10 @@ struct ParamTable {
             auto it = syms.find(kv.first);
             if (it != syms.end()) m[it->second] = GiNaC::ex(kv.second);
         }
-        return e.subs(m);
+        GiNaC::ex r = e.subs(m);
+        // Fold floating-point constants (e.g. Pi) so callers that test
+        // is_a<numeric> see a number; symbolic variables are unaffected.
+        return r.evalf();
     }
 };
 

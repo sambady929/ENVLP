@@ -950,6 +950,103 @@ static void test_gain_bw_report() {
     CHECK(r.report.find("Unity-gain") != std::string::npos);
     // RC low-pass: DC gain 0 dB, -3 dB at 1/(2*pi*R*C) ~ 15.9 kHz.
     CHECK(r.report.find("kHz") != std::string::npos);
+    // Symbolic: the single pole is R1*C1, so the report carries w_p0 = 1/(R1*C1).
+    CHECK(r.report.find("w_p0") != std::string::npos);
+    CHECK(r.report.find("R1*C1") != std::string::npos);
+}
+
+// Symbolic gain/bandwidth in the LaTeX report (Math tab).
+static void test_metrics_latex() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1n"));
+    c = ground(c);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.sweep.f_start_hz = 1.0;
+    req.sweep.f_stop_hz = 1e6;
+    AnalysisResult r = analyze(c, req);
+    std::string lx = format_report_latex(r);
+    CHECK(lx.find("DC\\ gain") != std::string::npos);
+    CHECK(lx.find("-3\\ dB\\ bandwidth") != std::string::npos);
+    CHECK(lx.find("unity") != std::string::npos);
+    CHECK(lx.find("w_{p0}") != std::string::npos);
+}
+
+// The symbolic -3 dB bandwidth must collapse to the dominant pole alone when
+// the second pole is far enough away (100x) that it cannot move the corner,
+// even though that second pole is still listed in the pole table.
+static void test_metrics_dominant_pole_bandwidth() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "a"}, "1k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"a", "0"}, "1n")); // tau ~ 1 us
+    c.comps.push_back(comp(Kind::R, "R2", {"a", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::C, "C2", {"out", "0"}, "1p")); // ~ 10 ns
+    c = ground(c);
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.sweep.f_start_hz = 1.0;
+    req.sweep.f_stop_hz = 1e9;
+    AnalysisResult r = analyze(c, req);
+    // the -3 dB symbolic line names the dominant pole w_p0 (bandwidth reduces
+    // to the dominant time constant when the other pole is 100x away)
+    CHECK(r.report.find("w_p0") != std::string::npos);
+    CHECK(r.report.find("-3 dB bandwidth") != std::string::npos);
+}
+
+// Amplifier gain is symbolic: A/(A+1) must simplify to 1 for a large A, so the
+// closed-loop gain reads -R1 (not a decimal ratio).
+static void test_amp_gain_is_symbolic() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e9");
+    op.param_text["GBW"] = "1e6";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.f0_hz = 1.0;
+    sp.sweep.f_start_hz = 1.0;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    // the printed H(s) keeps R1 and drops the A/(A+1) ~ 1 factor
+    CHECK(cr.transfer.pruned.text.find("R1") != std::string::npos);
+    CHECK(cr.transfer.pruned.text.find("A_U1/(A_U1") == std::string::npos);
+}
+
+// Loop gain by the return-ratio method: H_inf is the ideal gain, and the
+// report includes the numeric gain/bandwidth metrics and a phase margin.
+static void test_loop_gain_return_ratio() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"0", "n1"}, "1p"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e9");
+    op.param_text["GBW"] = "1e6";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::LoopGain;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.probe_ref = "U1";
+    sp.sweep.f_start_hz = 1.0;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("Return-ratio") != std::string::npos);
+    CHECK(cr.report.find("H_inf") != std::string::npos);
+    CHECK(cr.report.find("beta") != std::string::npos);
+    CHECK(cr.report.find("Gain / bandwidth") != std::string::npos);
+    CHECK(cr.report.find("phase margin") != std::string::npos);
+    // the asymptotic gain of a TIA is -R1
+    CHECK(cr.summary.find("H_inf") != std::string::npos);
 }
 
 // The Miller feedforward zero (s = gm/Cgd) from a gate-drain capacitance is a
@@ -1035,6 +1132,10 @@ int main(int argc, char** argv) {
         {"series_20db", test_series_reduction_20db},
         {"miller_zero_survives", test_miller_zero_survives_pruning},
         {"gain_bw_report", test_gain_bw_report},
+        {"metrics_latex", test_metrics_latex},
+        {"metrics_dominant_pole", test_metrics_dominant_pole_bandwidth},
+        {"amp_gain_symbolic", test_amp_gain_is_symbolic},
+        {"loop_gain_return_ratio", test_loop_gain_return_ratio},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";

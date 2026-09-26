@@ -283,11 +283,20 @@ struct Candidate {
 std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
     struct Sym { double v; ex e; };
     std::vector<Sym> rs, cs, ls, gs;
+    // Amplifier poles: an op-amp's dominant pole sits at w0 = 2*pi*GBW/A, so
+    // its time constant is A/(2*pi*GBW). Collected by symbol-name prefix (the
+    // A_* / GBW_* variables MNA registers for the amplifier-like blocks).
+    std::vector<Sym> amps, gbws;
     for (const auto& kv : pt.est) {
-        auto cit = pt.cls.find(kv.first);
         auto sit = pt.syms.find(kv.first);
-        if (cit == pt.cls.end() || sit == pt.syms.end()) continue;
+        if (sit == pt.syms.end()) continue;
         if (kv.second <= 0.0 || !std::isfinite(kv.second)) continue;
+        const std::string& name = kv.first;
+        if (name.rfind("A_", 0) == 0) amps.push_back({kv.second, sit->second});
+        else if (name.rfind("GBW_", 0) == 0)
+            gbws.push_back({kv.second, sit->second});
+        auto cit = pt.cls.find(kv.first);
+        if (cit == pt.cls.end()) continue;
         ex e = sit->second;
         switch (cit->second) {
             case UnitClass::Ohm: rs.push_back({kv.second, e}); break;
@@ -308,6 +317,15 @@ std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
         for (const auto& r : rs) add(l.v / r.v, l.e / r.e);
     for (const auto& c : cs)
         for (const auto& g : gs) add(c.v / g.v, c.e / g.e);
+    // op-amp dominant pole: tau = A/(2*pi*GBW) (open loop), and its
+    // closed-loop counterpart tau = 1/(2*pi*GBW) when the feedback gain is
+    // small enough that the loop crosses over at the gain-bandwidth product.
+    ex two_pi = 2 * ex(GiNaC::Pi);
+    for (const auto& a : amps)
+        for (const auto& g : gbws) {
+            add(a.v / (2.0 * M_PI * g.v), a.e / (two_pi * g.e));
+            add(1.0 / (2.0 * M_PI * g.v), 1 / (two_pi * g.e));
+        }
     // parallel resistor pairs: (R1||R2)*C  -- the signature of a pole
     for (size_t i = 0; i < rs.size(); ++i)
         for (size_t j = i + 1; j < rs.size(); ++j) {
@@ -551,6 +569,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             r.latex_factor = to_latex_cdot(f.expr);
             r.latex_label = "s";
             r.factor_expr = f.expr;
+            r.omega_expr = 0;
             out.push_back(r);
             continue;
         }
@@ -570,6 +589,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
                 r.omega = 1.0 / r.tau;
                 r.f_hz = r.omega / (2.0 * M_PI);
             }
+            r.omega_expr = (c0 / c1).normal();
             if (is_a<GiNaC::mul>(tau_ex) || is_a<GiNaC::add>(tau_ex) ||
                 is_parallel(tau_ex)) {
                 // factor common terms so a pole reads as "(Rd||ro)*(Cgd+CL)"
