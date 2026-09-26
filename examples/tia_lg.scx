@@ -1,0 +1,19 @@
+symcirc 1
+req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+comp "U1" "OPAMP" 360 310 0 0 1 0 "1G"
+comp "GND1" "GND" 300 340 0 0 0 0 ""
+comp "I1" "I" 170 330 0 0 0 0 ""
+comp "GND2" "GND" 170 360 0 0 0 0 ""
+comp "R1" "R" 360 230 0 0 0 0 "1k"
+comp "C1" "C" 240 330 90 0 0 0 "1p"
+comp "GND3" "GND" 240 360 0 0 0 0 ""
+wire 240,300 240,290 320,290 320,300 310,300 310,298 320,298 pin:C1:1 pin:U1:1
+wire 240,300 240,290 170,290 170,300 pin:C1:1 pin:I1:0
+wire 300,340 300,322 320,322 pin:GND1:0 pin:U1:0
+wire 330,230 320,230 320,290 pin:R1:0 free
+wire 390,230 440,230 440,310 400,310 pin:R1:1 pin:U1:2
+netlabel 432.909,230 445.279,219.25 "out" 9
+card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Output impedance" 0
+card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 0 1 1 "Transfer function (H(s))" 0
+card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1
+card "Loop gain (return ratio)" "I1" "V(out)" "U1" 1 1e+09 0 10 1 1 1 "Loop gain (return ratio)" 1

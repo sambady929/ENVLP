@@ -278,13 +278,13 @@ void draw_bjt(Ctx& t, Kind k) {
 // --- amplifiers / blocks ---------------------------------------------------
 void draw_opamp(Ctx& t, bool fully_diff) {
     t.w(kWire);
-    t.line(-40, -12, -30, -12);
-    t.line(-40, 12, -30, 12);
+    t.line(-40, -10, -30, -10);
+    t.line(-40, 10, -30, 10);
     if (fully_diff) {
         // short horizontal output leads that start where the slanted edges
         // meet the output pin heights
-        t.line(-2.3, -14, 22, -14);
-        t.line(-2.3, 14, 22, 14);
+        t.line(-2.3, -10, 22, -10);
+        t.line(-2.3, 10, 22, 10);
     } else {
         t.line(21.96, 0, 40, 0);
     }
@@ -293,17 +293,17 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.w(kWire);
     if (fully_diff) {
         // input + / - (inverting input is the lower one)
-        t.line(-24, -12, -18, -12);
-        t.line(-21, -15, -21, -9);
-        t.line(-24, 12, -18, 12);
+        t.line(-24, -10, -18, -10);
+        t.line(-21, -13, -21, -7);
+        t.line(-24, 10, -18, 10);
         // output marks moved further left: - on the top output, + below
-        t.line(-14, -14, -9, -14);
-        t.line(-12, -17, -12, -11); // plus on the lower output
-        t.line(-14, 14, -9, 14);    // minus on the upper output
+        t.line(-14, -10, -9, -10);
+        t.line(-12, -13, -12, -7); // plus on the lower output
+        t.line(-14, 10, -9, 10);   // minus on the upper output
     } else {
-        t.line(-27, -12, -21, -12);
-        t.line(-24, -15, -24, -9);
-        t.line(-27, 12, -21, 12);
+        t.line(-27, -10, -21, -10);
+        t.line(-24, -13, -24, -7);
+        t.line(-27, 10, -21, 10);
     }
 }
 
@@ -447,11 +447,11 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
         return;
     }
 
-    // Text placement: the ref + value sit centred vertically on the right
-    // edge of the symbol, drawn horizontally in world space. `symbol_bbox`
-    // now unions the *drawn body* (not just the pin line), so the label
-    // clears the artwork for every rotation. A comfortable gap keeps it
-    // from crowding the symbol.
+    // Text placement. A *horizontal* component (its body runs left-to-right)
+    // puts the reference above the body and the value below it, both centred;
+    // a *vertical* component stacks the two to the right of the body. The
+    // anchor distances come from symbol_bbox, which unions the drawn body, so
+    // each kind uses its own size instead of one fixed offset.
     double fs = 9.0;
 
     wxFont ref_font = base;
@@ -467,38 +467,64 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     wxString val_text = !c.value_text.empty()
                             ? wxString::FromUTF8(c.value_text)
                             : wxString();
-    // Two rows -> 2*lh; one row -> lh.
-    double total_h = val_text.IsEmpty() ? lh : 2 * lh;
-    // Stack: ref on top, value below, anchored just right of the body and
-    // vertically centred on it.
-    double stack_y = (by0 + by1) / 2.0 - total_h / 2.0;
-    double tx = bx1 + 6.0;
 
-    dc.DrawText(ref_text, wxPoint(int(tx), int(stack_y)));
-    if (!val_text.IsEmpty()) {
-        wxFont val_font = base;
-        val_font.SetPointSize(int(fs));
-        val_font.SetStyle(wxFONTSTYLE_ITALIC);
-        dc.SetFont(val_font);
-        dc.SetTextForeground(kValInk);
-        dc.DrawText(val_text, wxPoint(int(tx), int(stack_y + lh)));
-        dc.SetTextForeground(kRefInk);
+    bool horizontal = (bx1 - bx0) >= (by1 - by0);
+    double cx = (bx0 + bx1) / 2.0;
+    // A small margin on top of the (already size-aware) bbox.
+    double gap = std::max(2.0, lh * 0.35);
+    double marker_x = bx1 + gap, marker_y = by1 + gap;
+
+    if (horizontal) {
+        dc.DrawText(ref_text,
+                    wxPoint(int(cx - ref_ts.x / 2.0), int(by0 - gap - lh)));
+        if (!val_text.IsEmpty()) {
+            wxFont val_font = base;
+            val_font.SetPointSize(int(fs));
+            val_font.SetStyle(wxFONTSTYLE_ITALIC);
+            dc.SetFont(val_font);
+            dc.SetTextForeground(kValInk);
+            wxSize vs = dc.GetTextExtent(val_text);
+            double vy = by1 + gap;
+            dc.DrawText(val_text, wxPoint(int(cx - vs.x / 2.0), int(vy)));
+            marker_x = cx + vs.x / 2.0 + 2.0;
+            marker_y = vy;
+            dc.SetTextForeground(kRefInk);
+        } else {
+            marker_x = cx + ref_ts.x / 2.0 + 2.0;
+            marker_y = by0 - gap - lh;
+        }
+    } else {
+        double total_h = val_text.IsEmpty() ? lh : 2 * lh;
+        double stack_y = (by0 + by1) / 2.0 - total_h / 2.0;
+        double tx = bx1 + gap;
+        dc.DrawText(ref_text, wxPoint(int(tx), int(stack_y)));
+        if (!val_text.IsEmpty()) {
+            wxFont val_font = base;
+            val_font.SetPointSize(int(fs));
+            val_font.SetStyle(wxFONTSTYLE_ITALIC);
+            dc.SetFont(val_font);
+            dc.SetTextForeground(kValInk);
+            dc.DrawText(val_text, wxPoint(int(tx), int(stack_y + lh)));
+            dc.SetTextForeground(kRefInk);
+        }
+        marker_x = tx;
+        marker_y = stack_y + (val_text.IsEmpty() ? 0 : lh) + lh;
     }
     dc.SetFont(base);
 
-    // device non-ideality marker (¶): sits to the right of the value text,
-    // one row below the ref, when at least one parasitic is enabled.
+    // device non-ideality marker (¶): sits just past the label text when at
+    // least one parasitic is enabled.
     if (syms::is_device(c.kind)) {
         bool any = false;
         for (const auto& kv : c.param_on)
             if (kv.second) any = true;
         if (any) {
             dc.SetTextForeground(wxColour(170, 60, 20));
-            double my = stack_y + (val_text.IsEmpty() ? 0 : lh) + lh;
             // Use an explicitly constructed Unicode char: a raw "\u00b6"
             // narrow literal is UTF-8 (0xC2 0xB6) and wxString's implicit
             // conversion misreads it as two Latin-1 bytes ("Â¶").
-            dc.DrawText(wxString(wxUniChar(0x00B6)), wxPoint(int(tx), int(my)));
+            dc.DrawText(wxString(wxUniChar(0x00B6)),
+                        wxPoint(int(marker_x), int(marker_y)));
         }
     }
 }

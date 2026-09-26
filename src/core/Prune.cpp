@@ -45,10 +45,10 @@ Pruned prune_low_entropy(const ex& num, const ex& den, ParamTable& params,
 
     for (const auto& r : le.zeros)
         R.zeros.push_back({r.omega, r.tau, r.real, r.q, r.label, r.factor,
-                           r.latex_label, r.latex_factor});
+                           r.latex_label, r.latex_factor, r.factor_expr});
     for (const auto& r : le.poles)
         R.poles.push_back({r.omega, r.tau, r.real, r.q, r.label, r.factor,
-                           r.latex_label, r.latex_factor});
+                           r.latex_label, r.latex_factor, r.factor_expr});
 
     return R;
 }

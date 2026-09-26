@@ -53,11 +53,12 @@ std::vector<Pt> pin_offsets(Kind k) {
         return {{-40, -20}, {-40, 20}, {40, -20}, {40, 20}};
     case Kind::NULLOR:
     case Kind::OPAMP:
-        // in+ , in- , out
-        return {{-40, -12}, {-40, 12}, {40, 0}};
+        // in+ , in- , out. The inputs sit at +/-10 (one grid step) so a
+        // grid-placed op-amp lands its pins on the grid too.
+        return {{-40, -10}, {-40, 10}, {40, 0}};
     case Kind::FDOPAMP:
         // in+ , in- , out+ , out-
-        return {{-40, -14}, {-40, 14}, {34, -14}, {34, 14}};
+        return {{-40, -10}, {-40, 10}, {34, -10}, {34, 10}};
     case Kind::K:
         return {};
     }

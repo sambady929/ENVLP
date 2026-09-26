@@ -550,6 +550,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             r.factor = f.text;
             r.latex_factor = to_latex_cdot(f.expr);
             r.latex_label = "s";
+            r.factor_expr = f.expr;
             out.push_back(r);
             continue;
         }
@@ -563,6 +564,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             Root r;
             r.factor = f.text;
             r.latex_factor = to_latex_cdot(f.expr);
+            r.factor_expr = f.expr;
             if (is_a<numeric>(tau_n)) r.tau = GiNaC::ex_to<numeric>(tau_n).to_double();
             if (r.tau != 0.0) {
                 r.omega = 1.0 / r.tau;
@@ -589,6 +591,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
                 Root r;
                 r.factor = f.text;
                 r.latex_factor = to_latex_cdot(f.expr);
+                r.factor_expr = f.expr;
                 if (std::abs(z.imag()) < 1e-6 * (1.0 + std::abs(z.real()))) {
                     r.real = true;
                     r.tau = -1.0 / z.real();
@@ -832,6 +835,7 @@ static ex drop_small_resistors(const ex& sum, const ParamTable& pt,
 // Collapse a series combination of resistors to the dominant one (20 dB):
 // R1 + R2 -> R1 when R2 << R1, and R1*C + R2*C -> R1*C. This is the series
 // dual of prune_parallel, and it runs at the same (20 dB) structural threshold
+// dual of prune_parallel, and it runs at the same (20 dB) structural threshold
 // -- distinct from the 60 dB pole/zero reduction applied after factoring.
 ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
     if (is_a<GiNaC::add>(e)) {
@@ -871,6 +875,38 @@ ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
     // sum R1+ro there must stay intact (collapsing it to ro would corrupt the
     // parallel resistance). Only genuine series sums -- R1 + R2 at the top of a
     // coefficient, or R1*C + R2*C -- are series-reduced.
+    return e;
+}
+
+// Reduce a gain expression by dropping negligible terms inside its sums, using
+// the same 20 dB structural rule as the series/parallel pass. A/(A+1) with
+// A = 1e9 collapses to 1 (the "+1" is 180 dB down); with A = 1 it stays.
+ex simplify_gain(const ex& e, const ParamTable& pt, double threshold_db) {
+    if (is_a<GiNaC::add>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(simplify_gain(e.op(i), pt, threshold_db));
+        ex sum = GiNaC::add(ops);
+        if (!is_a<GiNaC::add>(sum)) return sum;
+        double best = -1e300;
+        for (size_t i = 0; i < sum.nops(); ++i)
+            best = std::max(best, num_mag(sum.op(i), pt));
+        double lim = std::pow(10.0, threshold_db / 20.0);
+        ex acc = 0;
+        for (size_t i = 0; i < sum.nops(); ++i)
+            if (num_mag(sum.op(i), pt) >= best / lim) acc += sum.op(i);
+        return acc.is_zero() ? sum : acc;
+    }
+    if (is_a<GiNaC::mul>(e)) {
+        GiNaC::exvector ops;
+        for (size_t i = 0; i < e.nops(); ++i)
+            ops.push_back(simplify_gain(e.op(i), pt, threshold_db));
+        return ex(GiNaC::mul(ops));
+    }
+    if (is_a<GiNaC::power>(e)) {
+        ex base = simplify_gain(e.op(0), pt, threshold_db);
+        return GiNaC::pow(base, e.op(1));
+    }
     return e;
 }
 
@@ -1218,6 +1254,10 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // 6. pull out the overall gain K = n(0) so the factors normalize to 1
     ex K = n.coeff(s, 0);
     if (!K.is_equal(ex(1)) && !K.is_zero()) n = (n / K).normal();
+    // Reduce the gain's own sums with the structural threshold: A/(A+1) with
+    // A = 1e9 becomes 1, but A/(A+1) with A = 1 stays exact.
+    if (opts.prune && !K.is_zero())
+        K = simplify_gain(K, params, opts.threshold_db);
     R.gain = K;
 
     // 7. origin factors

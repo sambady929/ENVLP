@@ -48,20 +48,38 @@ ex gain_ex(const Component& c) {
     return ex(v);
 }
 
+// Amplifier gain as a *symbolic* design variable A_<ref>, with the user's
+// estimate registered so the magnitude pruner can simplify A/(A+1) -> 1 when
+// A = 1e9. Used for the amplifier-like blocks (op-amp, fully-differential
+// op-amp, generic gain block) so a feedback expression keeps A visible and
+// reduces symbolically, rather than collapsing to a decimal ratio.
+ex amp_gain(ParamTable& pt, const Component& c) {
+    std::string name = "A_" + c.ref;
+    ex sym = pt.get(name);
+    pt.set(name, c.estimate(), UnitClass::Plain);
+    return sym;
+}
+
+// The op-amp's gain-bandwidth product as a symbol GBW_<ref> (estimate from the
+// component), so the dominant pole w0 = 2*pi*GBW/A stays symbolic.
+ex amp_gbw(ParamTable& pt, const Component& c) {
+    std::string name = param_symbol(c, "GBW");
+    ex sym = pt.get(name);
+    pt.set(name, c.param_estimate("GBW"), UnitClass::Plain);
+    return sym;
+}
+
 // Add the single dominant pole implied by an op-amp's gain-bandwidth product.
 // A first-order op-amp has A(s) = A0/(1 + s/w0) with w0 = 2*pi*GBW/A0, so the
 // VCVS KVL row `k` (whose output sits at node `out`) gains an extra
-// (s/w0)*v(out) term -- the same shape as a capacitor to ground. GBW is
-// always on (not a toggle); if it is absent or non-positive, this is a no-op.
-void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain, int k,
-                  int out, const ex& s) {
-    double gbw = c.param_estimate("GBW");
-    double A0 = 1.0;
-    if (GiNaC::is_a<GiNaC::numeric>(gain))
-        A0 = GiNaC::ex_to<GiNaC::numeric>(gain).to_double();
-    if (gbw <= 0.0 || A0 <= 0.0) return;
-    double w0 = 2.0 * M_PI * gbw / A0;
-    if (out >= 0) sys.Y(k, out) += s / w0;
+// (s/w0)*v(out) = s*A/(2*pi*GBW)*v(out) term -- the same shape as a capacitor
+// to ground. GBW is always on (not a toggle); if it is absent or non-positive,
+// this is a no-op.
+void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
+                  const ex& gbw, int k, int out, const ex& s) {
+    double gbw_num = c.param_estimate("GBW");
+    if (gbw_num <= 0.0) return;
+    if (out >= 0) sys.Y(k, out) += s * gain / (2.0 * M_PI * gbw);
 }
 
 } // namespace
@@ -385,24 +403,27 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::AMP: {
-            // gain block: v(out) = A*(v(in) - v(out)), inverting sides grounded
-            ex gain = gain_ex(c);
+            // gain block: v(out) = A*(v(in) - v(out)), inverting sides grounded.
+            // A is symbolic so A/(A+1) reduces to 1 for a large A.
+            ex gain = amp_gain(sys.params, c);
+            ex gbw = amp_gbw(sys.params, c);
             int a = idx(nd[0]), bb = idx(nd[1]);
             int k = sys.branch_idx.at(c.ref);
             stamp_branch(a, bb, k);
             if (bb >= 0) sys.Y(k, bb) -= gain;
-            add_gbw_pole(sys, c, gain, k, a, s);
+            add_gbw_pole(sys, c, gain, gbw, k, a, s);
             break;
         }
         case Kind::OPAMP: {
-            // finite-gain op-amp: v(out) = A*(v(in+) - v(in-))
-            ex gain = gain_ex(c);
+            // finite-gain op-amp: v(out) = A*(v(in+) - v(in-)); A symbolic.
+            ex gain = amp_gain(sys.params, c);
+            ex gbw = amp_gbw(sys.params, c);
             int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
             int k = sys.branch_idx.at(c.ref);
             stamp_branch(o, -1, k);
             if (im >= 0) sys.Y(k, im) += gain;
             if (ip >= 0) sys.Y(k, ip) -= gain;
-            add_gbw_pole(sys, c, gain, k, o, s);
+            add_gbw_pole(sys, c, gain, gbw, k, o, s);
             break;
         }
         case Kind::NULLOR: {
@@ -419,8 +440,9 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::FDOPAMP: {
-            // fully differential: v(out+)-v(out-) = A*(v(in+)-v(in-))
-            ex gain = gain_ex(c);
+            // fully differential: v(out+)-v(out-) = A*(v(in+)-v(in-)); A symbolic.
+            ex gain = amp_gain(sys.params, c);
+            ex gbw = amp_gbw(sys.params, c);
             int ip = idx(nd[0]), im = idx(nd[1]);
             int op = idx(nd[2]), on = idx(nd[3]);
             int kp = sys.branch_idx.at(branch_key(c.ref, "p"));
@@ -438,16 +460,9 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             // v(out+) - v(out-) constraint (row kp already couples op-on)
             if (on >= 0) sys.Y(kp, on) -= 1;
             // GBW: add the dominant pole (s/w0)*(v(op) - v(on)) to the kp row.
-            {
-                double gbw = c.param_estimate("GBW");
-                double A0 = 1.0;
-                if (GiNaC::is_a<GiNaC::numeric>(gain))
-                    A0 = GiNaC::ex_to<GiNaC::numeric>(gain).to_double();
-                if (gbw > 0.0 && A0 > 0.0) {
-                    double w0 = 2.0 * M_PI * gbw / A0;
-                    if (op >= 0) sys.Y(kp, op) += s / w0;
-                    if (on >= 0) sys.Y(kp, on) -= s / w0;
-                }
+            if (c.param_estimate("GBW") > 0.0) {
+                if (op >= 0) sys.Y(kp, op) += s * gain / (2.0 * M_PI * gbw);
+                if (on >= 0) sys.Y(kp, on) -= s * gain / (2.0 * M_PI * gbw);
             }
             break;
         }
