@@ -14,6 +14,13 @@ std::string format_si(double v, int sig = 3);
 // 4700 -> "4.7k", 1e-7 -> "100n", 0.047 -> "47m"
 std::string format_eng(double v, int sig = 3);
 
+// A frequency in Hz with a proper unit: 1.59e8 -> "159 MHz", 1e6 -> "1 MHz",
+// 0 -> "0 Hz". The prefix is separated from "Hz" by a space.
+std::string format_hz(double hz, int sig = 3);
+
+// A frequency in rad/s: 1.59e8 -> "159 Mrad/s".
+std::string format_rads(double w, int sig = 3);
+
 std::string format_db(double db, int decimals = 1);
 
 // magnitude conversions: factor = 10^(db/20)

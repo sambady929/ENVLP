@@ -167,6 +167,23 @@ std::string format_eng(double v, int sig) {
     return s + u->suffix;
 }
 
+std::string format_hz(double hz, int sig) {
+    if (hz == 0.0) return "0 Hz";
+    std::string s = format_eng(hz, sig);
+    std::string prefix;
+    if (!s.empty() && std::isalpha(static_cast<unsigned char>(s.back()))) {
+        prefix = s.substr(s.size() - 1);
+        s = s.substr(0, s.size() - 1);
+    }
+    if (prefix.empty()) return s + " Hz";
+    return s + " " + prefix + "Hz";
+}
+
+std::string format_rads(double w, int sig) {
+    if (w == 0.0) return "0 rad/s";
+    return format_eng(w, sig) + "rad/s";
+}
+
 std::string format_db(double db, int decimals) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.*f dB", decimals, db);

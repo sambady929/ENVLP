@@ -1057,9 +1057,11 @@ std::string to_latex_cdot(const ex& e) {
 }
 } // namespace
 
-std::string low_entropy_latex(const LowEntropy& le) {
+// The right-hand side of the low-entropy LaTeX (no "H(s) = " prefix), so
+// callers can attach it to whatever left-hand side they need (e.g. the loop
+// gain uses H_inf, T, beta, H).
+std::string low_entropy_latex_rhs(const LowEntropy& le) {
     std::ostringstream os;
-    os << "H(s) = ";
     std::string K = to_latex_cdot(le.gain);
     // A factor is wrapped in \left(...\right) when it's a sum (so an additive
     // group stays visually distinct from the product around it). Products get
@@ -1091,6 +1093,10 @@ std::string low_entropy_latex(const LowEntropy& le) {
     else
         os << "\\frac{" << num << "}{" << D << "}";
     return os.str();
+}
+
+std::string low_entropy_latex(const LowEntropy& le) {
+    return "H(s) = " + low_entropy_latex_rhs(le);
 }
 
 // ---------------------------------------------------------------------------

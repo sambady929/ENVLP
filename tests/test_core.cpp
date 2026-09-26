@@ -950,8 +950,9 @@ static void test_gain_bw_report() {
     CHECK(r.report.find("Unity-gain") != std::string::npos);
     // RC low-pass: DC gain 0 dB, -3 dB at 1/(2*pi*R*C) ~ 15.9 kHz.
     CHECK(r.report.find("kHz") != std::string::npos);
-    // Symbolic: the single pole is R1*C1, so the report carries w_p0 = 1/(R1*C1).
-    CHECK(r.report.find("w_p0") != std::string::npos);
+    // Symbolic: the single pole is R1*C1, so the report carries omega_p0 =
+    // 1/(R1*C1) (omega is the Greek letter in UTF-8; match the tail).
+    CHECK(r.report.find("_p0") != std::string::npos);
     CHECK(r.report.find("R1*C1") != std::string::npos);
 }
 
@@ -972,7 +973,7 @@ static void test_metrics_latex() {
     CHECK(lx.find("DC\\ gain") != std::string::npos);
     CHECK(lx.find("-3\\ dB\\ bandwidth") != std::string::npos);
     CHECK(lx.find("unity") != std::string::npos);
-    CHECK(lx.find("w_{p0}") != std::string::npos);
+    CHECK(lx.find("\\omega_{p0}") != std::string::npos);
 }
 
 // The symbolic -3 dB bandwidth must collapse to the dominant pole alone when
@@ -992,9 +993,9 @@ static void test_metrics_dominant_pole_bandwidth() {
     req.sweep.f_start_hz = 1.0;
     req.sweep.f_stop_hz = 1e9;
     AnalysisResult r = analyze(c, req);
-    // the -3 dB symbolic line names the dominant pole w_p0 (bandwidth reduces
-    // to the dominant time constant when the other pole is 100x away)
-    CHECK(r.report.find("w_p0") != std::string::npos);
+    // the -3 dB symbolic line names the dominant pole omega_p0 (bandwidth
+    // reduces to the dominant time constant when the other pole is 100x away)
+    CHECK(r.report.find("_p0") != std::string::npos);
     CHECK(r.report.find("-3 dB bandwidth") != std::string::npos);
 }
 
@@ -1162,29 +1163,39 @@ static void test_loop_gain_report_sections() {
     sp.sweep.f_stop_hz = 1e9;
     CardResult cr = run_analysis(c, sp);
 
-    // order: asymptotic -> return ratio -> feedback -> closed loop -> noise
+    // order: asymptotic -> H_0 -> return ratio -> feedback -> closed loop ->
+    // stability -> gain/bandwidth
     size_t pa = cr.report.find("Asymptotic");
+    size_t ph0 = cr.report.find("H_0");
     size_t pr = cr.report.find("Return ratio");
     size_t pf = cr.report.find("Feedback factor");
     size_t pc = cr.report.find("Closed-loop gain");
-    size_t pn = cr.report.find("Noise gain");
-    CHECK(pa != std::string::npos && pr != std::string::npos &&
-          pf != std::string::npos && pc != std::string::npos);
-    CHECK(pa < pr && pr < pf && pf < pc);
-    CHECK(pn != std::string::npos);
-    // the noise gain (1/beta) carries the TIA input-cap zero, C1*R1
-    // (symbol print order can vary run to run, so require both components)
-    CHECK(cr.report.find("zero(s)") != std::string::npos);
-    CHECK(cr.report.find("C1") != std::string::npos);
-    CHECK(cr.report.find("R1") != std::string::npos);
-    CHECK(cr.latex_report.find("C1") != std::string::npos);
+    size_t pst = cr.report.find("Stability");
+    size_t pg = cr.report.find("Gain / bandwidth");
+    CHECK(pa != std::string::npos && ph0 != std::string::npos &&
+          pr != std::string::npos && pf != std::string::npos &&
+          pc != std::string::npos);
+    CHECK(pa < ph0 && ph0 < pr && pr < pf && pf < pc);
+    CHECK(pst != std::string::npos && pst < pg);
+    CHECK(cr.report.find("Noise gain") == std::string::npos);
 
-    // LaTeX mirrors the same sections
+    // The return ratio is labelled T(s), not a stray "H(s) = ..." header, and
+    // the closed-loop gain uses the asymptotic-gain formula.
+    CHECK(cr.report.find("T(s) = -A(s)*beta(s)") != std::string::npos);
+    CHECK(cr.report.find("H(s) = A_U1") == std::string::npos);
+    CHECK(cr.report.find("H_inf*T/(1+T)") != std::string::npos);
+
+    // LaTeX mirrors the same sections, with omega and the degree symbol.
     CHECK(cr.latex_report.find("Asymptotic") != std::string::npos);
     CHECK(cr.latex_report.find("Return ratio") != std::string::npos);
     CHECK(cr.latex_report.find("Feedback factor") != std::string::npos);
-    CHECK(cr.latex_report.find("Noise gain") != std::string::npos);
+    CHECK(cr.latex_report.find("Closed-loop gain") != std::string::npos);
+    CHECK(cr.latex_report.find("Stability") != std::string::npos);
     CHECK(cr.latex_report.find("Gain / bandwidth") != std::string::npos);
+    CHECK(cr.latex_report.find("H_{\\infty}") != std::string::npos);
+    CHECK(cr.latex_report.find("\\degree") != std::string::npos);
+    CHECK(cr.latex_report.find("\\omega") != std::string::npos);
+    CHECK(cr.latex_report.find("Noise gain") == std::string::npos);
 }
 
 // Mirrored devices (multiplicity) scale their parameters from the unit device:

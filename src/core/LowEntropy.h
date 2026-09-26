@@ -121,5 +121,8 @@ double eval_phase_deg(const GiNaC::ex& e, const ParamTable& params, double omega
 std::string to_latex(const GiNaC::ex& e);
 // LaTeX for the low-entropy result, e.g. H(s) = \frac{...}{...}
 std::string low_entropy_latex(const LowEntropy& le);
+// The same expression without the "H(s) = " prefix, for a caller that supplies
+// its own left-hand side (loop gain, noise gain, ...).
+std::string low_entropy_latex_rhs(const LowEntropy& le);
 
 } // namespace syms

@@ -169,25 +169,26 @@ constexpr double kBandwidthPoleDb = 40.0; // 100x: negligible for -3 dB
 // convention the low-entropy engine uses for its factors).
 
 
-// Symbolic corner-frequency lines w_p0 = 1/tau for each pole, using the
-// component time-constant labels the pruner already produced.
+// Symbolic corner-frequency lines omega_p0 = 1/tau for each pole, using the
+// component time-constant labels the pruner already produced. The angular
+// frequency is written as the Greek omega (both in the text and the LaTeX).
 void pole_wp_lines(const AnalysisResult& r, std::vector<std::string>& text,
                    std::vector<std::string>& latex) {
     for (size_t i = 0; i < r.pruned.poles.size(); ++i) {
         const RootInfo& p = r.pruned.poles[i];
-        std::string tag = "w_p" + std::to_string(i);
+        std::string sub = std::to_string(i);
+        std::string tag = "\xCF\x89_p" + sub; // UTF-8 omega
+        std::string ltag = "\\omega_{p" + sub + "}";
         double hz = std::fabs(p.omega) / (2.0 * M_PI);
         if (p.omega == 0.0) {
             text.push_back(tag + " = 0");
-            latex.push_back("\\mathrm{" + tag + "} = 0");
+            latex.push_back(ltag + " = 0");
         } else if (p.omega_expr.is_zero()) {
             text.push_back(tag + " = " + fmt_hz(hz));
-            latex.push_back("\\mathrm{" + tag + "} = \\mathrm{" + fmt_hz(hz) +
-                            "}");
+            latex.push_back(ltag + " = \\mathrm{" + fmt_hz(hz) + "}");
         } else {
             text.push_back(tag + " = " + pretty(p.omega_expr));
-            latex.push_back("\\mathrm{" + tag + "} = " +
-                            to_latex(p.omega_expr));
+            latex.push_back(ltag + " = " + to_latex(p.omega_expr));
         }
     }
 }
@@ -259,22 +260,24 @@ Metrics compute_metrics(const AnalysisResult& r) {
     m.ugbw = ugbw < 0.0 ? "none within sweep" : fmt_bw(ugbw);
 
     // ---- symbolic -3 dB: the dominant pole (angular form, rad/s) ----
+    const std::string W = "\xCF\x89"; // UTF-8 omega
     if (others_far(r, kBandwidthPoleDb) && !r.pruned.poles.empty()) {
         const RootInfo& p0 = r.pruned.poles.front();
         if (!p0.omega_expr.is_zero()) {
-            m.bw3_sym = "w_-3dB = w_p0 = " + pretty(p0.omega_expr);
-            m.bw3_sym_latex = "w_{-3\\mathrm{dB}} = w_{p0} = " +
+            m.bw3_sym = W + "_(-3dB) = " + W + "_p0 = " +
+                        pretty(p0.omega_expr);
+            m.bw3_sym_latex = "\\omega_{-3\\mathrm{dB}} = \\omega_{p0} = " +
                               to_latex(p0.omega_expr);
         }
     }
 
-    // ---- symbolic unity gain: K*w_p0 (angular, rad/s) when single-pole ----
+    // ---- symbolic unity gain: K*omega_p0 (angular, rad/s) when single-pole ----
     if (others_far(r, r.opts.pole_zero_threshold_db) &&
         !r.pruned.poles.empty() && !r.pruned.poles.front().omega_expr.is_zero()) {
         const RootInfo& p0 = r.pruned.poles.front();
-        m.ugbw_sym = "w_0dB = K*w_p0 = (" + pretty(K) + ")*(" +
+        m.ugbw_sym = W + "_0dB = K*" + W + "_p0 = (" + pretty(K) + ")*(" +
                      pretty(p0.omega_expr) + ")";
-        m.ugbw_sym_latex = "w_{0\\mathrm{dB}} = K\\,w_{p0} = " +
+        m.ugbw_sym_latex = "\\omega_{0\\mathrm{dB}} = K\\,\\omega_{p0} = " +
                            to_latex(K) + "\\cdot " +
                            to_latex(p0.omega_expr);
     }
@@ -293,11 +296,11 @@ std::string metrics_text(const AnalysisResult& r) {
     out += "  Unity-gain (0 dB) bandwidth: " + m.ugbw;
     if (!m.ugbw_sym.empty()) out += "   [" + m.ugbw_sym + "]";
     out += "\n";
-    // symbolic pole corner frequencies (w_p0 = 1/tau0, ...)
+    // Symbolic pole corner frequencies (omega_p0 = 1/tau_0, ...).
     std::vector<std::string> ptxt, ptex;
     pole_wp_lines(r, ptxt, ptex);
     if (!ptxt.empty()) {
-        out += "  pole corner frequencies:\n";
+        out += "  Pole corner frequencies:\n";
         for (const auto& line : ptxt) out += "    " + line + "\n";
     }
     return out;

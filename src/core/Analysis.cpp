@@ -108,6 +108,23 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
 
 } // namespace
 
+// The right-hand side of a low-entropy LaTeX string that already carries an
+// "H(s) = " prefix (Pruned stores the prefixed form).
+std::string latex_rhs(const std::string& full) {
+    const std::string pfx = "H(s) = ";
+    if (full.rfind(pfx, 0) == 0) return full.substr(pfx.size());
+    return full;
+}
+
+// Drop the leading "H(s) = ..." line from a report, keeping the rest (used
+// when the caller already printed the expression above).
+std::string strip_first_line(const std::string& report) {
+    const std::string pfx = "H(s) = ";
+    if (report.rfind(pfx, 0) != 0) return report;
+    size_t nl = report.find('\n');
+    return nl == std::string::npos ? std::string() : report.substr(nl + 1);
+}
+
 // ---------------------------------------------------------------------------
 // s-domain transfer function
 // ---------------------------------------------------------------------------
@@ -519,71 +536,117 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         }
     }
 
-    // Noise gain 1/beta (the reciprocal of the feedback factor). For a TIA
-    // this is where the input-capacitance zero appears: beta is low-pass, so
-    // 1/beta = 1 + s*Rf*Cin has a zero at 1/(Rf*Cin).
-    ex noise_gain = (ex(1) / beta).normal();
-    Pruned ng_p = prune_low_entropy(noise_gain.numer(), noise_gain.denom(),
-                                    pt, o);
+    // H_0: the forward gain with the reference amplifier's gain set to zero.
+    // A zero-gain voltage amplifier forces v(out) = 0, i.e. its output is a
+    // virtual ground: model it as a 0 V source there (for a fully differential
+    // amp, a 0 V source between out+ and out-). The surrounding network then
+    // provides whatever feedforward the output sees with the amplifier off.
+    ex H0 = 0;
+    {
+        Circuit c0 = c;
+        bool ok = false;
+        for (size_t i = 0; i < c0.comps.size(); ++i) {
+            Component& cc = c0.comps[i];
+            if (cc.ref != s.probe_ref) continue;
+            std::string o1, o2;
+            if (cc.kind == Kind::OPAMP || cc.kind == Kind::AMP) {
+                o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
+                o2 = "0";
+            } else if (cc.kind == Kind::FDOPAMP) {
+                o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
+                o2 = cc.nodes.size() > 3 ? cc.nodes[3] : "0";
+            } else {
+                break;
+            }
+            Component off;
+            off.kind = Kind::V;
+            off.ref = "__AOFF__";
+            off.nodes = {o1, o2};
+            off.value_text = "0";
+            cc = off;
+            ok = true;
+            break;
+        }
+        if (ok) {
+            try {
+                CardResult direct = analyze_tf(c0, s);
+                H0 = (direct.transfer.num_raw / direct.transfer.den_raw)
+                         .normal();
+            } catch (const std::exception&) {
+                H0 = 0;
+            }
+        }
+    }
+
+    // Stability (item 7): keep it up with the other headline results, before
+    // the gain/bandwidth block.
+    std::string stab;
+    if (pm >= 0.0) {
+        char b[160];
+        std::snprintf(b, sizeof(b),
+                      "  unity-gain at %s, phase margin = %.1f deg\n",
+                      eng::format_hz(ugf).c_str(), pm);
+        stab = b;
+    } else {
+        stab = "  T never crosses 0 dB within the sweep (no unity-gain "
+               "frequency)\n";
+    }
+
+    // Closed-loop gain assembled from the asymptotic-gain formula, so the
+    // printed expression is exactly what the formula evaluates to:
+    //   H = H_inf*T/(1+T) + H_0/(1+T) = (H_inf*T + H_0)/(1+T).
+    ex Hinf = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
+    ex Hcl_formula = ((Hinf * T + H0) / (1 + T)).normal();
+    Pruned Hcl_p = prune_low_entropy(Hcl_formula.numer(), Hcl_formula.denom(),
+                                     pt, o);
 
     std::string rep = "Return-ratio / loop-gain analysis\n";
     rep += "reference amplifier: " + s.probe_ref + "\n";
     rep += "----------------------------------------\n";
     rep += "\nAsymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
-    rep += "\nReturn ratio  T(s) = -A(s)*beta(s):\n" + Tp.text + "\n";
-    rep += "\nFeedback factor (test source at the output, control opened):\n";
-    rep += "  beta(s) = " + pretty(beta) + "\n";
-    rep += "\nClosed-loop gain:\n  H(s) = " + actual.text + "\n";
-    rep += "\nNoise gain  1/beta(s):\n  " + ng_p.text + "\n";
-    if (!ng_p.zeros.empty()) {
-        rep += "  zero(s): ";
-        for (size_t i = 0; i < ng_p.zeros.size(); ++i)
-            rep += (i ? ", " : "") + ng_p.zeros[i].label;
-        rep += "\n";
-    }
-    rep += "\n" + res.report;
-    if (pm >= 0.0) {
-        char b[128];
-        std::snprintf(b, sizeof(b),
-                      "\nStability: unity-gain T at %s Hz, phase margin = "
-                      "%.1f deg\n",
-                      eng::format_si(ugf, 3).c_str(), pm);
-        rep += b;
-    } else {
-        rep += "\nStability: T never crosses 0 dB within the sweep "
-               "(no unity-gain frequency)\n";
-    }
+    rep += "\nForward gain with the amplifier off:\n  H_0(s) = " +
+           pretty(H0) + "\n";
+    rep += "\nReturn ratio:\n  T(s) = -A(s)*beta(s) = " + Tp.text + "\n";
+    rep += "\nFeedback factor:\n  beta(s) = " + pretty(beta) + "\n";
+    rep += "\nClosed-loop gain:\n";
+    rep += "  H(s) = H_inf*T/(1+T) + H_0/(1+T) = " + Hcl_p.text + "\n";
+    rep += "\nStability:\n" + stab;
+    // The return ratio's own gain/bandwidth and poles/zeros, with the leading
+    // "H(s) = ..." line stripped (T is already shown above).
+    rep += "\n" + strip_first_line(res.report);
     rep += "\n";
 
     // The LaTeX report mirrors the text report section-for-section (the Math
     // tab shows exactly the same content, typeset). Section headings end in
     // ':' so MathPanel renders them as headings, exactly like poles/zeros.
-    // The engine's `latex` strings already start with "H(s) = ".
     std::string lrep;
-    lrep += "Asymptotic (ideal) gain:\n";
-    lrep += ideal.latex + "\n";
+    lrep += "Asymptotic gain:\n";
+    lrep += "H_{\\infty}(s) = " + latex_rhs(ideal.latex) + "\n";
+    lrep += "Forward gain with the amplifier off:\n";
+    lrep += "H_0(s) = " + to_latex(H0) + "\n";
     lrep += "Return ratio:\n";
-    lrep += "T(s) = -A(s)\\beta(s)\n";
-    lrep += Tp.latex + "\n";
+    lrep += "T(s) = -A(s)\\beta(s) = " + latex_rhs(Tp.latex) + "\n";
     lrep += "Feedback factor:\n";
     lrep += "\\beta(s) = " + to_latex(beta) + "\n";
     lrep += "Closed-loop gain:\n";
-    lrep += actual.latex + "\n";
-    lrep += "Noise gain 1/beta:\n";
-    lrep += ng_p.latex + "\n";
-    lrep += "\n";
-    lrep += format_report_latex(res);
+    lrep += "H(s) = \\frac{H_{\\infty} T}{1+T} + \\frac{H_0}{1+T} = " +
+            latex_rhs(Hcl_p.latex) + "\n";
+    lrep += "\nStability:\n";
     if (pm >= 0.0) {
         char b[192];
         std::snprintf(b, sizeof(b),
-                      "\nStability:\n\\mathrm{unity-gain\\ at}\\ \\mathrm{%s\\ "
-                      "Hz},\\quad \\mathrm{phase\\ margin} = \\mathrm{%.1f^\\circ}\n",
-                      eng::format_si(ugf, 3).c_str(), pm);
+                      "\\mathrm{unity-gain\\ at}\\ \\mathrm{%s}"
+                      ",\\quad \\mathrm{phase\\ margin} = %.1f\\degree\n",
+                      eng::format_hz(ugf).c_str(), pm);
         lrep += b;
+    } else {
+        lrep += "\\mathrm{T\\ never\\ crosses\\ 0\\ dB\\ within\\ the\\ sweep}\n";
     }
+    lrep += "\n";
+    lrep += format_report_latex(res);
 
     cr.text = "T(s) = " + Tp.text;
-    cr.latex = Tp.latex;
+    cr.latex = "T(s) = " + latex_rhs(Tp.latex);
     cr.latex_report = lrep;
     cr.summary = "H_inf = " + ideal.text + " ;  T = " + Tp.text;
     cr.report = rep;

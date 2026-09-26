@@ -45,6 +45,7 @@ std::string html_escape(const std::string& s) {
 bool symbol_for(const std::string& name, std::string& out) {
     static const std::map<std::string, std::string> m = {
         {"cdot", "&middot;"},   {"times", "&times;"},  {"parallel", "&#8741;"},
+        {"varepsilon", "&epsilon;"}, {"zeta", "&zeta;"},
         {"pm", "&plusmn;"},     {"mp", "&#8723;"},     {"leq", "&le;"},
         {"le", "&le;"},         {"geq", "&ge;"},       {"ge", "&ge;"},
         {"neq", "&ne;"},        {"ne", "&ne;"},        {"approx", "&asymp;"},
@@ -58,6 +59,8 @@ bool symbol_for(const std::string& name, std::string& out) {
         {"to", "&rarr;"},       {"rightarrow", "&rarr;"},
         {"leftarrow", "&larr;"},{"cdots", "&middot;&middot;&middot;"},
         {"ldots", "&#8230;"},
+        {"circ", "&deg;"},      {"degree", "&deg;"},
+        {"infty", "&infin;"},   {"partial", "&part;"},
         {",", "&thinsp;"},      {";", "&thinsp;"},     {" ", "&nbsp;"},
         {"quad", "&emsp;"},     {"qquad", "&emsp;&emsp;"},
         {"!", ""},
