@@ -276,10 +276,10 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
 void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) {
     auto* sizer = GetSizer();
     double v = 1.0;
-    if (!syms::eng::parse_value(comp->value_text, v) || !(v > 0.0)) v = 1.0;
+    if (!syms::eng::parse_value(comp->value_text, v) || v == 0.0) v = 1.0;
     double mant = 1.0;
     int exp = 0;
-    decompose(v, mant, exp);
+    decompose(std::fabs(v), mant, exp);
 
     // Op-amps / gain blocks: their "value" is the DC gain, so label it
     // "Gain" (GBW is a separate parameter shown below).
@@ -291,6 +291,19 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     sizer->Add(new wxStaticText(this, wxID_ANY, label), 0,
                wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
+
+    // The general amplifier (single-ended, single output) needs an explicit
+    // polarity: its gain can be +100 or -100. A dropdown flips the sign of
+    // value_text without disturbing the magnitude.
+    wxChoice* pol = nullptr;
+    if (comp->kind == syms::Kind::AMP) {
+        pol = new wxChoice(this, wxID_ANY);
+        pol->Append("+");
+        pol->Append("-");
+        pol->SetSelection(comp->value_text.rfind('-', 0) == 0 ? 1 : 0);
+        sub->Add(pol, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    }
+
     auto* man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
                                wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
     auto* ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
@@ -311,15 +324,30 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     }
     sizer->Add(sub, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
 
-    auto commit = [this, comp, man, ex] {
+    auto commit = [this, comp, man, ex, pol] {
         double m = 1.0;
         if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
+        m = std::fabs(m);
         long e = 0;
         if (!parse_exp_string(ex->GetValue(), e)) e = 0;
-        comp->value_text = fmt_value(m, int(e)).ToStdString();
+        wxString v = fmt_value(m, int(e));
+        if (pol && pol->GetSelection() == 1) v = "-" + v;
+        comp->value_text = v.ToStdString();
         doc_->dirty = true;
         if (on_edited) on_edited();
     };
+    if (pol) pol->Bind(wxEVT_CHOICE, [this, pol, comp](wxCommandEvent&) {
+        if (rebuilding_) return;
+        // flip the sign in place
+        std::string v = comp->value_text;
+        bool neg = v.rfind('-', 0) == 0;
+        bool want_neg = pol->GetSelection() == 1;
+        if (neg && !want_neg) v = v.substr(1);
+        else if (!neg && want_neg) v = "-" + v;
+        comp->value_text = v;
+        doc_->dirty = true;
+        if (on_edited) on_edited();
+    });
     man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
         if (!rebuilding_) commit();
     });

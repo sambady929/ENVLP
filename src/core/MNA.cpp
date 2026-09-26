@@ -52,34 +52,41 @@ ex gain_ex(const Component& c) {
 // estimate registered so the magnitude pruner can simplify A/(A+1) -> 1 when
 // A = 1e9. Used for the amplifier-like blocks (op-amp, fully-differential
 // op-amp, generic gain block) so a feedback expression keeps A visible and
-// reduces symbolically, rather than collapsing to a decimal ratio.
+// reduces symbolically. A negative value_text (e.g. "-100") makes the symbol
+// negative while the registered estimate stays positive, so the magnitude
+// pruning keeps working: the returned expression is sign * A_<ref>.
 ex amp_gain(ParamTable& pt, const Component& c) {
     std::string name = "A_" + c.ref;
     ex sym = pt.get(name);
-    pt.set(name, c.estimate(), UnitClass::Plain);
-    return sym;
+    double a = c.estimate();
+    double mag = std::fabs(a);
+    if (!(mag > 0.0) || !std::isfinite(mag)) mag = 1.0;
+    pt.set(name, mag, UnitClass::Plain);
+    return (a < 0.0) ? -sym : sym;
 }
 
-// The op-amp's gain-bandwidth product as a symbol GBW_<ref> (estimate from the
-// component), so the dominant pole w0 = 2*pi*GBW/A stays symbolic.
+// The op-amp's gain-bandwidth product as a symbol GBW_<ref>, in *rad/s* (the
+// user enters Hz, so we convert: the symbol is the unity-gain angular
+// frequency). This keeps the symbolic pole A/GBW free of explicit 2*pi terms.
 ex amp_gbw(ParamTable& pt, const Component& c) {
     std::string name = param_symbol(c, "GBW");
     ex sym = pt.get(name);
-    pt.set(name, c.param_estimate("GBW"), UnitClass::Plain);
+    pt.set(name, 2.0 * M_PI * c.param_estimate("GBW"), UnitClass::Plain);
     return sym;
 }
 
 // Add the single dominant pole implied by an op-amp's gain-bandwidth product.
-// A first-order op-amp has A(s) = A0/(1 + s/w0) with w0 = 2*pi*GBW/A0, so the
-// VCVS KVL row `k` (whose output sits at node `out`) gains an extra
-// (s/w0)*v(out) = s*A/(2*pi*GBW)*v(out) term -- the same shape as a capacitor
-// to ground. GBW is always on (not a toggle); if it is absent or non-positive,
-// this is a no-op.
+// A first-order op-amp has A(s) = A0/(1 + s/w0) with w0 = GBW/A0, where GBW is
+// the unity-gain angular frequency in rad/s. The VCVS KVL row `k` (whose
+// output sits at node `out`) gains an extra (s/w0)*v(out) = s*A/GBW*v(out) term
+// -- the same shape as a capacitor to ground. GBW is optional: when it is
+// switched off (or non-positive) this is a no-op and the amplifier is ideal
+// (infinite bandwidth).
 void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
                   const ex& gbw, int k, int out, const ex& s) {
-    double gbw_num = c.param_estimate("GBW");
-    if (gbw_num <= 0.0) return;
-    if (out >= 0) sys.Y(k, out) += s * gain / (2.0 * M_PI * gbw);
+    if (!c.param_enabled("GBW")) return;
+    if (c.param_estimate("GBW") <= 0.0) return;
+    if (out >= 0) sys.Y(k, out) += s * gain / gbw;
 }
 
 } // namespace
@@ -403,15 +410,16 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             break;
         }
         case Kind::AMP: {
-            // gain block: v(out) = A*(v(in) - v(out)), inverting sides grounded.
-            // A is symbolic so A/(A+1) reduces to 1 for a large A.
+            // single-ended voltage-gain block: v(out) = A*v(in), A symbolic and
+            // signed (so the value can be +100 or -100). The GBW pole adds
+            // (s*A/GBW)*v(out), giving A(s) = A/(1 + s*A/GBW).
             ex gain = amp_gain(sys.params, c);
             ex gbw = amp_gbw(sys.params, c);
-            int a = idx(nd[0]), bb = idx(nd[1]);
+            int a = idx(nd[0]), o = idx(nd[1]);
             int k = sys.branch_idx.at(c.ref);
-            stamp_branch(a, bb, k);
-            if (bb >= 0) sys.Y(k, bb) -= gain;
-            add_gbw_pole(sys, c, gain, gbw, k, a, s);
+            stamp_branch(o, -1, k);
+            if (a >= 0) sys.Y(k, a) -= gain;
+            add_gbw_pole(sys, c, gain, gbw, k, o, s);
             break;
         }
         case Kind::OPAMP: {
@@ -460,7 +468,7 @@ MnaSystem build_mna(const Circuit& circ, const std::string& input_ref) {
             // v(out+) - v(out-) constraint (row kp already couples op-on)
             if (on >= 0) sys.Y(kp, on) -= 1;
             // GBW: add the dominant pole (s/w0)*(v(op) - v(on)) to the kp row.
-            if (c.param_estimate("GBW") > 0.0) {
+            if (c.param_enabled("GBW") && c.param_estimate("GBW") > 0.0) {
                 if (op >= 0) sys.Y(kp, op) += s * gain / (2.0 * M_PI * gbw);
                 if (on >= 0) sys.Y(kp, on) -= s * gain / (2.0 * M_PI * gbw);
             }

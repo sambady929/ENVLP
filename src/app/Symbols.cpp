@@ -470,8 +470,24 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
 
     bool horizontal = (bx1 - bx0) >= (by1 - by0);
     double cx = (bx0 + bx1) / 2.0;
-    // A small margin on top of the (already size-aware) bbox.
-    double gap = std::max(2.0, lh * 0.35);
+    // A tight margin. Horizontal passive/amplifier labels hug the body (the
+    // bbox already pads), and the resistor/inductor/op-amp bodies do not need
+    // the full bounding box height, so pull them in a little more.
+    double gap = 1.5;
+    if (horizontal) {
+        switch (c.kind) {
+            case Kind::R:
+            case Kind::L:
+            case Kind::AMP:
+            case Kind::OPAMP:
+            case Kind::FDOPAMP:
+                gap = 0.0; // body box is taller than the ink: hug it
+                break;
+            default:
+                gap = 1.5;
+                break;
+        }
+    }
     double marker_x = bx1 + gap, marker_y = by1 + gap;
 
     if (horizontal) {

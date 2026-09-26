@@ -258,25 +258,24 @@ Metrics compute_metrics(const AnalysisResult& r) {
     m.bw3 = fmt_bw(bw3);
     m.ugbw = ugbw < 0.0 ? "none within sweep" : fmt_bw(ugbw);
 
-    // ---- symbolic -3 dB: the dominant pole when the rest are far ----
+    // ---- symbolic -3 dB: the dominant pole (angular form, rad/s) ----
     if (others_far(r, kBandwidthPoleDb) && !r.pruned.poles.empty()) {
         const RootInfo& p0 = r.pruned.poles.front();
         if (!p0.omega_expr.is_zero()) {
-            std::string w = pretty(p0.omega_expr);
-            m.bw3_sym = "w_p0 = " + w + "  =>  f = " + w + "/(2*Pi)";
-            m.bw3_sym_latex = "w_{p0} = " + to_latex(p0.omega_expr) +
-                              ",\\quad f_{-3dB} = \\frac{w_{p0}}{2\\pi}";
+            m.bw3_sym = "w_-3dB = w_p0 = " + pretty(p0.omega_expr);
+            m.bw3_sym_latex = "w_{-3\\mathrm{dB}} = w_{p0} = " +
+                              to_latex(p0.omega_expr);
         }
     }
 
-    // ---- symbolic unity gain: K*w_p0/(2*Pi) when effectively single-pole ----
+    // ---- symbolic unity gain: K*w_p0 (angular, rad/s) when single-pole ----
     if (others_far(r, r.opts.pole_zero_threshold_db) &&
         !r.pruned.poles.empty() && !r.pruned.poles.front().omega_expr.is_zero()) {
         const RootInfo& p0 = r.pruned.poles.front();
-        std::string w = pretty(p0.omega_expr);
-        m.ugbw_sym = "K*w_p0/(2*Pi) with K = " + pretty(K) + ", w_p0 = " + w;
-        m.ugbw_sym_latex = "f_{0dB} = \\frac{K\\,w_{p0}}{2\\pi},\\quad K = " +
-                           to_latex(K) + ",\\ w_{p0} = " +
+        m.ugbw_sym = "w_0dB = K*w_p0 = (" + pretty(K) + ")*(" +
+                     pretty(p0.omega_expr) + ")";
+        m.ugbw_sym_latex = "w_{0\\mathrm{dB}} = K\\,w_{p0} = " +
+                           to_latex(K) + "\\cdot " +
                            to_latex(p0.omega_expr);
     }
     return m;
@@ -316,7 +315,7 @@ std::string metrics_latex(const AnalysisResult& r) {
            (m.bw3_sym_latex.empty() ? "\\mathrm{" + m.bw3 + "}"
                                     : m.bw3_sym_latex) +
            "\\quad = \\mathrm{" + m.bw3 + "}\n";
-    out += "\\mathrm{unity\\mbox{-}gain\\ bandwidth} = " +
+    out += "\\mathrm{unity-gain\\ bandwidth} = " +
            (m.ugbw_sym_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
                                      : m.ugbw_sym_latex) +
            "\\quad = \\mathrm{" + m.ugbw + "}\n";

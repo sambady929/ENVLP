@@ -242,9 +242,10 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     };
     // Op-amps / gain blocks: the DC gain lives in value_text (edited as
     // "Gain"); GBW is the gain-bandwidth product (Hz) that sets the single
-    // dominant pole at w0 = 2*pi*GBW/gain.
+    // dominant pole at w0 = 2*pi*GBW/gain. It is optional: switch it off for
+    // an ideal (infinite-bandwidth) amplifier.
     static const std::vector<ParamDef> opamp = {
-        {"GBW", "1M", false, true, "Hz", "gain-bandwidth product"},
+        {"GBW", "1M", true, true, "Hz", "gain-bandwidth product"},
     };
 
     switch (k) {

@@ -317,14 +317,13 @@ std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
         for (const auto& r : rs) add(l.v / r.v, l.e / r.e);
     for (const auto& c : cs)
         for (const auto& g : gs) add(c.v / g.v, c.e / g.e);
-    // op-amp dominant pole: tau = A/(2*pi*GBW) (open loop), and its
-    // closed-loop counterpart tau = 1/(2*pi*GBW) when the feedback gain is
-    // small enough that the loop crosses over at the gain-bandwidth product.
-    ex two_pi = 2 * ex(GiNaC::Pi);
+    // op-amp dominant pole: GBW_<ref> is registered in rad/s (the estimate is
+    // the user's Hz value times 2*pi), so tau = A/GBW. The closed-loop
+    // counterpart tau = 1/GBW applies when the loop crosses over at GBW.
     for (const auto& a : amps)
         for (const auto& g : gbws) {
-            add(a.v / (2.0 * M_PI * g.v), a.e / (two_pi * g.e));
-            add(1.0 / (2.0 * M_PI * g.v), 1 / (two_pi * g.e));
+            add(a.v / g.v, a.e / g.e);
+            add(1.0 / g.v, 1 / g.e);
         }
     // parallel resistor pairs: (R1||R2)*C  -- the signature of a pole
     for (size_t i = 0; i < rs.size(); ++i)

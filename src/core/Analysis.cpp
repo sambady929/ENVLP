@@ -468,15 +468,17 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
-    // A(s) = A / (1 + s*A/(2*pi*GBW)); T = -A(s)*beta.
+    // A(s) = A / (1 + s*A/GBW)  (GBW_<ref> is the unity-gain angular frequency
+    // in rad/s -- the user's Hz value converted once here); T(s) = -A(s)*beta.
     ex A_sym = pt.get("A_" + s.probe_ref);
     pt.set("A_" + s.probe_ref, ref->estimate(), UnitClass::Plain);
     ex gbw_sym = pt.get("GBW_" + s.probe_ref);
-    double gbw_num = ref->param_estimate("GBW");
+    double gbw_num = 2.0 * M_PI * ref->param_estimate("GBW"); // rad/s
+    bool gbw_on = ref->param_enabled("GBW") && gbw_num > 0.0;
     pt.set("GBW_" + s.probe_ref, gbw_num, UnitClass::Plain);
     ex T = -A_sym * beta;
-    if (gbw_num > 0.0)
-        T = (T / (1 + s_ex * A_sym / (2.0 * M_PI * gbw_sym))).normal();
+    if (gbw_on)
+        T = (T / (1 + s_ex * A_sym / gbw_sym)).normal();
 
     PruneOptions o = opts_of(s);
     Pruned Tp = prune_low_entropy(T.numer(), T.denom(), pt, o);
@@ -517,15 +519,29 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         }
     }
 
+    // Noise gain 1/beta (the reciprocal of the feedback factor). For a TIA
+    // this is where the input-capacitance zero appears: beta is low-pass, so
+    // 1/beta = 1 + s*Rf*Cin has a zero at 1/(Rf*Cin).
+    ex noise_gain = (ex(1) / beta).normal();
+    Pruned ng_p = prune_low_entropy(noise_gain.numer(), noise_gain.denom(),
+                                    pt, o);
+
     std::string rep = "Return-ratio / loop-gain analysis\n";
     rep += "reference amplifier: " + s.probe_ref + "\n";
     rep += "----------------------------------------\n";
-    rep += "Asymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
-    rep += "Closed-loop gain:\n  H(s)     = " + actual.text + "\n";
+    rep += "\nAsymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
+    rep += "\nReturn ratio  T(s) = -A(s)*beta(s):\n" + Tp.text + "\n";
     rep += "\nFeedback factor (test source at the output, control opened):\n";
     rep += "  beta(s) = " + pretty(beta) + "\n";
-    rep += "\nReturn ratio  T(s) = -A(s)*beta(s):\n";
-    rep += res.report;
+    rep += "\nClosed-loop gain:\n  H(s) = " + actual.text + "\n";
+    rep += "\nNoise gain  1/beta(s):\n  " + ng_p.text + "\n";
+    if (!ng_p.zeros.empty()) {
+        rep += "  zero(s): ";
+        for (size_t i = 0; i < ng_p.zeros.size(); ++i)
+            rep += (i ? ", " : "") + ng_p.zeros[i].label;
+        rep += "\n";
+    }
+    rep += "\n" + res.report;
     if (pm >= 0.0) {
         char b[128];
         std::snprintf(b, sizeof(b),
@@ -539,9 +555,36 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     }
     rep += "\n";
 
+    // The LaTeX report mirrors the text report section-for-section (the Math
+    // tab shows exactly the same content, typeset). Section headings end in
+    // ':' so MathPanel renders them as headings, exactly like poles/zeros.
+    // The engine's `latex` strings already start with "H(s) = ".
+    std::string lrep;
+    lrep += "Asymptotic (ideal) gain:\n";
+    lrep += ideal.latex + "\n";
+    lrep += "Return ratio:\n";
+    lrep += "T(s) = -A(s)\\beta(s)\n";
+    lrep += Tp.latex + "\n";
+    lrep += "Feedback factor:\n";
+    lrep += "\\beta(s) = " + to_latex(beta) + "\n";
+    lrep += "Closed-loop gain:\n";
+    lrep += actual.latex + "\n";
+    lrep += "Noise gain 1/beta:\n";
+    lrep += ng_p.latex + "\n";
+    lrep += "\n";
+    lrep += format_report_latex(res);
+    if (pm >= 0.0) {
+        char b[192];
+        std::snprintf(b, sizeof(b),
+                      "\nStability:\n\\mathrm{unity-gain\\ at}\\ \\mathrm{%s\\ "
+                      "Hz},\\quad \\mathrm{phase\\ margin} = \\mathrm{%.1f^\\circ}\n",
+                      eng::format_si(ugf, 3).c_str(), pm);
+        lrep += b;
+    }
+
     cr.text = "T(s) = " + Tp.text;
     cr.latex = Tp.latex;
-    cr.latex_report = format_report_latex(res);
+    cr.latex_report = lrep;
     cr.summary = "H_inf = " + ideal.text + " ;  T = " + Tp.text;
     cr.report = rep;
     cr.has_transfer = true;

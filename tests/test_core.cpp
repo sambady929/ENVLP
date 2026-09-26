@@ -1094,6 +1094,99 @@ static void test_series_reduction_20db() {
     CHECK(le.text.find("R1") != std::string::npos);
 }
 
+// GBW is optional: with it off, the op-amp is ideal (infinite bandwidth), so
+// a TIA with only an input capacitor has a single pole; switching GBW on adds
+// the op-amp's own dominant pole.
+static void test_gbw_optional() {
+    auto make = [](bool gbw_on) {
+        Circuit c;
+        c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+        Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+        op.param_text["GBW"] = "1e6";
+        op.param_on["GBW"] = gbw_on;
+        c.comps.push_back(op);
+        c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+        c.comps.push_back(comp(Kind::C, "C1", {"n1", "0"}, "1p"));
+        c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+        return c;
+    };
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult on = run_analysis(make(true), sp);
+    CardResult off = run_analysis(make(false), sp);
+    CHECK(off.transfer.pruned.poles.size() == 1); // R1*C1 only
+    CHECK(on.transfer.pruned.poles.size() == 2);  // + op-amp dominant pole
+}
+
+// The general amplifier gain is signed: +100 and -100 give opposite-sign H(s).
+static void test_amp_signed_gain() {
+    auto make = [](const char* v) {
+        Circuit c;
+        c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+        c.comps.push_back(comp(Kind::AMP, "A1", {"in", "out"}, v));
+        c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+        return c;
+    };
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    AnalysisResult pp = analyze(make("100"), req);
+    AnalysisResult nn = analyze(make("-100"), req);
+    CHECK(pp.pruned.text.find("A_A1") != std::string::npos);
+    // the positive-gain form has no leading minus at the numerator
+    CHECK(pp.pruned.text.find("-A_A1") == std::string::npos);
+    CHECK(nn.pruned.text.find("-A_A1") != std::string::npos);
+}
+
+// Loop gain by return ratio must list H_inf, T, beta and a noise gain, and its
+// LaTeX must carry the same sections as the text report.
+static void test_loop_gain_report_sections() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.param_text["GBW"] = "1e7";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"n1", "0"}, "1p"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::LoopGain;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.probe_ref = "U1";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+
+    // order: asymptotic -> return ratio -> feedback -> closed loop -> noise
+    size_t pa = cr.report.find("Asymptotic");
+    size_t pr = cr.report.find("Return ratio");
+    size_t pf = cr.report.find("Feedback factor");
+    size_t pc = cr.report.find("Closed-loop gain");
+    size_t pn = cr.report.find("Noise gain");
+    CHECK(pa != std::string::npos && pr != std::string::npos &&
+          pf != std::string::npos && pc != std::string::npos);
+    CHECK(pa < pr && pr < pf && pf < pc);
+    CHECK(pn != std::string::npos);
+    // the noise gain (1/beta) carries the TIA input-cap zero, C1*R1
+    // (symbol print order can vary run to run, so require both components)
+    CHECK(cr.report.find("zero(s)") != std::string::npos);
+    CHECK(cr.report.find("C1") != std::string::npos);
+    CHECK(cr.report.find("R1") != std::string::npos);
+    CHECK(cr.latex_report.find("C1") != std::string::npos);
+
+    // LaTeX mirrors the same sections
+    CHECK(cr.latex_report.find("Asymptotic") != std::string::npos);
+    CHECK(cr.latex_report.find("Return ratio") != std::string::npos);
+    CHECK(cr.latex_report.find("Feedback factor") != std::string::npos);
+    CHECK(cr.latex_report.find("Noise gain") != std::string::npos);
+    CHECK(cr.latex_report.find("Gain / bandwidth") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
@@ -1136,6 +1229,9 @@ int main(int argc, char** argv) {
         {"metrics_dominant_pole", test_metrics_dominant_pole_bandwidth},
         {"amp_gain_symbolic", test_amp_gain_is_symbolic},
         {"loop_gain_return_ratio", test_loop_gain_return_ratio},
+        {"gbw_optional", test_gbw_optional},
+        {"amp_signed_gain", test_amp_signed_gain},
+        {"loop_gain_sections", test_loop_gain_report_sections},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
