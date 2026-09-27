@@ -21,7 +21,8 @@ namespace syms {
 //   D       : 2 pins  [A, K]         diode small-signal equivalent
 //   T       : 4 pins  [p+, p-, s+, s-]  transformer (two coupled windings)
 //   K       : 0 pins  inductor coupling; `links` names the two inductors
-//   NULLOR  : 3 pins  [in+, in-, out]   ideal op-amp (infinite gain)
+//   NULLOR  : 4 pins  [in+, in-, out+, out-]  ideal two-port (nullator input
+//             port shunted to a norator output port: infinite gain)
 //   OPAMP   : 3 pins  [in+, in-, out]   finite-gain VCVS (value = A)
 //   FDOPAMP : 4 pins  [in+, in-, out+, out-]  fully differential op-amp
 //   AMP     : 2 pins  [in, out]      gain block, inverting side grounded

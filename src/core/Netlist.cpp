@@ -135,8 +135,8 @@ int pin_count(Kind k) {
         case Kind::VDD: return 1;
         case Kind::T: return 4;
         case Kind::K: return 0;
-        case Kind::NULLOR:
         case Kind::OPAMP: return 3;
+        case Kind::NULLOR: return 4;
         case Kind::FDOPAMP: return 4;
     }
     return 0;
@@ -190,10 +190,9 @@ std::vector<std::string> pin_names(Kind k) {
         case Kind::K: return {};
         case Kind::CCCS:
         case Kind::CCVS: return {"ctrl+", "ctrl-", "out+", "out-"};
-        case Kind::NULLOR:
+        case Kind::NULLOR: return {"in+", "in-", "out+", "out-"};
         case Kind::OPAMP: return {"in+", "in-", "out"};
-        case Kind::FDOPAMP: return {"in+", "in-", "out+", "out-"};
-        case Kind::AMP:
+        case Kind::FDOPAMP: return {"in+", "in-", "out+", "out-"};        case Kind::AMP:
         case Kind::IS:
         case Kind::SBLK: return {"in", "out"};
     }

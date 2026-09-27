@@ -354,19 +354,23 @@ void draw_transformer(Ctx& t) {
 }
 
 void draw_nullor(Ctx& t) {
-    // Nullor as a two-port: the nullator on the left is a narrow, slightly
-    // tall ellipse, and the norator on the right is two overlapping vertical
-    // circles.
+    // Nullor as a boxed two-port, like the other controlled sources: the input
+    // port (in+, in-) on the left holds the nullator glyph (a narrow ellipse
+    // spanning the port), the output port (out+, out-) on the right holds the
+    // norator glyph (two overlapping circles spanning the port).
     t.w(kWire);
-    t.line(-40, -12, -24, -12);
-    t.line(-40, 12, -24, 12);
-    t.line(24, 0, 40, 0);
+    // leads from the pins to the box
+    t.line(-40, -10, -26, -10);
+    t.line(-40, 10, -26, 10);
+    t.line(40, -10, 26, -10);
+    t.line(40, 10, 26, 10);
     t.w(kBody);
-    // nullator: tall ellipse
-    t.ellipse(-16, 0, 6, 15, 36);
-    // norator: two overlapping vertical circles
-    t.circle(10, -7, 8);
-    t.circle(10, 7, 8);
+    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // inside: nullator (left) and norator (right), each spanning its port
+    t.w(kWire);
+    t.ellipse(-13, 0, 5, 15, 36);            // nullator
+    t.circle(11, -6, 7);                     // norator: two overlapping circles
+    t.circle(11, 6, 7);
 }
 
 void draw_body(Ctx& t, Kind k) {

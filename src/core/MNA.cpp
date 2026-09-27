@@ -773,16 +773,18 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             break;
         }
         case Kind::NULLOR: {
-            // Ideal nullor: a nullator across the input port (zero voltage,
-            // zero current) and a norator at the output (its current is
-            // whatever the circuit demands). Model with one extra unknown, the
-            // norator current k (flowing from `out` into the norator, which
-            // returns to ground), and one constraint row v(in+) = v(in-).
-            int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
+            // Ideal nullor as a two-port: a nullator across the INPUT port
+            // (zero voltage, zero current) and a norator across the OUTPUT port
+            // (its current is whatever the circuit demands). One extra unknown,
+            // the norator current k (into out+, out of out-), and one
+            // constraint row v(in+) - v(in-) = 0.
+            int ip = idx(nd[0]), im = idx(nd[1]);
+            int op = idx(nd[2]), on = idx(nd[3]);
             int k = sys.branch_idx.at(c.ref);
+            if (op >= 0) sys.Y(op, k) += 1;
+            if (on >= 0) sys.Y(on, k) -= 1;
             if (ip >= 0) sys.Y(k, ip) += 1;
             if (im >= 0) sys.Y(k, im) -= 1;
-            if (o >= 0) sys.Y(o, k) += 1;
             break;
         }
         case Kind::FDOPAMP: {

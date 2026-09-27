@@ -526,7 +526,8 @@ AmpPorts amp_ports(const Component& c) {
             if (nd.size() >= 4) return {nd[0], nd[1], nd[2], nd[3], true};
             break;
         case Kind::NULLOR:
-            if (nd.size() >= 3) return {nd[0], nd[1], nd[2], "0", true};
+            // Two-port: in+ , in- , out+ , out-
+            if (nd.size() >= 4) return {nd[0], nd[1], nd[2], nd[3], true};
             break;
         case Kind::AMP:
             if (nd.size() >= 2) return {nd[0], nd[1], nd[1], "0", true};
@@ -570,6 +571,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     ex s_ex = pt.get("s");
 
     // ---- 1. H_inf: replace the amplifier with a nullor (virtual short) ----
+    // The nullor is a two-port: the INPUT port (in+, in-) is the nullator and
+    // the OUTPUT port (out+, out-) is the norator. Map each amplifier kind's
+    // ports onto it.
     Circuit ci = c;
     for (auto& cc : ci.comps) {
         if (cc.ref != s.probe_ref) continue;
@@ -577,12 +581,19 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         cc.kind = Kind::NULLOR;
         if (orig == Kind::NMOS || orig == Kind::PMOS || orig == Kind::NPN ||
             orig == Kind::PNP) {
-            cc.nodes = {cc.nodes[1], cc.nodes[2], cc.nodes[0]};
-        } else if (orig == Kind::OPAMP || orig == Kind::FDOPAMP) {
-            cc.nodes = {cc.nodes[0], cc.nodes[1],
-                        cc.nodes.size() > 2 ? cc.nodes[2] : cc.nodes[0]};
+            // control port (G,B -> S,E) ; output port (D,C -> ground)
+            cc.nodes = {cc.nodes[1], cc.nodes[2], cc.nodes[0], "0"};
+        } else if (orig == Kind::OPAMP) {
+            // (in+, in-) ; (out, gnd)
+            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[2], "0"};
+        } else if (orig == Kind::FDOPAMP) {
+            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[2], cc.nodes[3]};
+        } else if (orig == Kind::AMP) {
+            // (in, gnd) ; (out, gnd)
+            cc.nodes = {cc.nodes[0], "0", cc.nodes[1], "0"};
         } else {
-            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[0]};
+            // already a two-port (or unknown): keep the ports, ground the rest
+            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[0], "0"};
         }
     }
     CardResult ideal;

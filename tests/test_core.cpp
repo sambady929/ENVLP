@@ -1156,6 +1156,26 @@ static void test_loop_gain_opamp() {
     CHECK_CLOSE(T, 1e5 * 1.0 / 11.0, 5.0);
 }
 
+// The nullor is a boxed two-port: nullator across the input port (in+, in-),
+// norator across the output port (out+, out-). An ideal inverting amp built
+// from it must give V(out)/V1 = -R2/R1 exactly (the virtual short at the
+// inverting node).
+static void test_nullor_two_port_ideal_amp() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "n1"}, "1k"));
+    c.comps.push_back(comp(Kind::NULLOR, "N1", {"0", "n1", "out", "0"}, ""));
+    c.comps.push_back(comp(Kind::R, "R2", {"out", "n1"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    AnalysisResult r = analyze(c, req);
+    ex H = (r.num_raw / r.den_raw).normal();
+    ex expect = -ex(r.params.get("R2")) / r.params.get("R1");
+    CHECK((H - expect).normal().is_zero());
+}
+
 static void test_psrr_vdd() {
     Circuit c;
     c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
@@ -1922,6 +1942,7 @@ int main(int argc, char** argv) {
         {"dc_analysis", test_dc_analysis},
         {"noise_input_referred", test_noise_analysis_input_referred},
         {"loop_gain_opamp", test_loop_gain_opamp},
+        {"nullor_two_port", test_nullor_two_port_ideal_amp},
         {"psrr_vdd", test_psrr_vdd},
         {"cs_input_pole_cgs", test_cs_input_pole_is_cgs_not_c1},
         {"pole_zero_60db", test_pole_zero_60db_threshold},

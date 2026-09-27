@@ -33,6 +33,10 @@ std::vector<Pt> pin_offsets(Kind k) {
     case Kind::CCVS:
         // out+ , out- , ctrl+ , ctrl-
         return {{40, -10}, {40, 10}, {-40, -10}, {-40, 10}};
+    case Kind::NULLOR:
+        // in+ , in- , out+ , out-   (nullator input port on the left, norator
+        // output port on the right -- a boxed two-port like the sources above)
+        return {{-40, -10}, {-40, 10}, {40, -10}, {40, 10}};
     case Kind::NMOS:
         // D , G , S  (D top, S bottom)
         return {{0, -40}, {-40, 0}, {0, 40}};
@@ -51,7 +55,6 @@ std::vector<Pt> pin_offsets(Kind k) {
     case Kind::T:
         // p+ , p- , s+ , s-
         return {{-40, -20}, {-40, 20}, {40, -20}, {40, 20}};
-    case Kind::NULLOR:
     case Kind::OPAMP:
         // in+ , in- , out. The inputs sit at +/-10 (one grid step) so a
         // grid-placed op-amp lands its pins on the grid too.
@@ -137,6 +140,7 @@ Pt pin_outward(const syms::Component& c, const Placement& pl, int pin_index) {
         local = (pin_index >= 2) ? Pt{1, 0} : Pt{-1, 0};
         break;
     case Kind::NULLOR:
+        // in+ , in- (left, escape west); out+ , out- (right, escape east)
         local = (pin_index >= 2) ? Pt{1, 0} : Pt{-1, 0};
         break;
     case Kind::VDD:
@@ -179,7 +183,7 @@ LocalBox body_local_box(Kind k) {
     case Kind::CCCS:
     case Kind::CCVS: return {-26, -20, 26, 20};
     case Kind::OPAMP: return {-26, -22, 30, 22};
-    case Kind::NULLOR: return {-20, -16, 20, 16};
+    case Kind::NULLOR: return {-26, -20, 26, 20};
     case Kind::FDOPAMP: return {-26, -22, 34, 22};
     case Kind::AMP: return {-26, -20, 30, 20};
     case Kind::IS: return {-16, -16, 16, 16};
