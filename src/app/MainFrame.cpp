@@ -295,6 +295,14 @@ void MainFrame::on_dc_settings(wxCommandEvent&) {
     // Split the file's models by polarity into the two dropdowns.
     std::vector<std::string> nm_names, pm_names;
     auto load_models = [&]() {
+        // Remember the current selection: Clear() would otherwise blank the
+        // field after the items are repopulated.
+        wxString cur_nm = nmname->GetValue();
+        wxString cur_pm = pmname->GetValue();
+        if (cur_nm.IsEmpty())
+            cur_nm = wxString::FromUTF8(doc_.tech.nmos_model);
+        if (cur_pm.IsEmpty())
+            cur_pm = wxString::FromUTF8(doc_.tech.pmos_model);
         nm_names.clear();
         pm_names.clear();
         std::string err;
@@ -306,6 +314,10 @@ void MainFrame::on_dc_settings(wxCommandEvent&) {
         pmname->Clear();
         for (const auto& n : nm_names) nmname->Append(wxString::FromUTF8(n));
         for (const auto& n : pm_names) pmname->Append(wxString::FromUTF8(n));
+        // Restore the selection; if it is not among the file's models, keep the
+        // typed name so the user's choice is never silently lost.
+        nmname->SetValue(cur_nm);
+        pmname->SetValue(cur_pm);
         if (!ms.empty())
             SetStatusText(
                 wxString::Format("Loaded %zu models (%zu NMOS, %zu PMOS).",
