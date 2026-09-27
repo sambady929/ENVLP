@@ -265,6 +265,43 @@ static void test_remove_detaches_wire_bindings() {
     CHECK(pins_on_root == 1);
 }
 
+// A wire-bound net label follows its wire: deleting the wire removes an orphan
+// label, and a whole-wire drag carries a label anchored mid-segment.
+static void test_label_follows_wire() {
+    Document d;
+    syms::Component v;
+    v.kind = syms::Kind::V;
+    v.ref = "V1";
+    v.nodes = {"in", "0"};
+    d.add(v, 0, 50);
+    syms::Component r;
+    r.kind = syms::Kind::R;
+    r.ref = "R1";
+    r.nodes = {"in", "tap"};
+    d.add(r, 100, 50);
+
+    Wire w;
+    w.pts = {{0, 20}, {70, 50}}; // V1+ to R1 left
+    d.bind_wire_ends(w);
+    d.wires.push_back(w);
+
+    // A label anchored mid-wire binds to the wire.
+    int li = d.ensure_label_on_wire(0, {40, 40});
+    CHECK(li >= 0);
+    CHECK(d.labels[li].bind_wire == 0);
+    Pt before = d.labels[li].anchor;
+
+    // Drag the whole wire down by 100: the bound label follows.
+    for (auto& p : d.wires[0].pts) p.second += 100;
+    d.sync_label_anchors();
+    Pt after = d.labels[li].anchor;
+    CHECK(std::fabs((after.second - before.second) - 100.0) < 1.0);
+
+    // Deleting the wire removes the (now orphaned) label.
+    d.remove_wire(0);
+    CHECK(d.labels.empty());
+}
+
 int main() {
     test_net_map_topology();
     test_net_name_default();
@@ -273,6 +310,7 @@ int main() {
     test_serialize_round_trip();
     test_serialize_legacy_loads();
     test_remove_detaches_wire_bindings();
+    test_label_follows_wire();
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "DOCUMENT FAILED" : "document ok", g_fail);
     return g_fail == 0 ? 0 : 1;

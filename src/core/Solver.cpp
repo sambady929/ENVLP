@@ -186,7 +186,7 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
     return out;
 }
 
-DcSolution solve_dc(const Circuit& c) {
+DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
     std::set<std::string> used;
     for (const auto& cc : c.comps)
         for (const auto& n : cc.nodes) {
@@ -194,6 +194,7 @@ DcSolution solve_dc(const Circuit& c) {
             if (nd != "0") used.insert(nd);
         }
     MnaDcSupply dc;
+    dc.vth = tech.vth;
     MnaSystem sys = build_mna(c, std::string(), used, &dc);
 
     DcSolution out;

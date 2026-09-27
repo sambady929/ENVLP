@@ -1671,9 +1671,8 @@ static void test_dc_large_signal_mosfet() {
         c.comps.push_back(vdd);
         Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
         m.param_text["gm"] = "1m";
-        m.param_text["rds"] = "100k";
-        m.param_text["Vth"] = "0.5";
-        m.param_on["rds"] = true;
+        m.param_text["ro"] = "100k";
+        m.param_on["ro"] = true;
         c.comps.push_back(m);
         c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
         c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
@@ -1682,6 +1681,7 @@ static void test_dc_large_signal_mosfet() {
     AnalysisSpec sp;
     sp.kind = AnalysisKind::DC;
     sp.output = "V(out)";
+    sp.tech.vth = 0.5; // DC tech setting (universal Vth)
     CardResult cr = run_analysis(build(), sp);
     CHECK(cr.report.find("large-signal") != std::string::npos);
     // In saturation: Vds >= Vdsat, so the device is not flagged.
@@ -1702,15 +1702,15 @@ static void test_dc_large_signal_triode_aborts() {
     c.comps.push_back(vdd);
     Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
     m.param_text["gm"] = "1m";
-    m.param_text["rds"] = "100k";
-    m.param_text["Vth"] = "0.5";
-    m.param_on["rds"] = true;
+    m.param_text["ro"] = "100k";
+    m.param_on["ro"] = true;
     c.comps.push_back(m);
     c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
     c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
     AnalysisSpec sp;
     sp.kind = AnalysisKind::DC;
     sp.output = "V(out)";
+    sp.tech.vth = 0.5;
     CardResult cr = run_analysis(c, sp);
     CHECK(cr.report.find("not in saturation") != std::string::npos);
     CHECK(cr.report.find("M1") != std::string::npos);
@@ -1750,6 +1750,39 @@ static void test_ac_superposition_of_sources() {
     for (const auto& kv : vals)
         if (kv.first == "V1" || kv.first == "V2") ++contribs;
     CHECK(contribs == 2);
+}
+
+// A common-source stage biased by DC: V(out) = VDD - R1*Id (the drain drop),
+// with Id from the saturation model and Vth from the DC tech settings (no
+// per-device Vth / rds -- ro is the single channel-length-modulation value).
+static void test_dc_common_source_vdd_minus_rid() {
+    Circuit c;
+    Component vdd = comp(Kind::V, "VDD1", {"vdd", "0"}, "0");
+    vdd.dc_text = "5";
+    c.comps.push_back(vdd);
+    c.comps.push_back(comp(Kind::R, "R1", {"vdd", "out"}, "2k"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "1e6";
+    m.param_on["ro"] = true;
+    c.comps.push_back(m);
+    Component vg = comp(Kind::V, "VG", {"g", "0"}, "0");
+    vg.dc_text = "0.8"; // Vgs = 0.8
+    c.comps.push_back(vg);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(out)";
+    sp.tech.vth = 0.6;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("Vth") != std::string::npos); // tech Vth in use
+    CHECK(cr.report.find("I(M1)") != std::string::npos);
+    // Symbolic operating point: evaluate it numerically with the component
+    // estimates. Id = gm*(Vgs-Vth)/2 = 100 uA, so V(out) = VDD - R1*Id (the
+    // large ro only nudges it) ~ 4.8 V.
+    DcSolution dc = solve_dc(c, sp.tech);
+    double vout = eval_complex(dc.node_v["out"], dc.params, 0.0).real();
+    CHECK_CLOSE(vout, 4.8, 0.05);
 }
 
 // ---------------------------------------------------------------------------
@@ -1811,6 +1844,7 @@ int main(int argc, char** argv) {
         {"series_fold_used_node", test_series_fold_respects_used_node},
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
         {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
+        {"dc_common_source", test_dc_common_source_vdd_minus_rid},
         {"dc_triode_aborts", test_dc_large_signal_triode_aborts},
         {"ac_source_superposition", test_ac_superposition_of_sources},
     };

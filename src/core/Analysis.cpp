@@ -162,11 +162,13 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     cr.kind = AnalysisKind::AC;
     cr.title = "AC (small-signal)";
 
-    // Collect every independent source and its AC value.
+    // Collect every independent voltage/current source and its AC value. VDD
+    // is a supply rail, not a signal source: it is AC ground and never
+    // contributes to the AC superposition.
     struct Src { std::string ref; double ac; };
     std::vector<Src> srcs;
     for (const auto& cc : c.comps) {
-        if (!is_independent_source(cc.kind)) continue;
+        if (cc.kind != Kind::V && cc.kind != Kind::I) continue;
         double ac = 1.0;
         if (!eng::parse_value(cc.ac_text, ac)) ac = 1.0;
         srcs.push_back({cc.ref, ac});
@@ -257,10 +259,11 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
 // ---------------------------------------------------------------------------
 // DC: large-signal operating point. Every source is stamped with its DC value;
 // every MOSFET is a saturation square-law device (Id at the operating point,
-// Vgs = 2*Id/gm + Vth, channel-length modulation via rds). The system is solved
-// for every node and each device's Id, then each device is checked for
-// saturation: its drain-source voltage must exceed its Vdsat = 2*Id/gm. If any
-// device is pushed into triode, the analysis aborts and names it.
+// Vgs = 2*Id/gm + Vth from the DC tech settings, channel-length modulation via
+// ro). The system is solved for every node and each device's Id, then each
+// device is checked for saturation: its drain-source voltage magnitude must
+// exceed its Vdsat = 2*|Id|/gm. If any device is pushed into triode, the
+// analysis aborts and names it.
 // ---------------------------------------------------------------------------
 CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
@@ -269,7 +272,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     DcSolution dc;
     try {
-        dc = solve_dc(c);
+        dc = solve_dc(c, s.tech);
     } catch (const std::exception& e) {
         cr.summary = std::string("DC solve failed: ") + e.what();
         cr.report = cr.summary + "\n";
@@ -278,8 +281,11 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     ParamTable& pt = dc.params;
 
-    // Prune one DC value: rank its terms by magnitude at DC and drop everything
-    // more than threshold_db below the dominant term.
+    // Prune one DC value: rank its terms by magnitude at DC and drop only
+    // terms far below the dominant one. DC uses the (looser) pole/zero
+    // threshold, not the 20 dB structural one: an operating point's bias terms
+    // (e.g. the R1*Id drop below VDD) are physically meaningful and must not be
+    // discarded just because they are an order of magnitude below the rail.
     auto dc_value = [&](ex v) -> ex {
         if (!s.prune) return v;
         ex e = v.expand();
@@ -296,7 +302,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
         for (const ex& term : terms) {
             std::complex<double> z = eval_complex(term, pt, 0.0);
             double d = 20.0 * std::log10(std::hypot(z.real(), z.imag()));
-            if (std::isfinite(d) && d < best - s.threshold_db) continue;
+            if (std::isfinite(d) && d < best - s.pole_zero_threshold_db) continue;
             acc += term;
         }
         return acc.is_zero() ? v : acc;

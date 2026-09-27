@@ -16,6 +16,9 @@ namespace {
 
 constexpr double kJoinTol = 9.0; // px: pin/wire endpoints within this touch
 
+// Defined below (net resolution); used by remove_wire above.
+bool point_on_seg(Pt p, Pt a, Pt b, double tol);
+
 // Union-find over quantized points.
 struct UnionFind {
     std::vector<int> p;
@@ -116,6 +119,52 @@ void Document::remove(const std::string& ref) {
     circuit.comps.erase(it);
     placements.erase(ref);
     dirty = true;
+}
+
+// Remove a wire; drop any label that was attached only to that wire. A label
+// shared with another wire of the same net (or anchored to a pin) survives.
+void Document::remove_wire(int wire_index) {
+    if (wire_index < 0 || wire_index >= int(wires.size())) return;
+    wires.erase(wires.begin() + wire_index);
+    // Fix label bindings: drop those bound to the removed wire, and shift the
+    // rest down by one where their wire index was higher.
+    for (auto& l : labels) {
+        if (l.bind_wire == wire_index) l.bind_wire = -1;
+        else if (l.bind_wire > wire_index) --l.bind_wire;
+    }
+    prune_orphan_labels();
+    dirty = true;
+}
+
+// Remove every net label whose anchor no longer lies on a wire or a pin (e.g.
+// after the wire it named was deleted). Called after any wire removal.
+void Document::prune_orphan_labels() {
+    for (int li = int(labels.size()) - 1; li >= 0; --li) {
+        Pt a = labels[li].anchor;
+        bool on_pin = false;
+        for (const auto& c : circuit.comps) {
+            auto pl = placements.find(c.ref);
+            if (pl == placements.end()) continue;
+            int np = int(pin_offsets(c.kind).size());
+            for (int pi = 0; pi < np; ++pi) {
+                Pt pw = pin_world(c, pl->second, pi);
+                if (std::hypot(pw.first - a.first, pw.second - a.second) <=
+                    kJoinTol) {
+                    on_pin = true;
+                    break;
+                }
+            }
+            if (on_pin) break;
+        }
+        bool on_wire = false;
+        for (const auto& w : wires)
+            for (size_t k = 1; k < w.pts.size(); ++k)
+                if (point_on_seg(a, w.pts[k - 1], w.pts[k], kJoinTol)) {
+                    on_wire = true;
+                    break;
+                }
+        if (!on_pin && !on_wire) labels.erase(labels.begin() + li);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +658,70 @@ Pt Document::net_anchor_near_wire(int wire_index, Pt near) const {
     return best;
 }
 
+// Point on wire `wi`'s polyline at arc-length fraction f (0..1).
+Pt Document::wire_pt_at(int wi, double f) const {
+    if (wi < 0 || wi >= int(wires.size())) return {0, 0};
+    const auto& w = wires[wi];
+    if (w.pts.size() < 2) return w.pts.empty() ? Pt{0, 0} : w.pts.front();
+    double total = 0.0;
+    for (size_t k = 1; k < w.pts.size(); ++k)
+        total += std::hypot(w.pts[k].first - w.pts[k - 1].first,
+                            w.pts[k].second - w.pts[k - 1].second);
+    if (total <= 1e-9) return w.pts.front();
+    double want = std::max(0.0, std::min(1.0, f)) * total;
+    double acc = 0.0;
+    for (size_t k = 1; k < w.pts.size(); ++k) {
+        Pt a = w.pts[k - 1], b = w.pts[k];
+        double seg = std::hypot(b.first - a.first, b.second - a.second);
+        if (acc + seg >= want) {
+            double t = seg > 0 ? (want - acc) / seg : 0.0;
+            return {a.first + t * (b.first - a.first),
+                    a.second + t * (b.second - a.second)};
+        }
+        acc += seg;
+    }
+    return w.pts.back();
+}
+
+// Arc-length fraction of point q along wire `wi`'s polyline (clamped 0..1) --
+// the inverse of wire_pt_at, used to (re)bind a label to a wire.
+double Document::wire_frac_of(int wi, Pt q) const {
+    if (wi < 0 || wi >= int(wires.size())) return 0.0;
+    const auto& w = wires[wi];
+    if (w.pts.size() < 2) return 0.0;
+    double total = 0.0;
+    for (size_t k = 1; k < w.pts.size(); ++k)
+        total += std::hypot(w.pts[k].first - w.pts[k - 1].first,
+                            w.pts[k].second - w.pts[k - 1].second);
+    if (total <= 1e-9) return 0.0;
+    double acc = 0.0, best = 0.0, bestd = 1e300;
+    for (size_t k = 1; k < w.pts.size(); ++k) {
+        Pt a = w.pts[k - 1], b = w.pts[k];
+        double seg = std::hypot(b.first - a.first, b.second - a.second);
+        Pt n = nearest_on_seg(q, a, b);
+        double d = pt_dist(n, q);
+        if (d < bestd) {
+            bestd = d;
+            double t = seg > 0 ? pt_dist(n, a) / seg : 0.0;
+            best = acc + t * seg;
+        }
+        acc += seg;
+    }
+    return std::max(0.0, std::min(1.0, best / total));
+}
+
+// Re-resolve every wire-bound label's anchor/display point from its wire. Call
+// after any wire edit (drag, re-route, component move).
+void Document::sync_label_anchors() {
+    for (auto& l : labels) {
+        if (l.bind_wire < 0 || l.bind_wire >= int(wires.size())) continue;
+        Pt a = wire_pt_at(l.bind_wire, l.bind_frac);
+        Pt d = {l.pt.first - l.anchor.first, l.pt.second - l.anchor.second};
+        l.anchor = a;
+        l.pt = {a.first + d.first, a.second + d.second};
+    }
+}
+
 Pt Document::label_display_pt(int wire_index, Pt anchor, int name_len) const {
     // Decide the offset from the local wire direction: a label beside a
     // vertical wire (to the right), above a horizontal one, and up-right at a
@@ -666,6 +779,9 @@ int Document::ensure_label_on_wire(int wire_index, Pt at) {
     if (w.pts.size() < 2) return -1;
     NetLabel l;
     l.anchor = net_anchor_near_wire(wire_index, at);
+    // Bind the label to this wire so it follows drags / re-routes.
+    l.bind_wire = wire_index;
+    l.bind_frac = wire_frac_of(wire_index, l.anchor);
     // default display point: offset to the readable side of the wire
     l.pt = label_display_pt(wire_index, l.anchor, 4);
     l.name = ""; // unnamed until the user types one
@@ -754,8 +870,9 @@ std::string Document::serialize() const {
         o << "netlabel " << l.anchor.first << "," << l.anchor.second;
         if (l.pt.first != l.anchor.first || l.pt.second != l.anchor.second)
             o << " " << l.pt.first << "," << l.pt.second;
-        o << " " << quote(l.name) << " " << l.font_size;
-        if (l.rot != 0) o << " " << l.rot;
+        o << " " << quote(l.name) << " " << l.font_size << " " << l.rot;
+        if (l.bind_wire >= 0)
+            o << " bind=" << l.bind_wire << ":" << l.bind_frac;
         o << "\n";
     }
     if (!analysis_cards.empty()) o << analysis_cards;
@@ -943,9 +1060,29 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 int n = std::atoi(fs.c_str());
                 if (n > 0) l.font_size = n;
             }
-            // Optional rotation (degrees, multiples of 90).
+            // Optional rotation (degrees, multiples of 90), then an optional
+            // wire binding "bind=<index>:<frac>".
             std::string srot;
-            if (next_token(line, i, srot)) l.rot = std::atoi(srot.c_str());
+            if (next_token(line, i, srot)) {
+                if (srot.rfind("bind=", 0) == 0) {
+                    std::string body = srot.substr(5);
+                    size_t colon = body.find(':');
+                    l.bind_wire = std::atoi(body.c_str());
+                    if (colon != std::string::npos)
+                        l.bind_frac = std::atof(body.c_str() + colon + 1);
+                } else {
+                    l.rot = std::atoi(srot.c_str());
+                    std::string sbind;
+                    if (next_token(line, i, sbind) &&
+                        sbind.rfind("bind=", 0) == 0) {
+                        std::string body = sbind.substr(5);
+                        size_t colon = body.find(':');
+                        l.bind_wire = std::atoi(body.c_str());
+                        if (colon != std::string::npos)
+                            l.bind_frac = std::atof(body.c_str() + colon + 1);
+                    }
+                }
+            }
             labels.push_back(l);
         } else if (kw == "card") {
             // analysis card line: keep it verbatim in analysis_cards

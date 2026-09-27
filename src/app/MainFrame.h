@@ -75,6 +75,7 @@ private:
     void run_analysis();
     void run_card(int index); // -1 = all enabled cards
     void set_ignore_negligible(bool on);
+    void on_dc_settings(wxCommandEvent&);
 
     // keyboard placement map / instance menu
     bool handle_shortcut(wxKeyEvent& e);

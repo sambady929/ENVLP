@@ -182,11 +182,43 @@ wxSpinCtrl* PropertiesPanel::add_spin(const wxString& label, int value, int min,
     return sc;
 }
 
-// mantissa + exponent dropdowns; stores "<m>e<exp>" into comp->param_text
+namespace {
+// A small bordered "card" panel (title + one row of controls), used to build
+// the tiled parameter grid in the properties pane.
+wxPanel* new_card(wxWindow* parent, const wxString& title) {
+    auto* p = new wxPanel(parent);
+    p->SetBackgroundColour(*wxWHITE);
+    auto* s = new wxBoxSizer(wxVERTICAL);
+    auto* t = new wxStaticText(p, wxID_ANY, title);
+    wxFont f = t->GetFont();
+    f.SetPointSize(std::max(7, f.GetPointSize() - 1));
+    f.SetWeight(wxFONTWEIGHT_BOLD);
+    t->SetFont(f);
+    t->SetForegroundColour(wxColour(70, 78, 92));
+    s->Add(t, 0, wxLEFT | wxRIGHT | wxTOP, 4);
+    p->SetSizer(s);
+    return p;
+}
+} // namespace
+
+// The wrapping container the parameter cards tile into. Created once per
+// refresh, right after the header, so device parameters read as a compact
+// grid rather than a single vertical list.
+wxWrapSizer* PropertiesPanel::cards_host() {
+    if (cards_) return cards_;
+    auto* sizer = GetSizer();
+    cards_ = new wxWrapSizer(wxHORIZONTAL);
+    sizer->Add(cards_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    return cards_;
+}
+
+// mantissa + exponent dropdowns; stores "<m>e<exp>" into comp->param_text.
+// Each parameter is its own compact card in the wrapping container.
 void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
                                        const std::string& name, bool parasitic,
                                        const wxString& default_text) {
-    auto* sizer = GetSizer();
+    auto* host = cards_host();
+    auto* card = new_card(this, wxString::FromUTF8(name));
 
     double v = 0.0;
     wxString cur = default_text;
@@ -198,20 +230,21 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
     int exp;
     decompose(v, mant, exp);
 
-    auto* sub = new wxBoxSizer(wxHORIZONTAL);
+    auto* row = new wxBoxSizer(wxHORIZONTAL);
 
     wxComboBox* man = nullptr;
     wxComboBox* ex = nullptr;
+    wxCheckBox* cb = nullptr;
     if (parasitic) {
-        auto* cb = new wxCheckBox(this, wxID_ANY,
-                                  wxString::FromUTF8(name));
+        cb = new wxCheckBox(card, wxID_ANY, wxEmptyString);
         cb->SetValue(comp->param_enabled(name));
-        sizer->Add(cb, 0, wxLEFT | wxTOP, 6);
-        man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                             wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-        ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
-                            wxDefaultPosition, wxSize(60, -1), kExponents,
-                            wxCB_DROPDOWN);
+        row->Add(cb, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+    }
+    man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
+                         wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
+    ex = new wxComboBox(card, wxID_ANY, exp_display(exp), wxDefaultPosition,
+                        wxSize(58, -1), kExponents, wxCB_DROPDOWN);
+    if (cb) {
         man->Enable(cb->GetValue());
         ex->Enable(cb->GetValue());
         cb->Bind(wxEVT_CHECKBOX, [this, comp, name, man, ex](wxCommandEvent& e) {
@@ -221,24 +254,13 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
             doc_->dirty = true;
             if (on_edited) on_edited();
         });
-    } else {
-        auto* lbl = new wxStaticText(this, wxID_ANY,
-                                     wxString::FromUTF8(name) + " -- always on");
-        lbl->SetForegroundColour(wxColour(80, 80, 85));
-        sizer->Add(lbl, 0, wxLEFT | wxTOP, 6);
-        man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                             wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-        ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
-                            wxDefaultPosition, wxSize(60, -1), kExponents,
-                            wxCB_DROPDOWN);
     }
-    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
-    sub->Add(new wxStaticText(this, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
-    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-    sub->Add(new wxStaticText(this, wxID_ANY, wxString::FromUTF8("[" + name + "]")),
-             0, wxALIGN_CENTER_VERTICAL);
-    sizer->Add(sub, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
+    row->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    row->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    row->Add(ex, 0, wxALIGN_CENTER_VERTICAL);
+    card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    host->Add(card, 0, wxALL, 3);
 
     auto commit = [this, comp, name, man, ex] {
         double m = 0.0;
@@ -261,6 +283,7 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
     ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
         if (!rebuilding_) commit();
     });
+    card->Fit();
 }
 
 void PropertiesPanel::add_param_row(syms::Component* comp,
@@ -271,10 +294,63 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
     add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text));
 }
 
+// A typeable mantissa + exponent row (the same widget the device parameters
+// use, so the value is a continuous number, not locked to the fixed steps) that
+// writes "<mant><exp>" into *target. Used for a source's DC and AC values.
+void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
+                                     const std::string& unit) {
+    auto* host = cards_host();
+    double v = 0.0;
+    if (!syms::eng::parse_value(*target, v)) v = 0.0;
+    double mant;
+    int exp;
+    decompose(v, mant, exp);
+
+    auto* card = new_card(this, label);
+    auto* sub = new wxBoxSizer(wxHORIZONTAL);
+    auto* man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
+                               wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
+    auto* ex = new wxComboBox(card, wxID_ANY, exp_display(exp),
+                              wxDefaultPosition, wxSize(58, -1), kExponents,
+                              wxCB_DROPDOWN);
+    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    sub->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
+    sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
+             wxALIGN_CENTER_VERTICAL);
+    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    card->Fit();
+    host->Add(card, 0, wxALL, 3);
+
+    auto commit = [this, target, man, ex] {
+        double m = 0.0;
+        if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 0.0;
+        long e = 0;
+        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
+        *target = fmt_value(m, int(e)).ToStdString();
+        doc_->dirty = true;
+        if (on_edited) on_edited();
+    };
+    man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    man->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    ex->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+    ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
+        if (!rebuilding_) commit();
+    });
+}
+
 // Value dropdowns for passives: pick a mantissa (1, 3.3, 10, 33, ...) and an
 // exponent (multiples of 3) -> value_text = "<mant><SIPrefix>".
 void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) {
-    auto* sizer = GetSizer();
+    auto* host = cards_host();
+
     double v = 1.0;
     if (!syms::eng::parse_value(comp->value_text, v) || v == 0.0) v = 1.0;
     double mant = 1.0;
@@ -288,8 +364,7 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
                          comp->kind == syms::Kind::AMP)
                             ? "Gain"
                             : "Value";
-    sizer->Add(new wxStaticText(this, wxID_ANY, label), 0,
-               wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+    auto* card = new_card(this, wxString::FromUTF8(label));
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
 
     // The general amplifier (single-ended, single output) needs an explicit
@@ -297,32 +372,32 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     // value_text without disturbing the magnitude.
     wxChoice* pol = nullptr;
     if (comp->kind == syms::Kind::AMP) {
-        pol = new wxChoice(this, wxID_ANY);
+        pol = new wxChoice(card, wxID_ANY);
         pol->Append("+");
         pol->Append("-");
         pol->SetSelection(comp->value_text.rfind('-', 0) == 0 ? 1 : 0);
         sub->Add(pol, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
     }
 
-    auto* man = new wxComboBox(this, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                               wxSize(70, -1), kMantissas, wxCB_DROPDOWN);
-    auto* ex = new wxComboBox(this, wxID_ANY, exp_display(exp),
-                              wxDefaultPosition, wxSize(60, -1), kExponents,
+    auto* man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
+                               wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
+    auto* ex = new wxComboBox(card, wxID_ANY, exp_display(exp),
+                              wxDefaultPosition, wxSize(58, -1), kExponents,
                               wxCB_DROPDOWN);
-    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
-    sub->Add(new wxStaticText(this, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
-    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    sub->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
     if (with_unit) {
-        // VDD's "value" is a supply voltage; show "V" rather than the
-        // component-kind description ("Supply rail").
         std::string unit = (comp->kind == syms::Kind::VDD)
                                ? std::string("V")
                                : syms::kind_display(comp->kind);
-        sub->Add(new wxStaticText(this, wxID_ANY, wxString::FromUTF8(unit)), 0,
+        sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
                  wxALIGN_CENTER_VERTICAL);
     }
-    sizer->Add(sub, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
+    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    card->Fit();
+    host->Add(card, 0, wxALL, 3);
 
     auto commit = [this, comp, man, ex, pol] {
         double m = 1.0;
@@ -401,10 +476,12 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
     doc_ = doc;
     sel_ = selection;
 
-    // wipe previous rows (Clear(true) destroys the child windows too)
+    // Wipe previous rows (Clear(true) destroys the child windows too) and
+    // rebuild. The wrapping card container is recreated lazily.
     if (auto* old = GetSizer()) old->Clear(true);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     SetSizer(sizer, true);
+    cards_ = nullptr;
 
     // ---------------- selection-specific rows ----------------
     if (doc_ && !sel_.empty()) {
@@ -511,36 +588,22 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 });
             }
 
-            // value selector for passives and ideal sources
+            // Value selector for passives and the non-source blocks. Voltage
+            // and current sources are handled separately below (they carry DC
+            // and AC values, not a single "value").
             if (c->kind == Kind::R || c->kind == Kind::C ||
-                c->kind == Kind::L || c->kind == Kind::V ||
-                c->kind == Kind::VDD || c->kind == Kind::I ||
+                c->kind == Kind::L || c->kind == Kind::VDD ||
                 c->kind == Kind::D || c->kind == Kind::OPAMP ||
                 c->kind == Kind::FDOPAMP || c->kind == Kind::AMP ||
                 c->kind == Kind::E || c->kind == Kind::G)
                 add_value_selector(comp, true);
 
-            // Independent V/I sources also carry a DC value (used by the
-            // large-signal DC analysis) and an AC value (used by the AC
-            // superposition). Defaults: DC = 0, AC = 1.
-            if (syms::is_independent_source(c->kind)) {
+            // Independent V/I sources carry two typeable values, DC and AC,
+            // each with an engineering exponent. DC defaults to 0, AC to 1.
+            if (c->kind == Kind::V || c->kind == Kind::I) {
                 add_header("Source values");
-                add_text("DC", wxString::FromUTF8(c->dc_text),
-                         [this](const wxString& v) {
-                             if (auto* cc =
-                                     const_cast<syms::Component*>(
-                                         doc_->circuit.find(sel_)))
-                                 cc->dc_text = v.ToStdString();
-                             doc_->dirty = true;
-                         });
-                add_text("AC", wxString::FromUTF8(c->ac_text),
-                         [this](const wxString& v) {
-                             if (auto* cc =
-                                     const_cast<syms::Component*>(
-                                         doc_->circuit.find(sel_)))
-                                 cc->ac_text = v.ToStdString();
-                             doc_->dirty = true;
-                         });
+                add_scalar_row("DC", &comp->dc_text, "V or A");
+                add_scalar_row("AC", &comp->ac_text, "V or A");
             }
 
             // Device mirroring (MOSFETs / BJTs): a copy of another device of

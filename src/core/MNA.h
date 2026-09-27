@@ -42,10 +42,12 @@ MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
 // stamped with its *DC value* (Component::dc_text) on the right-hand side
 // instead of the per-unit AC excitation, and MOSFETs are stamped as their
 // large-signal saturation model (a drain current set by the Vgs/Vth relation in
-// parallel with 1/rds) rather than the linearised small-signal VCCS. This is
+// parallel with 1/ro) rather than the linearised small-signal VCCS. This is
 // what makes the DC operating point a real bias solve. The caller checks each
 // device is in saturation.
-struct MnaDcSupply {};
+struct MnaDcSupply {
+    double vth = 0.6;  // MOSFET threshold voltage, from the DC tech settings
+};
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
                     const std::set<std::string>& used_nodes,
                     const MnaDcSupply* dc_supply);

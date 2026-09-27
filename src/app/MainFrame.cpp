@@ -33,6 +33,7 @@ enum {
     ID_ZOOM_FIT,
     ID_COPY,
     ID_PASTE,
+    ID_DC_SETTINGS,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -51,6 +52,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_ZOOM_FIT, MainFrame::on_zoom_fit)
     EVT_MENU(ID_COPY, MainFrame::on_copy)
     EVT_MENU(ID_PASTE, MainFrame::on_paste)
+    EVT_MENU(ID_DC_SETTINGS, MainFrame::on_dc_settings)
     EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
 
@@ -137,6 +139,9 @@ void MainFrame::build_toolbar() {
                            "Drop terms far below the dominant one");
     toolbar_->ToggleTool(ID_IGNORE_NEG, doc_.req.prune);
     toolbar_->AddSeparator();
+    add(ID_DC_SETTINGS, "DC settings...",
+        "Process values for the DC analysis (Vth, Is)");
+    toolbar_->AddSeparator();
     add(ID_RUN, "Analyze (F5)", "Run the symbolic analysis");
     toolbar_->Realize();
 
@@ -161,6 +166,9 @@ void MainFrame::build_toolbar() {
             break;
         case ID_IGNORE_NEG:
             set_ignore_negligible(e.IsChecked());
+            break;
+        case ID_DC_SETTINGS:
+            on_dc_settings(e);
             break;
         case ID_RUN:
             run_analysis();
@@ -199,6 +207,50 @@ void MainFrame::on_ignore_neg(wxCommandEvent& e) {
     set_ignore_negligible(e.IsChecked());
 }
 
+// DC settings: process values for the large-signal DC analysis. Continuous
+// values (any number), not locked to the component editor's 1/3/10 steps.
+void MainFrame::on_dc_settings(wxCommandEvent&) {
+    wxDialog dlg(this, wxID_ANY, "DC settings");
+    auto* top = new wxBoxSizer(wxVERTICAL);
+
+    auto* grid = new wxFlexGridSizer(2, 2, 6, 10);
+
+    grid->Add(new wxStaticText(&dlg, wxID_ANY, "Vth (V)"), 0,
+              wxALIGN_CENTER_VERTICAL);
+    auto* vth = new wxTextCtrl(&dlg, wxID_ANY,
+                               wxString::FromDouble(doc_.tech.vth, 6));
+    grid->Add(vth, 1, wxEXPAND);
+
+    grid->Add(new wxStaticText(&dlg, wxID_ANY, "Is (A)"), 0,
+              wxALIGN_CENTER_VERTICAL);
+    auto* is = new wxTextCtrl(&dlg, wxID_ANY,
+                              wxString::FromDouble(doc_.tech.is, 6));
+    grid->Add(is, 1, wxEXPAND);
+
+    top->Add(grid, 0, wxEXPAND | wxALL, 12);
+    top->Add(new wxStaticText(
+                 &dlg, wxID_ANY,
+                 "Vth: MOSFET threshold.  Is: diode/BJT saturation current\n"
+                 "(used when diode/BJT large-signal DC is added)."),
+             0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    auto* buttons = new wxStdDialogButtonSizer();
+    auto* ok = new wxButton(&dlg, wxID_OK);
+    auto* cancel = new wxButton(&dlg, wxID_CANCEL);
+    buttons->AddButton(ok);
+    buttons->AddButton(cancel);
+    buttons->Realize();
+    top->Add(buttons, 0, wxALIGN_RIGHT | wxALL, 10);
+    dlg.SetSizerAndFit(top);
+
+    if (dlg.ShowModal() != wxID_OK) return;
+    double v = 0.0, i = 0.0;
+    if (vth->GetValue().ToDouble(&v)) doc_.tech.vth = v;
+    if (is->GetValue().ToDouble(&i)) doc_.tech.is = i;
+    SetStatusText(wxString::Format("DC settings: Vth = %g V, Is = %g A",
+                                   doc_.tech.vth, doc_.tech.is),
+                  0);
+}
+
 void MainFrame::build_layout() {
     // Three nested splitters, giving a draggable sash between every pane:
     //   sp_main:   palette  | sp_right            (vertical sash)
@@ -211,7 +263,9 @@ void MainFrame::build_layout() {
                                     wxDefaultSize,
                                     wxSP_3D | wxSP_LIVE_UPDATE);
     sp_main_->SetMinimumPaneSize(60);
-    sp_main_->SetSashGravity(1.0); // pane 2 (rest) absorbs frame resize
+    // gravity 0.0: the sash stays put, so the RIGHT pane (everything but the
+    // fixed-width palette) absorbs the frame resize.
+    sp_main_->SetSashGravity(0.0);
 
     palette_ = new PalettePanel(sp_main_, &doc_);
 
@@ -219,13 +273,17 @@ void MainFrame::build_layout() {
                                      wxDefaultSize,
                                      wxSP_3D | wxSP_LIVE_UPDATE);
     sp_right_->SetMinimumPaneSize(120);
-    sp_right_->SetSashGravity(0.0); // pane 1 (centre) absorbs frame resize
+    // gravity 1.0: the sash moves with the edge, so the LEFT pane (the canvas
+    // centre) absorbs the resize while the analysis column keeps its width.
+    sp_right_->SetSashGravity(1.0);
 
     sp_bottom_ = new wxSplitterWindow(sp_right_, wxID_ANY, wxDefaultPosition,
                                       wxDefaultSize,
                                       wxSP_3D | wxSP_LIVE_UPDATE);
     sp_bottom_->SetMinimumPaneSize(80);
-    sp_bottom_->SetSashGravity(0.0); // pane 1 (canvas) absorbs frame resize
+    // gravity 1.0: the TOP pane (canvas) absorbs the resize; the props strip
+    // keeps its height.
+    sp_bottom_->SetSashGravity(1.0);
 
     canvas_ = new SchematicCanvas(sp_bottom_, &doc_);
     props_ = new PropertiesPanel(sp_bottom_);
@@ -739,6 +797,7 @@ void MainFrame::run_card(int index) {
         sp.prune = card.prune;
         sp.use_parallel = card.use_parallel;
         sp.approx_factor = card.approx_factor;
+        sp.tech = doc_.tech;
 
         syms::CardResult cr = syms::run_analysis(c, sp);
         report += cr.title + "\n";

@@ -3,6 +3,7 @@
 
 #include <wx/wx.h>
 #include <wx/spinctrl.h>
+#include <wx/wrapsizer.h>
 
 #include <functional>
 #include <string>
@@ -34,6 +35,9 @@ private:
     Document* doc_ = nullptr;
     std::string sel_;
     bool rebuilding_ = false;
+    // Wrapping container for the parameter "cards" (created lazily; device
+    // parameters tile into it instead of forming one long list).
+    wxWrapSizer* cards_ = nullptr;
 
     void add_header(const wxString& text);
     wxTextCtrl* add_text(const wxString& label, const wxString& value,
@@ -45,8 +49,14 @@ private:
                        const std::string& default_text);
     void add_mantissa_exp(syms::Component* comp, const std::string& name,
                           bool parasitic, const wxString& default_text);
+    // The wrapping container the cards tile into (created lazily).
+    wxWrapSizer* cards_host();
     // value dropdowns (mantissa + exponent) writing to value_text
     void add_value_selector(syms::Component* comp, bool with_unit);
+    // one mantissa+exponent row (typeable, with a fixed step list) that writes
+    // "<mant><exp>" into *target. Used for a source's DC and AC values.
+    void add_scalar_row(const wxString& label, std::string* target,
+                        const std::string& unit);
     bool rename_component(const std::string& old_ref, const wxString& new_ref);
 
     void on_analysis_changed(wxCommandEvent& e);

@@ -244,6 +244,11 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     MnaSystem sys;
     ex s = sys.params.get("s");
     const bool dc_mode = dc_supply != nullptr;
+    if (dc_mode) {
+        // The threshold voltage is a universal DC tech value, registered as a
+        // plain symbol so it appears symbolically in the operating point.
+        sys.params.set("Vth", dc_supply->vth, UnitClass::Volt);
+    }
     // Parse a source's DC value once (used only in dc_mode). Prefer GiNaC's
     // exact numeric (so "0.8" stays 4/5, not 0.80000000000000004), falling back
     // to the SI-suffix parser for values like "1k".
@@ -483,6 +488,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             break;
         }
         case Kind::C: {
+            if (dc_mode) {
+                // At DC a capacitor is an open circuit: stamp nothing, but
+                // still register its symbol so reports can name it.
+                sys.params.set(c.ref, c.estimate(), UnitClass::Farad);
+                break;
+            }
             if (const HeldPassive* hp = held_of(c)) {
                 // A synthetic series-capacitor fold: held capacitance value.
                 sys.params.set(c.ref, hp->est, hp->cls);
@@ -509,7 +520,8 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(bb, k) -= 1;
                 sys.Y(k, bb) -= 1;
             }
-            sys.Y(k, k) -= s * l;
+            // At DC an inductor is a short: no s*L self term (a 0 V branch).
+            if (!dc_mode) sys.Y(k, k) -= s * l;
             break;
         }
         case Kind::V: {
@@ -571,13 +583,14 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             // table always exposes the full model; only enabled ones stamp MNA
             ex gm = reg_param(sys.params, c, "gm");
             ex ro = reg_param(sys.params, c, "ro");
-            ex rds = reg_param(sys.params, c, "rds");
-            ex vth = reg_param(sys.params, c, "Vth");
             ex cgs = reg_param(sys.params, c, "Cgs");
             ex cgd = reg_param(sys.params, c, "Cgd");
             ex cds = reg_param(sys.params, c, "Cds");
             ex cdb = reg_param(sys.params, c, "Cdb");
             ex csb = reg_param(sys.params, c, "Csb");
+            // Vth is a process value shared by every device (the DC tech
+            // settings), so it is NOT a per-device parameter symbol.
+            ex vth = sys.params.get("Vth");
             if (dc_mode) {
                 // Large-signal saturation model. The unknown Id is the
                 // drain-to-source current (positive into D, out of S), so for a
@@ -586,7 +599,8 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // collapses to the same row for both polarities:
                 //     (v(G) - v(S)) - (2/gm)*Id = sgn*|Vth|
                 // with sgn = +1 (NMOS) / -1 (PMOS). Id flows D->S as a plain
-                // current source; channel-length modulation adds 1/rds D->S.
+                // current source; channel-length modulation adds 1/ro D->S
+                // (ro IS the DC output resistance -- there is no separate rds).
                 const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
                 int k = sys.branch_idx.at("Id:" + c.ref);
                 if (D >= 0) sys.Y(D, k) += 1;
@@ -595,17 +609,20 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 if (S >= 0) sys.Y(k, S) -= 1;
                 sys.Y(k, k) -= 2.0 / gm;
                 sys.b(k, 0) = sgn * vth;
-                // channel-length modulation
-                if (c.param_enabled("rds")) stamp_adm(D, S, ex(1) / rds);
+                if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
             } else {
                 // no body terminal: the body is tied to the source
                 stamp_vccs(D, S, G, S, gm);
                 if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
-                if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
-                if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
-                if (c.param_enabled("Cds")) stamp_cap(D, S, cds);
-                if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
-                if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
+                // Device parasitic capacitances are open at DC (they are
+                // stamped only in the small-signal/AC model).
+                if (!dc_mode) {
+                    if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
+                    if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
+                    if (c.param_enabled("Cds")) stamp_cap(D, S, cds);
+                    if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
+                    if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
+                }
             }
             break;
         }
@@ -628,8 +645,11 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             stamp_vccs(C, E, Bi, E, gm);
             if (c.param_enabled("rpi")) stamp_adm(Bi, E, ex(1) / rpi);
             if (c.param_enabled("ro")) stamp_adm(C, E, ex(1) / ro);
-            if (c.param_enabled("Cpi")) stamp_cap(Bi, E, cpi);
-            if (c.param_enabled("Cmu")) stamp_cap(Bi, C, cmu);
+            // BJT junction capacitances are open at DC.
+            if (!dc_mode) {
+                if (c.param_enabled("Cpi")) stamp_cap(Bi, E, cpi);
+                if (c.param_enabled("Cmu")) stamp_cap(Bi, C, cmu);
+            }
             break;
         }
         case Kind::GND:
@@ -650,11 +670,22 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(bb, k) -= 1;
                 sys.Y(k, bb) -= 1;
             }
-            // The VDD rail is never the excitation for AC (the user picks
-            // a separate input source). Register the supply value as a
-            // parameter so reports can name it, e.g. VDD = 5.
+            // Register the supply value as a parameter so reports can name it.
+            // In the large-signal DC solve the rail is driven at its supply
+            // voltage; otherwise it is a per-unit AC excitation only when it is
+            // the selected input, and zero (a short to ground) otherwise.
             sys.params.set(c.ref, c.estimate(), UnitClass::Volt);
-            sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
+            if (dc_mode) {
+                // The rail's DC voltage is the VDD value (edited as the supply
+                // value), parsed exactly so it stays rational.
+                long long n = 0, d = 1;
+                if (eng::parse_exact_decimal(c.value_text, n, d))
+                    sys.b(k, 0) = ex(GiNaC::numeric(n, d));
+                else
+                    sys.b(k, 0) = ex(c.estimate());
+            } else {
+                sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
+            }
             break;
         }
         case Kind::D: {
@@ -665,7 +696,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             ex cd = reg_param(sys.params, c, "Cd");
             stamp_vccs(A, Kk, A, Kk, gm);
             if (c.param_enabled("rd")) stamp_adm(A, Kk, ex(1) / rd);
-            if (c.param_enabled("Cd")) stamp_cap(A, Kk, cd);
+            if (!dc_mode && c.param_enabled("Cd")) stamp_cap(A, Kk, cd);
             break;
         }
         case Kind::CCCS: {

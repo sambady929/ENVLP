@@ -965,7 +965,7 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             set_selection("");
         } else if (hit_wire(p, wi)) {
             if (on_push_undo) on_push_undo();
-            doc_->wires.erase(doc_->wires.begin() + wi);
+            doc_->remove_wire(wi);
         } else if (hit_label(p, li)) {
             if (on_push_undo) on_push_undo();
             doc_->labels.erase(doc_->labels.begin() + li);
@@ -1066,6 +1066,11 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         l.name = label_queue_.front();
         l.font_size = 9; // matches the component ref/value text size
         l.rot = 0;
+        // Bind to the wire so the label follows drags and re-routes.
+        if (wi >= 0 && wi < int(doc_->wires.size())) {
+            l.bind_wire = wi;
+            l.bind_frac = doc_->wire_frac_of(wi, anchor);
+        }
         // Put the text on the readable side of the wire (right of a vertical
         // wire, above a horizontal one) instead of straddling it.
         l.pt = doc_->label_display_pt(wi, anchor, int(l.name.size()));
@@ -1364,6 +1369,11 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             l.pt.first += ddx;
             l.pt.second += ddy;
         }
+        // A whole-wire drag moves the wire rigidly, so any label anchored
+        // mid-segment (not on a vertex) must translate by the same delta too --
+        // otherwise the label stays behind while its wire moves. Wire-bound
+        // labels are re-resolved from the wire's new geometry instead.
+        doc_->sync_label_anchors();
         Refresh(false);
         return;
     }
@@ -1583,6 +1593,8 @@ void SchematicCanvas::move_component(const std::string& ref, double nx,
                 break;
             }
     }
+    // Wire-bound labels follow the re-routed wires.
+    doc_->sync_label_anchors();
 }
 
 // Drop a vertex that lies on the straight line between its neighbours --
@@ -1782,13 +1794,7 @@ void SchematicCanvas::delete_selection() {
     // For wires, erasing shifts indices; sort descending and skip out-of-range.
     std::sort(wires.rbegin(), wires.rend());
     for (int wi : wires)
-        if (wi >= 0 && wi < int(doc_->wires.size())) {
-            doc_->wires.erase(doc_->wires.begin() + wi);
-            // After erasing a wire, indices > wi shift down by 1; for safety
-            // and to keep the operation predictable, remove remaining wires
-            // whose indices were higher than the deleted one.
-            // (Sorted descending means no earlier element has a higher index.)
-        }
+        if (wi >= 0 && wi < int(doc_->wires.size())) doc_->remove_wire(wi);
     std::sort(labels.rbegin(), labels.rend());
     for (int li : labels)
         if (li >= 0 && li < int(doc_->labels.size()))

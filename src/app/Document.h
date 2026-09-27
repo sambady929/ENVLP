@@ -53,6 +53,12 @@ struct NetLabel {
     std::string name;
     int font_size = 9; // points; matches the component ref/value text size
     int rot = 0;       // text rotation, degrees (multiples of 90)
+    // Binding to a wire: when the wire is dragged or re-routed, the anchor is
+    // re-resolved from the wire so the label stays on it. `bind_wire` is a wire
+    // index (-1 = the anchor is not wire-bound, e.g. it sits on a pin), and
+    // `bind_frac` is the arc-length fraction along the wire's polyline.
+    int bind_wire = -1;
+    double bind_frac = 0.0;
 };
 
 // Resolved net identity for the interactive helpers: the union-find root of
@@ -76,6 +82,9 @@ public:
     std::vector<Wire> wires;
     std::vector<NetLabel> labels;
     syms::AnalysisRequest req;
+    // Process values for the large-signal DC model (Vth, Is), set from the
+    // toolbar's DC settings dialog.
+    syms::TechParams tech;
     std::string path;  // "" = never saved
     bool dirty = false;
 
@@ -86,6 +95,12 @@ public:
     // Adds the component and gives it a free reference/placement.
     std::string add(const syms::Component& c, double x, double y);
     void remove(const std::string& ref);
+    // Remove a wire (by index). Any net label that was attached only to this
+    // wire is removed with it, so a deleted wire never leaves an orphan label
+    // floating in space.
+    void remove_wire(int wire_index);
+    // Drop every net label whose anchor no longer lies on a wire or pin.
+    void prune_orphan_labels();
 
     // --- wire endpoint bindings -------------------------------------------
     // Resolve a wire end to its current coordinate: a Pin end follows the
@@ -130,6 +145,12 @@ public:
     // vertical wire, above a horizontal one. `name_len` sizes the offset so
     // the text clears the wire; pass the label's character count.
     Pt label_display_pt(int wire_index, Pt anchor, int name_len) const;
+
+    // Wire-bound labels: the anchor is stored as a fraction along a wire's
+    // polyline so it follows the wire through drags and re-routes.
+    Pt wire_pt_at(int wi, double f) const;
+    double wire_frac_of(int wi, Pt q) const;
+    void sync_label_anchors();
 
     // Find or create a label attached to the net a wire belongs to; the text
     // is drawn at `at` (defaults to the anchor). Returns the label index.

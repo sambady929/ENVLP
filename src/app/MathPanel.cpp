@@ -77,38 +77,41 @@ void MathPanel::clear() {
 namespace {
 // The Math tab shows the typeset expression first (the headline result:
 // stacked fractions, proper subscripts, the parallel glyph), then the
-// supporting text report below it in a clean document style -- so it reads
-// as a typeset page rather than a dump of raw LaTeX.
+// supporting report below it. The styling is deliberately compact -- tighter
+// font, line height and spacing -- so a full result fits without a lot of
+// scrolling, and each section reads as a small card.
 const char* kReportCss =
-    "html, body { margin: 0; padding: 0; background: #ffffff; }"
+    "html, body { margin: 0; padding: 0; background: #f4f5f8; }"
     "body { font-family: 'Segoe UI', sans-serif; color: #202634; }"
-    ".wrap { padding: 22px 26px 36px 26px; max-width: 860px; }"
-    ".expr { margin: 0 0 20px 0; padding: 16px 20px;"
-    "        background: #f7f8fb; border: 1px solid #e3e6ee;"
+    ".wrap { padding: 10px 12px 16px 12px; max-width: 780px; }"
+    ".expr { margin: 0 0 10px 0; padding: 8px 12px;"
+    "        background: #ffffff; border: 1px solid #e3e6ee;"
     "        border-radius: 6px; overflow-x: auto; }"
     ".math { font-family: 'Cambria Math', 'Latin Modern Math',"
-    "        'Times New Roman', serif; font-size: 21px;"
-    "        line-height: 2.5; color: #10141a; }"
+    "        'Times New Roman', serif; font-size: 16px;"
+    "        line-height: 1.5; color: #10141a; }"
     ".frac { display: inline-block; vertical-align: middle;"
-    "        text-align: center; margin: 0 4px; }"
-    ".frac > .num { display: block; padding: 0 5px 2px 5px;"
-    "               border-bottom: 1.5px solid #10141a; }"
-    ".frac > .den { display: block; padding: 2px 5px 0 5px; }"
-    "sub, sup { font-size: 72%; }"
-    ".overline { border-top: 1.3px solid #10141a; padding-top: 1px; }"
+    "        text-align: center; margin: 0 2px; }"
+    ".frac > .num { display: block; padding: 0 3px 1px 3px;"
+    "               border-bottom: 1px solid #10141a; }"
+    ".frac > .den { display: block; padding: 1px 3px 0 3px; }"
+    "sub, sup { font-size: 70%; }"
+    ".overline { border-top: 1px solid #10141a; padding-top: 1px; }"
     ".mathrm, .text { font-style: normal; }"
     ".mathit { font-style: italic; }"
-    "h2.section { font-size: 12px; font-weight: 600; text-transform:"
-    "        uppercase; letter-spacing: .08em; color: #8890a0;"
-    "        margin: 22px 0 6px 0; }"
-    "p.line { margin: 5px 0; font-size: 13.5px; line-height: 1.55;"
+    "h2.section { font-size: 10.5px; font-weight: 600; text-transform:"
+    "        uppercase; letter-spacing: .06em; color: #8890a0;"
+    "        margin: 8px 0 3px 0; }"
+    ".card { background: #ffffff; border: 1px solid #e6e9f0;"
+    "        border-radius: 6px; padding: 6px 10px; margin: 0 0 8px 0; }"
+    "p.line { margin: 2px 0; font-size: 12.5px; line-height: 1.35;"
     "        color: #2a3140; }"
-    ".line { margin: 5px 0; }"
+    ".line { margin: 2px 0; }"
     "p.line.mono { font-family: 'Cascadia Mono', 'Consolas', monospace;"
-    "        font-size: 12.5px; white-space: pre; }"
+    "        font-size: 11.5px; white-space: pre; }"
     ".note { color: #8a6d1a; background: #fdf6e0; border: 1px solid"
-    "        #f0e2b0; border-radius: 4px; padding: 8px 10px;"
-    "        font-size: 12.5px; margin: 10px 0; }";
+    "        #f0e2b0; border-radius: 4px; padding: 5px 8px;"
+    "        font-size: 11.5px; margin: 6px 0; }";
 
 std::string esc_html(const std::string& s) {
     std::string e;
@@ -122,21 +125,30 @@ std::string esc_html(const std::string& s) {
 }
 
 // Render the typeset poles/zeros report. Lines ending in ':' are section
-// headings; everything else is a typeset math line (the time-constant and
-// factor expressions with \cdot / \parallel).
+// headings; everything else is a typeset math line. A heading plus its
+// following lines are wrapped together in a compact card.
 std::string render_latex_report(const std::string& lr) {
     std::string out;
+    std::string card;  // pending card body (heading + lines)
     std::string cur;
+    auto close_card = [&]() {
+        if (!card.empty()) {
+            out += "<div class=\"card\">" + card + "</div>";
+            card.clear();
+        }
+    };
     auto flush = [&]() {
         while (!cur.empty() &&
                (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
             cur.pop_back();
         if (!cur.empty()) {
-            if (cur.size() < 40 && cur.back() == ':')
-                out += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
-            else
-                out += "<div class=\"line math\">" +
-                       latex_render_line(cur) + "</div>";
+            if (cur.size() < 40 && cur.back() == ':') {
+                close_card();
+                card += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
+            } else {
+                card += "<div class=\"line math\">" +
+                        latex_render_line(cur) + "</div>";
+            }
         }
         cur.clear();
     };
@@ -145,6 +157,7 @@ std::string render_latex_report(const std::string& lr) {
         else cur += c;
     }
     flush();
+    close_card();
     return out;
 }
 } // namespace

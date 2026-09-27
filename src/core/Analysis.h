@@ -47,6 +47,11 @@ struct AnalysisSpec {
     // and for term ranking.
     SweepSpec sweep;
 
+    // Process values for the large-signal DC model (Vth, Is), set from the
+    // toolbar's DC settings dialog. Continuous values, not the component
+    // editor's fixed steps.
+    TechParams tech;
+
     // DC model selection for MOSFETs.
     enum class MosDc { SquareLaw, GmOverId } mos_dc = MosDc::SquareLaw;
 };

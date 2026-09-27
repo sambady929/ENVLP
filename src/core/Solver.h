@@ -28,6 +28,15 @@ struct SweepSpec {
     int points_per_interval = 10;
 };
 
+// Process/technology values for the large-signal DC model. These are universal
+// (one set per analysis), set from the toolbar's "DC settings" dialog, and may
+// be any continuous value (not locked to the component editor's 1/3/10 steps).
+struct TechParams {
+    double vth = 0.6;    // MOSFET threshold voltage (V)
+    double is = 1e-16;   // diode/BJT saturation current (A), for future DC of
+                         // diodes and BJTs (unused by the MOSFET model)
+};
+
 struct AnalysisRequest {
     std::string input_ref;  // which ideal source drives the circuit
     std::string output;     // "V(node)" or "I(ref)"
@@ -36,6 +45,9 @@ struct AnalysisRequest {
     // never an internal node of a folded series group -- so `V(node)` resolves.
     // Empty means "only the output node is used".
     std::set<std::string> used_nodes;
+    // Process values for the large-signal DC model (Vth, Is). Only used when
+    // the DC analysis runs.
+    TechParams tech;
     double f0_hz = 1000.0;  // frequency the low-entropy form is tuned to
     double threshold_db = 20.0; // series/parallel component reduction (dB)
     double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
@@ -71,7 +83,7 @@ struct DcSolution {
     std::map<std::string, GiNaC::ex> vds;     // MOSFET ref -> Vds
     std::map<std::string, GiNaC::ex> vov;     // MOSFET ref -> Vov (= 2*Id/gm)
 };
-DcSolution solve_dc(const Circuit& c);
+DcSolution solve_dc(const Circuit& c, const TechParams& tech = TechParams{});
 
 // Throws std::runtime_error with a user-facing message.
 Solved solve(const Circuit& c, const AnalysisRequest& req);
