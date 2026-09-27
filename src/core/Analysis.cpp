@@ -896,7 +896,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         double psd_const = 0.0;       // A^2/Hz (or V^2/Hz) thermal/shot part
         double corner_hz = 0.0;       // 1/f corner (0 = no flicker)
         ex xfer;                      // unit-source transfer to V(out)
-        ex psd_sym;                   // symbolic thermal/shot PSD (A^2/Hz or V^2/Hz)
+        ex psd_sym;                   // symbolic thermal/shot PSD
+        ex psd_flick_sym;             // symbolic flicker coefficient (times 1/f)
     };
     // kT is a symbolic design constant so the noise densities stay analytic
     // (e.g. 4*kT/R1) rather than collapsing to a decimal.
@@ -913,7 +914,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                 ex Rs = pt.get(cc.ref); // the resistor's own symbol
                 srcs.push_back({cc.ref, "4kT/R", false, cc.nodes[0],
                                 cc.nodes[1], 4.0 * kT / R, 0.0, ex(0),
-                                4 * kT_sym / Rs});
+                                4 * kT_sym / Rs, ex(0)});
             }
         } else if (cc.kind == Kind::NMOS || cc.kind == Kind::PMOS) {
             double gm = cc.param_estimate("gm");
@@ -922,9 +923,15 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                                  ? cc.param_estimate("fcn")
                                  : 0.0;
                 ex gms = pt.get("gm_" + cc.ref);
+                // thermal: 4kT*(2/3)*gm; flicker coefficient: (thermal)*fcn,
+                // with fcn the 1/f corner frequency kept symbolic.
+                ex i_th = 4 * kT_sym * (ex(2) / 3) * gms;
+                ex fcn_sym = pt.get("fcn_" + cc.ref);
+                pt.set("fcn_" + cc.ref, fcn, UnitClass::Plain);
+                ex i_fl = fcn > 0.0 ? i_th * fcn_sym : ex(0);
                 srcs.push_back({cc.ref, "4kT(2/3)gm + 1/f", false, cc.nodes[0],
                                 cc.nodes[2], 4.0 * kT * (2.0 / 3.0) * gm, fcn,
-                                ex(0), 4 * kT_sym * (ex(2) / 3) * gms});
+                                ex(0), i_th, i_fl});
             }
         } else if (cc.kind == Kind::NPN || cc.kind == Kind::PNP) {
             double gm = cc.param_estimate("gm");
@@ -938,7 +945,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                                  : 0.0;
                 srcs.push_back({cc.ref, "2q(Ic+Ib) + 1/f", false, cc.nodes[0],
                                 cc.nodes[2], i2, fcn, ex(0),
-                                GiNaC::numeric(i2)});
+                                GiNaC::numeric(i2), GiNaC::numeric(i2 * fcn)});
             }
         } else if (cc.kind == Kind::D) {
             double gm = cc.param_estimate("gm");
@@ -950,7 +957,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                                  : 0.0;
                 srcs.push_back({cc.ref, "2qId + 4kTgm + 1/f", false, cc.nodes[0],
                                 cc.nodes[1], i2, fcn, ex(0),
-                                GiNaC::numeric(i2)});
+                                GiNaC::numeric(i2), GiNaC::numeric(i2 * fcn)});
             }
         } else if (cc.kind == Kind::OPAMP || cc.kind == Kind::FDOPAMP ||
                    cc.kind == Kind::AMP) {
@@ -969,8 +976,10 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             std::string im = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
             ex ens = pt.get("en_" + cc.ref);
             pt.set("en_" + cc.ref, en, UnitClass::Plain);
+            ex v_th = ens * ens;
+            ex v_fl = fcn > 0.0 ? v_th * GiNaC::numeric(fcn) : ex(0);
             srcs.push_back({cc.ref, "en (input voltage)", true, ip, im,
-                            en * en, fcn, ex(0), ens * ens});
+                            en * en, fcn, ex(0), v_th, v_fl});
         }
     }
     if (srcs.empty()) {
@@ -1099,62 +1108,67 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     for (const auto& ps : per_source) vout_total2 += ps.second;
 
     // ---- symbolic output noise density -----------------------------------
-    // Each source contributes its PSD (a constant S0, or S0*(1 + fcn/f) with
-    // flicker) times |H(jw)|^2, and the powers add. Written in terms of the
-    // frequency symbol `f` (w = 2*pi*f) this is a low-entropy analytic
-    // expression in the component values: e.g. for an RC load,
-    //   S_v(f) = 4kT/R * 1/(1 + (2*pi*f*R*C)^2).
-    // The integrated power over the numeric band is the definite integral of
-    // this density; we show it symbolically as an integral and give its value.
-    struct SymPsd {
-        std::string ref;
-        ex psd;      // S_source(f) (V^2/Hz), a function of the symbol `f`
-    };
-    std::vector<SymPsd> syms;
-    // Group sources that share the same |H(jw)|^2 so the total combines the
-    // constants (the common case: two resistors in one divider). h2-keyed:
-    // each group -> {summed flat PSD, summed flicker numerator}.
+    // Whiteboard-style decomposition: the output noise is a sum of per-source
+    // contributions, each = (source current-noise density) x |H(j2*pi*f)|^2,
+    // where H(s) is the transfer from that source's noise current to V(out).
+    // Sources that share the same H(s) are grouped, so the total reads as
+    //   S_v(f) = |H(s)|^2 * (i_R1^2 + i_M1,thermal^2 + i_M1,flicker^2/f + ...)
+    // with the current densities and H(s) listed separately, exactly as an
+    // engineer would write it by hand. Thermal and flicker are kept apart.
     struct Group {
-        ex h2;
-        ex flat = 0;    // sum of S0
-        ex flick = 0;   // sum of S0*fcn
+        ex h2;                       // |H(j2*pi*f)|^2 (bracket product)
+        ex i_th = 0;                 // sum of thermal/shot densities
+        ex i_fl = 0;                 // sum of flicker coefficients (x 1/f)
+        std::vector<std::string> refs;
     };
     std::vector<Group> groups;
+    // Per-source density expressions for the breakdown (thermal and flicker).
+    struct SrcDens {
+        std::string ref, mech;
+        ex th, fl;                   // thermal density, flicker coefficient
+        double th_num = 0.0, fl_num = 0.0;
+    };
+    std::vector<SrcDens> dens;
     for (const auto& src : srcs) {
         ex h2 = mag2f(src.xfer);
         if (h2.is_zero()) continue;
-        ex S0 = src.psd_sym.is_zero() ? ex(GiNaC::numeric(src.psd_const))
+        ex th = src.psd_sym.is_zero() ? ex(GiNaC::numeric(src.psd_const))
                                       : src.psd_sym;
-        ex fcn = src.corner_hz > 0.0 ? ex(GiNaC::numeric(src.corner_hz)) : ex(0);
-        // Keep the density as a product/sum of brackets -- never expand.
-        ex psd = h2 * (S0 + S0 * fcn / f_sym);
-        syms.push_back({src.ref, psd});
+        ex fl = src.psd_flick_sym;
+        dens.push_back({src.ref, src.mech, th, fl, src.psd_const,
+                        src.corner_hz > 0.0
+                            ? src.psd_const * src.corner_hz
+                            : 0.0});
         bool merged = false;
         for (auto& g : groups)
             if (g.h2.is_equal(h2)) {
-                g.flat += S0;
-                g.flick += S0 * fcn;
+                g.i_th += th;
+                if (!fl.is_zero()) g.i_fl += fl;
+                g.refs.push_back(src.ref);
                 merged = true;
                 break;
             }
         if (!merged) {
             Group g;
             g.h2 = h2;
-            g.flat = S0;
-            g.flick = S0 * fcn;
+            g.i_th = th;
+            g.i_fl = fl;
+            g.refs.push_back(src.ref);
             groups.push_back(g);
         }
     }
-    // Keep the total as a *sum of per-group densities* (not one combined
-    // fraction): this reads as the low-entropy sum it physically is.
-    // Keep the total as a raw sum of per-group densities (do NOT call
-    // normal(): that would force a common denominator and explode the
-    // expression). GiNaC keeps unlike-denominator terms separate.
-    std::vector<ex> total_terms;
-    for (const auto& g : groups)
-        total_terms.push_back(g.h2 * (g.flat + g.flick / f_sym));
+    // Each group's transfer |H|^2 gets a short name (H, or H1/H2/...).
+    auto group_name = [&](size_t j) -> std::string {
+        if (groups.size() == 1) return "H";
+        return "H" + std::to_string(j + 1);
+    };
+    // The total density: sum over groups of |Hj|^2 * (i_th,j + i_fl,j/f).
     ex S_total = 0;
-    for (const auto& t : total_terms) S_total += t;
+    for (size_t j = 0; j < groups.size(); ++j) {
+        ex inner = groups[j].i_th;
+        if (!groups[j].i_fl.is_zero()) inner += groups[j].i_fl / f_sym;
+        S_total += groups[j].h2 * inner;
+    }
 
     // ---- input referral --------------------------------------------------
     // Choose the excitation: the card's input source if usable, else any ideal
@@ -1200,26 +1214,72 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     double sv_at_f0 = npts > 0 ? vout[0] : 0.0;
 
     // ---- symbolic report (text + LaTeX) ----------------------------------
+    // Presented the way an engineer writes it on a whiteboard:
+    //   S_v(f) = |H(s)|^2 * (i_R1^2 + i_M1,th^2 + i_M1,fl^2/f)
+    // then the definitions of each current-noise density and of H(s) below.
     std::string sym_txt, sym_tex;
     {
         std::ostringstream t, x;
-        t << "  Output Noise Density S_v(f) [V^2/Hz] (f in Hz):\n";
+        t << "  Output Noise Density S_v(f) [V^2/Hz]:\n";
         x << "Output Noise Density:\n";
-        for (const auto& sp : syms) {
-            t << "    " << sp.ref << ": S_v = " << pretty(sp.psd) << "\n";
-            x << "\\mathrm{" << sp.ref << "}:\\quad S_{v} = "
-              << to_latex(sp.psd) << "\n";
-        }
-        // The total is the sum of its (density) terms, kept as a sum so it
-        // reads as the low-entropy addition it is.
-        std::string tt = "    total: S_v = ";
-        std::string xx = "\\mathrm{total}:\\quad S_{v} = ";
-        for (size_t i = 0; i < total_terms.size(); ++i) {
-            tt += (i ? " + " : "") + pretty(total_terms[i]);
-            xx += (i ? " + " : "") + to_latex(total_terms[i]);
+        // The headline sum: |Hj|^2 * (thermal + flicker/f) per group.
+        std::string tt = "    S_v(f) = ";
+        std::string xx = "S_{v}(f) = ";
+        for (size_t j = 0; j < groups.size(); ++j) {
+            const Group& g = groups[j];
+            std::string hn = group_name(j);
+            std::string inner = pretty(g.i_th);
+            if (!g.i_fl.is_zero())
+                inner += " + " + pretty(g.i_fl) + "/f";
+            std::string inner_tex = to_latex(g.i_th);
+            if (!g.i_fl.is_zero())
+                inner_tex += " + \\frac{" + to_latex(g.i_fl) + "}{f}";
+            tt += std::string(j ? " + " : "") + hn + "(s)^2 * (" + inner + ")";
+            xx += std::string(j ? " + " : "") + "\\left|" + hn +
+                  "\\right|^2\\left(" + inner_tex + "\\right)";
         }
         t << tt << "\n";
         x << xx << "\n";
+
+        // Definitions: each current-noise density (thermal and flicker).
+        t << "\n  Source noise densities:\n";
+        x << "Source Noise Densities:\n";
+        for (const auto& d : dens) {
+            t << "    " << d.ref << " (thermal): i_n^2 = " << pretty(d.th)
+              << "\n";
+            x << "\\mathrm{" << d.ref << "}:\\quad i_{n,th}^2 = "
+              << to_latex(d.th) << "\n";
+            if (!d.fl.is_zero()) {
+                t << "    " << d.ref << " (flicker): i_n^2 = " << pretty(d.fl)
+                  << "/f\n";
+                x << "\\mathrm{" << d.ref
+                  << "}:\\quad i_{n,1/f}^2 = \\frac{" << to_latex(d.fl)
+                  << "}{f}\n";
+            }
+        }
+        // Definitions: each transfer Hj(s) in low-entropy factored form.
+        t << "\n  Transfers H_j(s) from each source current to V(out):\n";
+        x << "Transfers:\n";
+        for (size_t j = 0; j < groups.size(); ++j) {
+            ex H = ex(0);
+            for (const auto& src : srcs)
+                if (src.ref == groups[j].refs.front()) H = src.xfer;
+            // Present each transfer in its low-entropy factored form (gain x
+            // (1 + s*tau) factors, || atoms held) rather than an expanded ratio.
+            std::string ht, hx;
+            try {
+                ex ratio = (H.numer() / H.denom()).normal();
+                Pruned hp = prune_low_entropy(ratio.numer(), ratio.denom(), pt,
+                                              opts_of(s));
+                ht = hp.text;
+                hx = latex_rhs(hp.latex);
+            } catch (const std::exception&) {
+                ht = pretty(H);
+                hx = to_latex(H);
+            }
+            t << "    " << group_name(j) << "(s) = " << ht << "\n";
+            x << group_name(j) << "(s) = " << hx << "\n";
+        }
         sym_txt = t.str();
         sym_tex = x.str();
     }
@@ -1319,18 +1379,32 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         cr.has_transfer = true;
     }
 
-    // ---- typeset output (headline = symbolic total PSD, then the report) --
+    // ---- typeset output (headline = whiteboard-style symbolic total) -----
     {
-        std::ostringstream lx;
-        lx << "S_{v}(f) = " << to_latex(S_total)
-           << "\\quad\\mathrm{[V^2/Hz]}";
+        // S_v(f) = |H(s)|^2 * (i_th^2 + i_fl^2/f) [+ ...]
+        std::ostringstream lx, tx;
+        lx << "S_{v}(f) = ";
+        tx << "S_v(f) = ";
+        for (size_t j = 0; j < groups.size(); ++j) {
+            const Group& g = groups[j];
+            std::string hn = group_name(j);
+            std::string inner = to_latex(g.i_th);
+            if (!g.i_fl.is_zero())
+                inner += " + \\frac{" + to_latex(g.i_fl) + "}{f}";
+            lx << (j ? " + " : "") << "\\left|" << hn
+               << "\\right|^2\\left(" << inner << "\\right)";
+            std::string innerp = pretty(g.i_th);
+            if (!g.i_fl.is_zero()) innerp += " + " + pretty(g.i_fl) + "/f";
+            tx << (j ? " + " : "") << hn << "^2*(" << innerp << ")";
+        }
         cr.latex = lx.str();
+        cr.summary = tx.str();
     }
     {
         std::ostringstream lr;
         lr << "Noise (" << eng::format_hz(f0) << " to " << eng::format_hz(f1)
            << "):\n";
-        lr << sym_tex;           // symbolic densities (symbolic output)
+        lr << sym_tex;           // symbolic densities + transfers
         lr << "\n" << int_tex;   // numeric integrated values
         lr << "Per-Source Contribution:\n";
         for (const auto& ps : per_source)
@@ -1339,7 +1413,6 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         cr.latex_report = lr.str();
     }
 
-    cr.summary = "S_v(f) = " + pretty(S_total);
     cr.text = cr.summary;
     cr.report = rep;
     cr.values.push_back({"Vout_n", eng::format_si(vout_rms, 8)});

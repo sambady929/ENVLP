@@ -842,6 +842,13 @@ static void test_noise_analysis_input_referred() {
     CHECK(cr.report.find("S_v(f)") != std::string::npos);
     CHECK(cr.transfer.noise_sym_text.find("kT") != std::string::npos);
     CHECK(cr.transfer.noise_sym_latex.find("S_{v}") != std::string::npos);
+    // Whiteboard-style breakdown: thermal and flicker are named separately,
+    // the transfer H(s) is given a name, and the headline is a sum of
+    // |H|^2 * (density) terms.
+    CHECK(cr.report.find("(thermal)") != std::string::npos);
+    CHECK(cr.report.find("H(s)") != std::string::npos);
+    CHECK(cr.latex.find("H(s)^2") != std::string::npos ||
+          cr.latex.find("\\left|H\\right|^2") != std::string::npos);
 }
 
 // Noise with a current-source excitation reports input-referred *current*
