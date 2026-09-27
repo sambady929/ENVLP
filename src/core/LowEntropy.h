@@ -55,6 +55,8 @@ struct LowEntropy {
     std::string latex;     // H(s) in LaTeX
     bool numeric_factors = false; // some factors use numeric (approx) roots
     bool exact = false;    // true when pruning was disabled
+    // Zero-value time constants used for the factored form (when supplied).
+    std::vector<TimeConstant> octc;
 };
 
 struct LowEntropyOptions {
@@ -95,6 +97,13 @@ struct LowEntropyOptions {
     // otherwise the single frequency f0_hz is used.
     double band_lo_hz = 1.0;
     double band_hi_hz = 0.0; // 0 = unset -> use f0_hz
+
+    // Optional, pre-computed zero-value (open-circuit) time constants, one per
+    // reactive element, from MNA's open_circuit_time_constants(). When present
+    // and they reproduce the denominator numerically, the factored form is
+    // built directly from them (TTC ordering) rather than by factoring the
+    // expanded polynomial. Each carries the physical element label.
+    std::vector<TimeConstant> octc;
 };
 
 // The low-entropy engine. This is the heart of SymCirc: it turns a raw

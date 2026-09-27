@@ -1,6 +1,7 @@
 #include "core/MNA.h"
 #include "core/Eng.h"
 #include "core/Par.h"
+#include "core/Solver.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -681,6 +682,127 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
         }
     }
     return sys;
+}
+
+std::vector<TimeConstant> open_circuit_time_constants(
+    const Circuit& cin, const std::string& input_ref, ParamTable& params) {
+    Circuit c = cin;
+    resolve_mirrors(c);
+    std::vector<TimeConstant> out;
+
+    // With every independent source zeroed, every capacitor opened (omitted),
+    // and every inductor except the one under test shorted (a 0 V source),
+    // inject 1 A across the element's terminals and read V(a)-V(b): that is the
+    // resistance it sees.
+    auto port_R = [&](const std::string& test_sym, const std::string& na,
+                      const std::string& nb) -> ex {
+        // Zero-value reactances: every capacitor (including the test one, since
+        // OCTC removes it and measures the resistance across its terminals) is
+        // opened; every inductor except the test one is shorted. The test
+        // inductor is removed too (we measure the resistance into its open
+        // terminals). The test element's symbol also tells us which device
+        // parasitic to disable.
+        Circuit ct;
+        for (const auto& cc : c.comps) {
+            if (cc.kind == Kind::C) continue;              // all caps open
+            if (cc.kind == Kind::L) {
+                if (cc.ref == test_sym) continue;          // remove the test L
+                Component sh = cc;                          // short the rest
+                sh.kind = Kind::V;
+                sh.value_text = "0";
+                sh.ref = "__SHORT_" + cc.ref;
+                ct.comps.push_back(sh);
+                continue;
+            }
+            Component m = cc;
+            if (is_independent_source(cc.kind)) m.value_text = "0";
+            // Open every device parasitic capacitance: OCTC measures the
+            // zero-value (all-other-caps-open) resistance.
+            for (const auto& pd : param_defs(cc.kind)) {
+                if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad)
+                    m.param_on[pd.name] = false;
+            }
+            ct.comps.push_back(m);
+        }
+        Component it;
+        it.kind = Kind::I;
+        it.ref = "__OCTC__";
+        it.nodes = {na, nb};
+        it.value_text = "1";
+        ct.comps.push_back(it);
+        try {
+            AnalysisRequest r;
+            r.input_ref = "__OCTC__";
+            r.output = "V(" + na + ")";
+            Solved sa = solve(ct, r);
+            ex va = (sa.num / sa.den).normal();
+            if (nb == "0" || nb == "GND") return va;
+            r.output = "V(" + nb + ")";
+            Solved sb = solve(ct, r);
+            ex vb = (sb.num / sb.den).normal();
+            return (va - vb).normal();
+        } catch (const std::exception&) {
+            return ex(0);
+        }
+    };
+
+    auto add_tc = [&](const std::string& label, const std::string& na,
+                      const std::string& nb, bool is_cap, const ex& sym) {
+        ex R = port_R(label, na, nb);
+        if (R.is_zero()) return;
+        R = to_parallel(R);
+        ex tau = is_cap ? (R * sym).normal() : (sym / R).normal();
+        TimeConstant tc;
+        tc.label = label;
+        tc.tau = tau;
+        ex tv = params.eval_real(tau);
+        if (GiNaC::is_a<GiNaC::numeric>(tv))
+            tc.tau_value =
+                std::fabs(GiNaC::ex_to<GiNaC::numeric>(tv).to_double());
+        out.push_back(tc);
+    };
+
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::C || cc.kind == Kind::L) {
+            add_tc(cc.ref, cc.nodes[0], cc.nodes[1], cc.kind == Kind::C,
+                   params.get(cc.ref));
+            continue;
+        }
+        // Device parasitic capacitances are reactive elements too: give each
+        // enabled one its own time constant, with the port being the two nodes
+        // it bridges in the small-signal model.
+        const std::string& n0 = cc.nodes.size() > 0 ? cc.nodes[0] : "0";
+        const std::string& n1 = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
+        const std::string& n2 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
+        for (const auto& pd : param_defs(cc.kind)) {
+            if (param_unit_class(cc.kind, pd.name) != UnitClass::Farad) continue;
+            if (!cc.param_enabled(pd.name)) continue;
+            std::string a, b;
+            // Map the parasitic to its node pair (matches the MNA stamps).
+            if (pd.name == "Cgs") { a = n1; b = n2; }        // G-S
+            else if (pd.name == "Cgd") { a = n1; b = n0; }   // G-D
+            else if (pd.name == "Cds" || pd.name == "Cdb")
+                { a = n0; b = n2; }                          // D-S
+            else if (pd.name == "Csb") { a = n2; b = n2; }   // S-S (shunt)
+            else if (pd.name == "Cpi") { a = n1; b = n2; }   // B-E
+            else if (pd.name == "Cmu") { a = n1; b = n0; }   // B-C
+            else if (pd.name == "Cd") { a = n0; b = n1; }    // A-K
+            else { a = n0; b = n1; }
+            if (a == b) continue;
+            std::string sym_name = param_symbol(cc, pd.name);
+            ex sym = params.get(sym_name);
+            params.set(sym_name, cc.param_estimate(pd.name), UnitClass::Farad);
+            add_tc(sym_name, a, b, true, sym);
+        }
+    }
+    // Report the smallest (dominant) time constants first, matching the hand
+    // method of starting from the dominant element.
+    std::sort(out.begin(), out.end(),
+              [](const TimeConstant& a, const TimeConstant& b) {
+                  return a.tau_value > b.tau_value;
+              });
+    (void)input_ref;
+    return out;
 }
 
 } // namespace syms

@@ -24,6 +24,12 @@ struct AnalysisResult {
     SweepSpec sweep;          // plotting / ranking sweep
     std::string report;       // full human-readable report (results panel)
 
+    // Zero-value (open-circuit) time constants of the network, one per
+    // reactive element. Reported to the engineer as tau_i = R_i*C_i (or L_i/R_i)
+    // -- the whiteboard time constants. Their *sum* is exactly the
+    // denominator's first-order coefficient.
+    std::vector<TimeConstant> octc;
+
     // Loop-gain extras (present only for the return-ratio analysis): the
     // unity-gain frequency and phase margin, in numeric and symbolic form.
     bool has_pm = false;

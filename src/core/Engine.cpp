@@ -31,6 +31,10 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.band_lo_hz = req.sweep.f_start_hz;
     r.opts.band_hi_hz = req.sweep.f_stop_hz;
     r.sweep = req.sweep;
+    // Zero-value time constants from the topology (TTC ordering) so poles are
+    // attributed to their physical element. `c` is the resolved circuit.
+    r.octc = open_circuit_time_constants(c, req.input_ref, r.params);
+    r.opts.octc = r.octc;
     r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
     r.report = format_report(r);
     return r;
@@ -367,6 +371,15 @@ std::string format_report(const AnalysisResult& r) {
                "were used)\n";
     out += "\nGain / Bandwidth:\n";
     out += metrics_text(r);
+    // Zero-value (open-circuit) time constants: the whiteboard tau_i = R_i*C_i
+    // (or L_i/R_i), one per reactive element. Their sum is exactly the
+    // denominator's first-order coefficient, so the largest one dominates the
+    // -3 dB bandwidth when the rest are far away.
+    if (!r.octc.empty()) {
+        out += "\nTime Constants (zero-value):\n";
+        for (const auto& tc : r.octc)
+            out += "    " + tc.label + ": tau = " + pretty(tc.tau) + "\n";
+    }
     out += "\nPoles:\n";
     out += poles_zeros_text(r.pruned.poles, true);
     out += "Zeros:\n";
@@ -407,6 +420,11 @@ std::string pole_zero_latex(const RootInfo& r, int i) {
 std::string format_report_latex(const AnalysisResult& r) {
     std::string out;
     out += metrics_latex(r);
+    if (!r.octc.empty()) {
+        out += "Time Constants (zero-value):\n";
+        for (const auto& tc : r.octc)
+            out += "\\tau_{" + tc.label + "} = " + to_latex(tc.tau) + "\n";
+    }
     out += "\nPoles:\n";
     if (r.pruned.poles.empty()) {
         out += "\\mathrm{none}\n";

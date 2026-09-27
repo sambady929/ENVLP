@@ -10,8 +10,21 @@
 #include "Netlist.h"
 #include <map>
 #include <string>
+#include <vector>
 
 namespace syms {
+
+// One zero-value (open-circuit) time constant, one per reactive element.
+// `tau` is the symbolic R*C (capacitor) or L/R (inductor) time constant, where
+// R is the resistance seen by that element with every *other* reactive element
+// at its zero value (capacitors open, inductors short); `label` names the
+// physical element. This is the TTC/whiteboard quantity the low-entropy engine
+// uses to build a factored denominator directly.
+struct TimeConstant {
+    std::string label;      // "C1", "Cgs_M1", "L2"
+    GiNaC::ex tau;          // symbolic time constant
+    double tau_value = 0.0; // numeric value (ordering / dominance)
+};
 
 // UnitClass (defined in Netlist.h, next to the functions producing it)
 // classifies a symbol's physical unit -- used by the low-entropy pruner

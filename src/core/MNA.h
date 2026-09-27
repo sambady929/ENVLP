@@ -32,6 +32,26 @@ struct MnaSystem {
 //   invalid circuit, unknown/invalid input source, missing ground.
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref);
 
+// Compute one time constant per reactive element (capacitors and inductors) of
+// `c`. Amplifier gain-bandwidth poles are added by the caller (they are not
+// physical reactive elements).
+std::vector<TimeConstant> open_circuit_time_constants(
+    const Circuit& c, const std::string& input_ref, ParamTable& params);
+
+// Zero-value (open-circuit) time-constant computation. For the network with
+// every independent source zeroed, a test current is injected across one
+// reactive element's terminals to read the resistance it sees; the element's
+// time constant is R*C (capacitor) or L/R (inductor). `open_caps` names the
+// capacitor symbols left open (all of them except the one under test) and
+// `short_inds` the inductor refs replaced by a short.
+struct MnaOctc {
+    std::set<std::string> open_caps;   // capacitor symbol names to omit
+    std::set<std::string> short_inds;  // inductor refs replaced by a short
+    std::string inj_a, inj_b;          // nodes the 1A test current flows between
+    GiNaC::ex test = GiNaC::ex(1);     // injected current
+    std::string probe_node;            // node whose voltage is the resistance
+};
+
 // Return-ratio test mode (Rosenstark): all independent sources are zeroed and
 // the reference amplifier's output branch is driven by a fixed test voltage,
 // with the amplifier's control coupling and gain-bandwidth pole removed. The

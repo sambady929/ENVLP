@@ -887,6 +887,76 @@ static void test_noise_current_input_and_amp() {
     }
 }
 
+// Zero-value (open-circuit) time constants: one per reactive element, with
+// the correct physical value R*C and the element as its label. The SUM of the
+// OCTC taus equals the denominator's first-order coefficient (a general
+// identity), which is what makes TTC ordering valid.
+static void test_octc_time_constants() {
+    // RC low-pass: single C1, tau = R1*C1 exactly.
+    {
+        Circuit c;
+        c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+        c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+        c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1n"));
+        c = ground(c);
+        AnalysisRequest req;
+        req.input_ref = "V1";
+        req.output = "V(out)";
+        AnalysisResult r = analyze(c, req);
+        CHECK(r.octc.size() == 1);
+        if (!r.octc.empty()) {
+            CHECK(r.octc[0].label == "C1");
+            CHECK((r.octc[0].tau - S(r, "R1") * S(r, "C1")).normal().is_zero());
+        }
+    }
+    // Two-pole RC ladder (R1-C1, R2-C2 to ground): two OCTC taus, and their sum
+    // equals the exact denominator's s-coefficient.
+    {
+        Circuit c;
+        c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+        c.comps.push_back(comp(Kind::R, "R1", {"in", "a"}, "10k"));
+        c.comps.push_back(comp(Kind::C, "C1", {"a", "0"}, "100p"));
+        c.comps.push_back(comp(Kind::R, "R2", {"a", "out"}, "10k"));
+        c.comps.push_back(comp(Kind::C, "C2", {"out", "0"}, "1p"));
+        c = ground(c);
+        AnalysisRequest req;
+        req.input_ref = "V1";
+        req.output = "V(out)";
+        req.sweep.f_start_hz = 1;
+        req.sweep.f_stop_hz = 1e9;
+        AnalysisResult r = analyze(c, req);
+        ex s = S(r, "s");
+        CHECK(r.octc.size() == 2);
+        ex tsum = 0;
+        for (const auto& tc : r.octc) tsum += tc.tau;
+        ex a1 = (r.den_raw.coeff(s, 1) / r.den_raw.coeff(s, 0)).normal();
+        CHECK((tsum - a1).normal().is_zero());
+        // the report lists the time constants
+        CHECK(r.report.find("Time Constants") != std::string::npos);
+        CHECK(r.report.find("tau = ") != std::string::npos);
+    }
+    // A device parasitic capacitance gets its own time constant, labelled with
+    // the parameter symbol (Cgs_M1), not just the component ref.
+    {
+        Circuit c;
+        c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+        c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+        Component m = comp(Kind::NMOS, "M1", {"out", "out", "0"}, "");
+        m.param_on["Cgs"] = true;
+        m.param_text["Cgs"] = "100f";
+        c.comps.push_back(m);
+        c = ground(c);
+        AnalysisRequest req;
+        req.input_ref = "V1";
+        req.output = "V(out)";
+        AnalysisResult r = analyze(c, req);
+        bool found = false;
+        for (const auto& tc : r.octc)
+            if (tc.label == "Cgs_M1") found = true;
+        CHECK(found);
+    }
+}
+
 // Transfer-function low-entropy form must match loop gain: a parallel load
 // reads (R1||R2), not an expanded resistor ratio.
 static void test_tf_low_entropy_parallel() {
@@ -1490,6 +1560,7 @@ int main(int argc, char** argv) {
         {"tf_low_entropy_parallel", test_tf_low_entropy_parallel},
         {"zout_parallel_collapses", test_zout_parallel_collapses},
         {"mna_parallel_precombine", test_mna_parallel_precombine},
+        {"octc_time_constants", test_octc_time_constants},
         {"all_analyses_latex_report", test_all_analyses_have_latex_report},
         {"percent_no_exponent", test_percent_no_exponent},
     };

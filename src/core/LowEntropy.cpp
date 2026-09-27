@@ -1362,8 +1362,17 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         R.den_factors.push_back({GiNaC::pow(s, s_poles),
                                  pretty(GiNaC::pow(s, s_poles)), true});
 
-    // 8. factor extraction by time-constant matching (TTC style)
+    // 8. factor extraction by time-constant matching (TTC style). The
+    //    zero-value (open-circuit) time constants computed from the topology
+    //    are the physically-correct R*C / L/R products, so they are tried
+    //    first: this is what makes a pole read as its actual element (Cgs*R2,
+    //    not a numerically-equal C1*R2).
     std::vector<Candidate> cands = build_tau_candidates(params);
+    for (auto it = opts.octc.rbegin(); it != opts.octc.rend(); ++it) {
+        if (it->tau_value > 0.0 && !it->tau.is_zero())
+            cands.insert(cands.begin(),
+                         {std::fabs(it->tau_value), it->tau});
+    }
     ex dd = d, nn = n;
     bool any_numeric = false;
     peel_factors(dd, cands, params, s, R.den_factors, opts.approx_factor,

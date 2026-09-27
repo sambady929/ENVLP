@@ -66,6 +66,9 @@ struct PruneOptions {
     // Term ranking band (see LowEntropyOptions).
     double band_lo_hz = 1.0;
     double band_hi_hz = 0.0;
+    // Zero-value (open-circuit) time constants from the topology (see
+    // LowEntropyOptions::octc).
+    std::vector<TimeConstant> octc;
 };
 
 // The low-entropy engine:

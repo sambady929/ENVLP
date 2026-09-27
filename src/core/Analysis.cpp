@@ -62,6 +62,10 @@ struct RawTF {
     ex num, den;
     ParamTable params;
     std::string out_desc;
+    // Zero-value time constants of the network (TTC ordering); computed here so
+    // every analysis that prunes a transfer function gets the physical
+    // element-to-pole attribution.
+    std::vector<TimeConstant> octc;
 };
 
 RawTF raw_tf(const Circuit& c, const std::string& input_ref,
@@ -75,6 +79,7 @@ RawTF raw_tf(const Circuit& c, const std::string& input_ref,
     t.den = sv.den;
     t.params = std::move(sv.params);
     t.out_desc = sv.output_desc;
+    t.octc = open_circuit_time_constants(c, input_ref, t.params);
     return t;
 }
 
@@ -85,6 +90,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     cr.title = title;
     cr.has_transfer = true;
     PruneOptions o = opts_of(s); // use_parallel is hardcoded on inside
+    o.octc = t.octc;
 
     AnalysisRequest req = req_of(s, "V1", "V(out)");
     // Rebuild an AnalysisResult so the GUI (Bode etc.) can use it directly.
@@ -96,6 +102,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     res.params = t.params;
     res.opts = o;
     res.sweep = s.sweep;
+    res.octc = t.octc;
     res.pruned = prune_low_entropy(t.num, t.den, res.params, o);
     res.report = format_report(res);
 
