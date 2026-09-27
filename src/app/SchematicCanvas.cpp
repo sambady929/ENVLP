@@ -340,8 +340,11 @@ bool SchematicCanvas::content_bounds(double& x0, double& y0, double& x1,
 // more segment-ends coincide. Endpoints that merely touch end-to-end are a
 // corner, not a junction, and get no dot.
 std::vector<Pt> SchematicCanvas::junction_pts() const {
-    // Gather every segment, and every vertex with the number of segment-ends
-    // landing on it.
+    // analog-canvas rule: a dot marks a REAL connection. A contact needs a dot
+    // when it has three or more *distinct visible branch directions* -- so a
+    // straight join, a corner, or a wire that passes collinearly through a
+    // point gets no dot, while a T and a 3-way meeting do. A perpendicular
+    // crossing (no shared vertex) is never a connection and never dots.
     struct Seg { Pt a, b; };
     std::vector<Seg> segs;
     for (const auto& w : doc_->wires)
@@ -353,7 +356,6 @@ std::vector<Pt> SchematicCanvas::junction_pts() const {
         return std::hypot(p.first - q.first, p.second - q.second) <= 1.0;
     };
     auto on_span = [&](Pt p, const Seg& s) {
-        // strictly between the endpoints (not at either end)
         if (close_to(p, s.a) || close_to(p, s.b)) return false;
         double vx = s.b.first - s.a.first, vy = s.b.second - s.a.second;
         double wx = p.first - s.a.first, wy = p.second - s.a.second;
@@ -364,21 +366,34 @@ std::vector<Pt> SchematicCanvas::junction_pts() const {
         double px = s.a.first + t * vx, py = s.a.second + t * vy;
         return std::hypot(p.first - px, p.second - py) <= 1.0;
     };
+    // Direction key of a unit-ish vector (sign of x, sign of y).
+    auto dir_key = [](double dx, double dy) {
+        return std::make_pair((dx > 1e-6) - (dx < -1e-6),
+                              (dy > 1e-6) - (dy < -1e-6));
+    };
 
-    // Every vertex of every wire, and every segment crossing/ending-on them.
     std::vector<Pt> verts;
     for (const auto& w : doc_->wires)
         for (const auto& v : w.pts) verts.push_back(v);
 
     std::vector<Pt> out;
     for (const auto& v : verts) {
-        int ends = 0, through = 0;
+        // Collect the distinct directions in which a conductor leaves v.
+        std::set<std::pair<int, int>> dirs;
         for (const auto& s : segs) {
-            if (close_to(v, s.a) || close_to(v, s.b)) ++ends;
-            else if (on_span(v, s)) ++through;
+            if (close_to(v, s.a)) dirs.insert(dir_key(s.b.first - s.a.first,
+                                                      s.b.second - s.a.second));
+            else if (close_to(v, s.b)) dirs.insert(dir_key(s.a.first - s.b.first,
+                                                           s.a.second - s.b.second));
+            else if (on_span(v, s)) {
+                // v lies on this segment: it contributes BOTH directions.
+                dirs.insert(dir_key(s.a.first - s.b.first,
+                                    s.a.second - s.b.second));
+                dirs.insert(dir_key(s.b.first - s.a.first,
+                                    s.b.second - s.a.second));
+            }
         }
-        // a T (endpoint on another wire's middle) or a 3+ way meeting
-        if (through > 0 || ends >= 3) {
+        if (dirs.size() >= 3) {
             bool dup = false;
             for (const auto& q : out)
                 if (close_to(v, q)) { dup = true; break; }
