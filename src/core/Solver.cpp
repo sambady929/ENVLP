@@ -186,4 +186,56 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
     return out;
 }
 
+DcSolution solve_dc(const Circuit& c) {
+    std::set<std::string> used;
+    for (const auto& cc : c.comps)
+        for (const auto& n : cc.nodes) {
+            std::string nd = (n == "GND") ? "0" : n;
+            if (nd != "0") used.insert(nd);
+        }
+    MnaDcSupply dc;
+    MnaSystem sys = build_mna(c, std::string(), used, &dc);
+
+    DcSolution out;
+    out.params = sys.params;
+
+    ex det = bareiss_det(sys.Y);
+    if (det.expand().is_zero())
+        throw std::runtime_error(
+            "DC: MNA matrix is singular -- check for floating nodes or missing "
+            "ground");
+
+    std::map<int, ex> sol;
+    auto solution = [&](int k) -> ex {
+        auto it = sol.find(k);
+        if (it == sol.end())
+            it = sol.emplace(k, det_with_column(sys.Y, k, sys.b)).first;
+        return (it->second / det).normal();
+    };
+
+    for (const auto& kv : sys.node_idx)
+        out.node_v[kv.first] = solution(kv.second);
+    auto node_of = [&](const std::string& raw) -> ex {
+        std::string nd = (raw == "GND") ? "0" : raw;
+        if (nd == "0") return ex(0);
+        auto it = out.node_v.find(nd);
+        return it == out.node_v.end() ? ex(0) : it->second;
+    };
+    for (const auto& cc : c.comps) {
+        if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
+        auto it = sys.branch_idx.find("Id:" + cc.ref);
+        if (it == sys.branch_idx.end()) continue;
+        ex id = solution(it->second);
+        out.mosfets.push_back(cc.ref);
+        out.id[cc.ref] = id;
+        ex vgs = (node_of(cc.nodes[1]) - node_of(cc.nodes[2])).normal();
+        ex vds = (node_of(cc.nodes[0]) - node_of(cc.nodes[2])).normal();
+        out.vgs[cc.ref] = vgs;
+        out.vds[cc.ref] = vds;
+        ex gm = out.params.get(param_symbol(cc, "gm"));
+        out.vov[cc.ref] = (2 * id / gm).normal();
+    }
+    return out;
+}
+
 } // namespace syms

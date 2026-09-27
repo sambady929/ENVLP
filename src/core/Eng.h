@@ -8,6 +8,14 @@ namespace eng {
 // "4.7k" -> 4700, "100n" -> 1e-7, "1M" -> 1e6, "1meg" -> 1e6, "10kOhm" -> 1e4.
 bool parse_value(const std::string& text, double& out);
 
+// Exact decimal -> rational (numerator, denominator) when `text` is a plain
+// decimal or scientific literal (e.g. "0.8" -> 4/5, "1.8e-3" -> 9/5000).
+// Returns false if the text carries an SI suffix or is otherwise not a plain
+// number. Used to keep DC/AC source values exact in symbolic output instead of
+// the binary floating-point rounding a double parse would introduce.
+bool parse_exact_decimal(const std::string& text, long long& num,
+                         long long& den);
+
 // 1.59e5 -> "1.59e5" (no plus sign, no exponent padding)
 std::string format_si(double v, int sig = 3);
 

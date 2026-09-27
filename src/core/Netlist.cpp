@@ -210,6 +210,11 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     static const std::vector<ParamDef> nmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
+        // Large-signal DC model (saturation): rds is the channel-length-
+        // modulation output resistance used for the DC operating point, and Vth
+        // is the threshold voltage. Both are per-device.
+        {"rds", "100k", false, true, "Ohm", "DC output resistance (channel-length modulation)"},
+        {"Vth", "0.5", false, true, "V", "threshold voltage"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
         // Cds defaults to the same value as Cgd (see param_estimate); listed
@@ -223,6 +228,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     static const std::vector<ParamDef> pmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
         {"ro", "100k", true, true, "Ohm", "channel-length-modulation output resistance"},
+        {"rds", "100k", false, true, "Ohm", "DC output resistance (channel-length modulation)"},
+        {"Vth", "0.5", false, true, "V", "threshold voltage"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
         {"Cds", "20f", true, true, "F", "drain-source capacitance"},
@@ -279,7 +286,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 UnitClass param_unit_class(Kind k, const std::string& p) {
     (void)k;
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
-    if (p == "ro" || p == "rpi" || p == "rb" || p == "rd") return UnitClass::Ohm;
+    if (p == "ro" || p == "rpi" || p == "rb" || p == "rd" || p == "rds")
+        return UnitClass::Ohm;
+    if (p == "Vth") return UnitClass::Volt;
     if (p == "Cgs" || p == "Cgd" || p == "Cds" || p == "Cdb" || p == "Csb" ||
         p == "Cpi" || p == "Cmu" || p == "Cd")
         return UnitClass::Farad;

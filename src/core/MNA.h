@@ -38,6 +38,18 @@ MnaSystem build_mna(const Circuit& c, const std::string& input_ref);
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
                     const std::set<std::string>& used_nodes);
 
+// Large-signal DC ("supply") mode. When present, every independent source is
+// stamped with its *DC value* (Component::dc_text) on the right-hand side
+// instead of the per-unit AC excitation, and MOSFETs are stamped as their
+// large-signal saturation model (a drain current set by the Vgs/Vth relation in
+// parallel with 1/rds) rather than the linearised small-signal VCCS. This is
+// what makes the DC operating point a real bias solve. The caller checks each
+// device is in saturation.
+struct MnaDcSupply {};
+MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
+                    const std::set<std::string>& used_nodes,
+                    const MnaDcSupply* dc_supply);
+
 // Compute one time constant per reactive element (capacitors and inductors) of
 // `c`. Amplifier gain-bandwidth poles are added by the caller (they are not
 // physical reactive elements). `used_nodes` must match the main analysis's set

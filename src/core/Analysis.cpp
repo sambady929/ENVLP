@@ -151,55 +151,136 @@ CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// AC: small-signal node voltage / branch current (same machinery as the TF,
-// but with the parasitic small-signal model enabled per device).
+// AC: small-signal response to the *AC values* of every independent source,
+// superposed. There is no single "input": each source contributes its own
+// transfer to the chosen output scaled by its AC value, and the result is the
+// linear combination sum_i (AC_i * H_i(s)). The output is a node voltage or a
+// branch current, not a ratio.
 // ---------------------------------------------------------------------------
 CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
-    RawTF t = raw_tf(c, s.input_ref, s.output);
-    CardResult cr = make_transfer(t, s, "AC (small-signal)");
-    // AC also reports numeric gain at f0
+    CardResult cr;
+    cr.kind = AnalysisKind::AC;
+    cr.title = "AC (small-signal)";
+
+    // Collect every independent source and its AC value.
+    struct Src { std::string ref; double ac; };
+    std::vector<Src> srcs;
+    for (const auto& cc : c.comps) {
+        if (!is_independent_source(cc.kind)) continue;
+        double ac = 1.0;
+        if (!eng::parse_value(cc.ac_text, ac)) ac = 1.0;
+        srcs.push_back({cc.ref, ac});
+    }
+    if (srcs.empty()) {
+        cr.summary = "AC: no independent sources to excite";
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
+
+    // H_i(s) = output per unit of source i; sum with the AC weights.
+    ex num = 0, den = 1;
+    ParamTable params;
+    std::string out_desc;
     double w0 = 2.0 * M_PI * s.f0_hz;
-    double mag = eval_mag_db((t.num / t.den), t.params, w0);
-    double ph = eval_phase_deg((t.num / t.den), t.params, w0);
+    std::vector<std::pair<std::string, double>> contrib; // ref -> AC_i (dB) at f0
+    for (const auto& src : srcs) {
+        AnalysisRequest r;
+        r.input_ref = src.ref;
+        r.output = s.output;
+        if (s.output.size() > 3 && s.output.front() == 'V' &&
+            s.output.back() == ')')
+            r.used_nodes.insert(s.output.substr(2, s.output.size() - 3));
+        Solved sv = solve(c, r);
+        if (params.syms.empty()) params = sv.params;
+        out_desc = sv.output_desc;
+        // scale this source's response by its AC value
+        ex term = (sv.num / sv.den).normal() * ex(src.ac);
+        num = (num + term).normal();
+        den = sv.den;
+        double m = eval_mag_db((sv.num / sv.den).normal(), sv.params, w0);
+        contrib.push_back({src.ref, m + 20.0 * std::log10(std::abs(src.ac))});
+    }
+
+    // Low-entropy prune of the combined response. Normalize the denominator so
+    // the result factors as gain * (1 + s*tau)...; for a response the scale is
+    // simply folded into the reported gain K.
+    PruneOptions o = opts_of(s);
+    Pruned p = prune_low_entropy(num.numer(), num.denom(), params, o);
+
+    cr.has_transfer = true;
+    {
+        AnalysisResult res;
+        res.input_desc = "AC";
+        res.output_desc = out_desc;
+        res.num_raw = num.numer();
+        res.den_raw = num.denom();
+        res.params = params;
+        res.opts = o;
+        res.sweep = s.sweep;
+        res.pruned = p;
+        res.report = format_report(res);
+        cr.transfer = res;
+    }
+    cr.text = p.text;
+    cr.latex = p.latex;
+    double mag = eval_mag_db((num / den).normal(), params, w0);
+    double ph = eval_phase_deg((num / den).normal(), params, w0);
     char buf[128];
     std::snprintf(buf, sizeof(buf), "%.3g dB @ %.4g Hz, phase %.3g deg", mag,
                   s.f0_hz, ph);
     cr.values.push_back({"at f0", buf});
-    cr.summary = cr.transfer.output_desc + " = " + cr.text + "   (" + buf + ")";
+    for (const auto& cc : contrib) {
+        char b2[64];
+        std::snprintf(b2, sizeof(b2), "%.3g dB", cc.second);
+        cr.values.push_back({cc.first, b2});
+    }
+
+    std::string rep = "AC analysis -- superposition of source AC values\n";
+    rep += "output: " + out_desc + "\n";
+    rep += "----------------------------------------\n";
+    rep += "  " + out_desc + " = " + p.text + "\n";
+    rep += "  at f0: " + std::string(buf) + "\n";
+    rep += "Per-source contributions (AC value x H_i) at f0:\n";
+    for (size_t i = 0; i < contrib.size(); ++i)
+        rep += "  " + contrib[i].first + ": " + cr.values[1 + i].second + "\n";
+    cr.report = rep;
+    cr.summary = out_desc + " = " + p.text + "   (" + buf + ")";
+    {
+        std::ostringstream lr;
+        lr << "AC (superposition of source AC values):\n";
+        lr << out_desc << " = " << latex_rhs(p.latex) << "\n";
+        cr.latex_report = lr.str();
+    }
     return cr;
 }
 
 // ---------------------------------------------------------------------------
-// DC: every node voltage and branch current with s -> 0.
+// DC: large-signal operating point. Every source is stamped with its DC value;
+// every MOSFET is a saturation square-law device (Id at the operating point,
+// Vgs = 2*Id/gm + Vth, channel-length modulation via rds). The system is solved
+// for every node and each device's Id, then each device is checked for
+// saturation: its drain-source voltage must exceed its Vdsat = 2*Id/gm. If any
+// device is pushed into triode, the analysis aborts and names it.
 // ---------------------------------------------------------------------------
 CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
-    // DC prints every node, so every node is "used": protect them all from the
-    // structural series fold (otherwise a divider midpoint would vanish and
-    // V(mid) would not resolve). Collect them from the circuit directly.
-    std::set<std::string> dc_nodes;
-    for (const auto& cc : c.comps) {
-        for (const auto& n : cc.nodes) {
-            std::string nd = (n == "GND") ? "0" : n;
-            if (nd != "0") dc_nodes.insert(nd);
-        }
-        if ((cc.kind == Kind::NPN || cc.kind == Kind::PNP) &&
-            cc.param_enabled("rb"))
-            dc_nodes.insert(bjt_internal_node(cc));
-    }
-
-    // DC uses the same MNA but evaluates at s = 0. Devices keep their DC
-    // transconductance (gm); capacitors open, inductors short (handled by
-    // taking the limit s -> 0 of the symbolic result).
-    MnaSystem sys = build_mna(c, s.input_ref, dc_nodes);
-    ex s_sym = sys.params.get("s");
-
     CardResult cr;
     cr.kind = AnalysisKind::DC;
-    cr.title = "DC operating point (symbolic)";
+    cr.title = "DC operating point (large-signal)";
 
-    // Prune one DC value: rank its terms by magnitude with the user estimates
-    // and drop everything more than threshold_db below the dominant term.
-    auto dc_value = [&](const ParamTable& pt, ex v) -> ex {
+    DcSolution dc;
+    try {
+        dc = solve_dc(c);
+    } catch (const std::exception& e) {
+        cr.summary = std::string("DC solve failed: ") + e.what();
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
+
+    ParamTable& pt = dc.params;
+
+    // Prune one DC value: rank its terms by magnitude at DC and drop everything
+    // more than threshold_db below the dominant term.
+    auto dc_value = [&](ex v) -> ex {
         if (!s.prune) return v;
         ex e = v.expand();
         if (!is_a<GiNaC::add>(e)) return v;
@@ -221,47 +302,50 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
         return acc.is_zero() ? v : acc;
     };
 
-    // helper: DC value of V(node)
-    (void)raw_tf(c, s.input_ref, "V(out)", dc_nodes);
+    // ---- saturation check: Vds must exceed Vdsat = 2*Id/gm for each device --
+    // Signed per device polarity: NMOS is on when Vov = Vgs - Vth > 0 and is
+    // saturated when Vds >= Vov; PMOS is on when Vov < 0 and saturated when
+    // Vds <= Vov. (Vov = 2*Id/gm by the model's construction.)
+    for (const auto& ref : dc.mosfets) {
+        const Component* mc = c.find(ref);
+        const bool pmos = mc && mc->kind == Kind::PMOS;
+        double vds_n = eval_complex(dc.vds[ref], pt, 0.0).real();
+        double vov_n = eval_complex(dc.vov[ref], pt, 0.0).real();
+        if (!std::isfinite(vds_n) || !std::isfinite(vov_n)) continue;
+        bool saturated = pmos ? (vds_n <= vov_n) : (vds_n >= vov_n);
+        if (!saturated) {
+            ex vds = dc_value(dc.vds[ref]);
+            ex vov = dc_value(dc.vov[ref]);
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                          "device %s is not in saturation: Vds = %s, Vdsat = %s "
+                          "(pushed into triode). DC analysis stopped.",
+                          ref.c_str(), pretty(vds).c_str(), pretty(vov).c_str());
+            cr.summary = buf;
+            cr.report = std::string("DC (large-signal) -- ABORTED\n") +
+                        "----------------------------------------\n" + buf + "\n";
+            return cr;
+        }
+    }
 
+    // ---- report every node voltage, plus each device's operating point ------
     std::vector<ex> latex_vals;
     std::vector<std::string> latex_names;
 
     std::vector<std::string> node_names;
-    for (const auto& kv : sys.node_idx)
-        if (kv.first != "0") node_names.push_back(kv.first);
+    for (const auto& kv : dc.node_v) node_names.push_back(kv.first);
     std::sort(node_names.begin(), node_names.end());
-
     for (const auto& nd : node_names) {
-        try {
-            RawTF t = raw_tf(c, s.input_ref, "V(" + nd + ")", dc_nodes);
-            ex v = (t.num / t.den).normal().subs(s_sym == 0).normal();
-            ex vp = dc_value(t.params, v);
-            cr.values.push_back({"V(" + nd + ")", pretty(vp)});
-            latex_vals.push_back(vp);
-            latex_names.push_back("V(" + nd + ")");
-        } catch (const std::exception&) {
-            // node not reachable; skip
-        }
+        ex vp = dc_value(dc.node_v[nd]);
+        cr.values.push_back({"V(" + nd + ")", pretty(vp)});
+        latex_vals.push_back(vp);
+        latex_names.push_back("V(" + nd + ")");
     }
-
-    // branch currents: R, L (short), V sources -- the most useful ones
-    for (const auto& cc : c.comps) {
-        std::string spec;
-        if (cc.kind == Kind::R || cc.kind == Kind::V || cc.kind == Kind::L)
-            spec = "I(" + cc.ref + ")";
-        else
-            continue;
-        try {
-            RawTF t = raw_tf(c, s.input_ref, spec, dc_nodes);
-            ex v = (t.num / t.den).normal().subs(s_sym == 0).normal();
-            ex vp = dc_value(t.params, v);
-            cr.values.push_back({spec, pretty(vp)});
-            latex_vals.push_back(vp);
-            latex_names.push_back(spec);
-        } catch (const std::exception&) {
-            // branch current not available; skip
-        }
+    for (const auto& ref : dc.mosfets) {
+        ex id = dc_value(dc.id[ref]);
+        cr.values.push_back({"I(" + ref + ")", pretty(id)});
+        latex_vals.push_back(id);
+        latex_names.push_back("I(" + ref + ")");
     }
 
     std::string summary;
@@ -271,13 +355,12 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     }
     cr.summary = summary.empty() ? "(no nodes)" : summary;
 
-    // LaTeX: an aligned block of every DC value
+    // LaTeX headline: an aligned block of every DC value.
     {
         std::ostringstream lx;
         lx << "\\begin{aligned}";
         for (size_t i = 0; i < latex_vals.size(); ++i) {
             lx << (i ? "\\\\" : "");
-            // V(x) -> \mathrm{V}(x), I(x) -> \mathrm{I}(x)
             lx << "\\mathrm{" << latex_names[i].substr(0, 1) << "}"
                << "(" << latex_names[i].substr(2, latex_names[i].size() - 3)
                << ") &= " << to_latex(latex_vals[i]);
@@ -286,20 +369,26 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
         cr.latex = lx.str();
     }
 
-    std::string rep = "DC analysis -- symbolic node voltages and currents\n";
-    rep += "input source: " + s.input_ref + "  (s -> 0)\n";
-    rep += "f0 is not used for DC; pruning threshold = " +
-           std::to_string(int(s.threshold_db)) + " dB\n";
+    std::string rep = "DC analysis -- large-signal operating point\n";
+    rep += "every source uses its DC value; MOSFETs assumed in saturation\n";
+    rep += "pruning threshold = " + std::to_string(int(s.threshold_db)) + " dB\n";
     rep += "----------------------------------------\n";
     for (const auto& kv : cr.values)
         rep += "  " + kv.first + " = " + kv.second + "\n";
+    if (!dc.mosfets.empty()) {
+        rep += "\nDevice operating points:\n";
+        for (const auto& ref : dc.mosfets) {
+            rep += "  " + ref + ": Vgs = " + pretty(dc_value(dc.vgs[ref])) +
+                   ", Vds = " + pretty(dc_value(dc.vds[ref])) +
+                   ", Vdsat = " + pretty(dc_value(dc.vov[ref])) +
+                   ", Id = " + pretty(dc_value(dc.id[ref])) + "\n";
+        }
+    }
     cr.report = rep;
     cr.text = cr.summary;
-    // LaTeX report: one line per DC value (mirrors the text report; the
-    // aligned block is the headline, shown above).
     {
         std::ostringstream lr;
-        lr << "DC operating point (s \\to 0):\n";
+        lr << "DC operating point (large-signal):\n";
         for (size_t i = 0; i < latex_vals.size(); ++i)
             lr << "\\mathrm{" << latex_names[i] << "} = "
                << to_latex(latex_vals[i]) << "\n";

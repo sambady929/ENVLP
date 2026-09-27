@@ -520,6 +520,29 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 c->kind == Kind::E || c->kind == Kind::G)
                 add_value_selector(comp, true);
 
+            // Independent V/I sources also carry a DC value (used by the
+            // large-signal DC analysis) and an AC value (used by the AC
+            // superposition). Defaults: DC = 0, AC = 1.
+            if (syms::is_independent_source(c->kind)) {
+                add_header("Source values");
+                add_text("DC", wxString::FromUTF8(c->dc_text),
+                         [this](const wxString& v) {
+                             if (auto* cc =
+                                     const_cast<syms::Component*>(
+                                         doc_->circuit.find(sel_)))
+                                 cc->dc_text = v.ToStdString();
+                             doc_->dirty = true;
+                         });
+                add_text("AC", wxString::FromUTF8(c->ac_text),
+                         [this](const wxString& v) {
+                             if (auto* cc =
+                                     const_cast<syms::Component*>(
+                                         doc_->circuit.find(sel_)))
+                                 cc->ac_text = v.ToStdString();
+                             doc_->dirty = true;
+                         });
+            }
+
             // Device mirroring (MOSFETs / BJTs): a copy of another device of
             // the same kind (a diff-pair / current-mirror leg), with a copy
             // count that scales its parameters.

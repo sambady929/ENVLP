@@ -771,14 +771,15 @@ static void test_approx_off_is_consistent() {
 // ---------------------------------------------------------------------------
 static void test_dc_analysis() {
     Circuit c;
-    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component v1 = comp(Kind::V, "V1", {"in", "0"}, "1");
+    v1.dc_text = "1"; // large-signal DC uses the source's DC value
+    c.comps.push_back(v1);
     c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
     c.comps.push_back(comp(Kind::R, "R2", {"out", "0"}, "10k"));
     c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1u")); // opens at DC
     c = ground(c);
     AnalysisSpec sp;
     sp.kind = AnalysisKind::DC;
-    sp.input_ref = "V1";
     sp.output = "V(out)";
     CardResult cr = run_analysis(c, sp);
     // resistive divider: V(out) = 1/2
@@ -1567,16 +1568,17 @@ static void test_series_then_parallel_form() {
 }
 
 // Independent current sources follow the SPICE convention: positive current
-// flows from n+ (pin 0) through the source to n- (pin 1). A 1 A source into a
-// grounded resistor therefore drives the node NEGATIVE (LTspice: V = -I*R).
+// flows from n+ (pin 0) through the source to n- (pin 1). A 1 A DC source into
+// a grounded resistor therefore drives the node NEGATIVE (LTspice: V = -I*R).
 static void test_current_source_spice_sign() {
     Circuit c;
-    c.comps.push_back(comp(Kind::I, "I1", {"out", "0"}, "1"));
+    Component i1 = comp(Kind::I, "I1", {"out", "0"}, "1");
+    i1.dc_text = "1"; // DC analysis uses the source's DC value
+    c.comps.push_back(i1);
     c.comps.push_back(comp(Kind::R, "R1", {"out", "0"}, "1k"));
     c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
     AnalysisSpec sp;
     sp.kind = AnalysisKind::DC;
-    sp.input_ref = "I1";
     sp.output = "V(out)";
     CardResult cr = run_analysis(c, sp);
     CHECK(cr.report.find("V(out) = -R1") != std::string::npos);
@@ -1655,6 +1657,101 @@ static void test_inductor_rl_lowpass() {
     CHECK((H - expect).normal().is_zero());
 }
 
+// Large-signal DC: an NMOS in saturation, with Id and the operating point
+// determined by the source DC values and the device model (vdsat = 2*Id/gm,
+// Vgs = vdsat + Vth). Checked against the closed-form bias solution.
+static void test_dc_large_signal_mosfet() {
+    auto build = []() {
+        Circuit c;
+        Component vg = comp(Kind::V, "VG", {"g", "0"}, "0");
+        vg.dc_text = "0.8"; // Vgs = 0.8 V
+        c.comps.push_back(vg);
+        Component vdd = comp(Kind::V, "VDD1", {"vdd", "0"}, "0");
+        vdd.dc_text = "3"; // 3 V rail
+        c.comps.push_back(vdd);
+        Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
+        m.param_text["gm"] = "1m";
+        m.param_text["rds"] = "100k";
+        m.param_text["Vth"] = "0.5";
+        m.param_on["rds"] = true;
+        c.comps.push_back(m);
+        c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
+        c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+        return c;
+    };
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(build(), sp);
+    CHECK(cr.report.find("large-signal") != std::string::npos);
+    // In saturation: Vds >= Vdsat, so the device is not flagged.
+    CHECK(cr.report.find("not in saturation") == std::string::npos);
+    CHECK(cr.report.find("I(M1)") != std::string::npos);
+    CHECK(!cr.latex_report.empty());
+}
+
+// Push the same device into triode by lowering the drain resistor's headroom
+// (raise Vgs so Vdsat > Vds): the analysis must abort and name the device.
+static void test_dc_large_signal_triode_aborts() {
+    Circuit c;
+    Component vg = comp(Kind::V, "VG", {"g", "0"}, "0");
+    vg.dc_text = "3"; // Vgs = 3 V -> Vdsat = 2*(3-0.5) = 5 V, above the rail
+    c.comps.push_back(vg);
+    Component vdd = comp(Kind::V, "VDD1", {"vdd", "0"}, "0");
+    vdd.dc_text = "3";
+    c.comps.push_back(vdd);
+    Component m = comp(Kind::NMOS, "M1", {"out", "g", "0"}, "");
+    m.param_text["gm"] = "1m";
+    m.param_text["rds"] = "100k";
+    m.param_text["Vth"] = "0.5";
+    m.param_on["rds"] = true;
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("not in saturation") != std::string::npos);
+    CHECK(cr.report.find("M1") != std::string::npos);
+}
+
+// AC is a superposition of every independent source's AC value into one
+// output -- no input source is selected. V1 (AC=1) and V2 (AC=2) driving a
+// resistive summing node give a linear combination.
+static void test_ac_superposition_of_sources() {
+    Circuit c;
+    Component v1 = comp(Kind::V, "V1", {"a", "0"}, "0");
+    v1.ac_text = "1";
+    c.comps.push_back(v1);
+    Component v2 = comp(Kind::V, "V2", {"b", "0"}, "0");
+    v2.ac_text = "2";
+    c.comps.push_back(v2);
+    c.comps.push_back(comp(Kind::R, "R1", {"a", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"b", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::R, "R3", {"out", "0"}, "1k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::AC;
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e6;
+    CardResult cr = run_analysis(c, sp);
+    // The response to (ac1=1, ac2=2) is (2 R3 R1 + R3 R2)/(R3 R1 + R2 R1 + R3 R2).
+    CHECK(cr.report.find("superposition") != std::string::npos);
+    // at f0 the numeric value is (2/5 + 1/5) = 0.6 -> 20*log10(0.6) = -4.44 dB
+    const auto& vals = cr.values;
+    bool found_f0 = false;
+    for (const auto& kv : vals)
+        if (kv.first == "at f0") found_f0 = true;
+    CHECK(found_f0);
+    // the two per-source contributions are both listed
+    int contribs = 0;
+    for (const auto& kv : vals)
+        if (kv.first == "V1" || kv.first == "V2") ++contribs;
+    CHECK(contribs == 2);
+}
+
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
@@ -1713,6 +1810,9 @@ int main(int argc, char** argv) {
         {"current_source_sign", test_current_source_spice_sign},
         {"series_fold_used_node", test_series_fold_respects_used_node},
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
+        {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
+        {"dc_triode_aborts", test_dc_large_signal_triode_aborts},
+        {"ac_source_superposition", test_ac_superposition_of_sources},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";

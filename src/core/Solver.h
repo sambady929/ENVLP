@@ -11,6 +11,8 @@
 
 #include <set>
 #include <string>
+#include <map>
+#include <vector>
 
 namespace syms {
 
@@ -56,6 +58,20 @@ struct Solved {
     std::string output_desc;  // "V(out)"
     ParamTable params;
 };
+
+// Every unknown of the large-signal DC system, solved symbolically: the node
+// voltages and, for each MOSFET, its operating drain current Id. Used by the
+// DC analysis, which needs the whole operating point at once.
+struct DcSolution {
+    ParamTable params;
+    std::map<std::string, GiNaC::ex> node_v;  // node -> V(node)
+    std::map<std::string, GiNaC::ex> id;      // MOSFET ref -> Id
+    std::vector<std::string> mosfets;         // MOSFET refs, circuit order
+    std::map<std::string, GiNaC::ex> vgs;     // MOSFET ref -> Vgs
+    std::map<std::string, GiNaC::ex> vds;     // MOSFET ref -> Vds
+    std::map<std::string, GiNaC::ex> vov;     // MOSFET ref -> Vov (= 2*Id/gm)
+};
+DcSolution solve_dc(const Circuit& c);
 
 // Throws std::runtime_error with a user-facing message.
 Solved solve(const Circuit& c, const AnalysisRequest& req);

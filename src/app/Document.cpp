@@ -710,6 +710,13 @@ std::string Document::serialize() const {
           << " " << x << " " << y << " " << rot << " " << fh << " " << fv << " "
           << c.size_db << " " << quote(c.value_text);
         for (const auto& lk : c.links) o << " " << quote(lk);
+        // Independent sources may carry non-default DC / AC values.
+        if (syms::is_independent_source(c.kind)) {
+            if (c.dc_text != "0" && !c.dc_text.empty())
+                o << " dc=" << c.dc_text;
+            if (c.ac_text != "1" && !c.ac_text.empty())
+                o << " ac=" << c.ac_text;
+        }
         // Mirror copies carry "mirror=<unit> mult=<m>" after the links.
         if (!c.mirror_ref.empty())
             o << " mirror=" << c.mirror_ref << " mult=" << c.multiplicity();
@@ -850,6 +857,10 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 } else if (extra.rfind("mult=", 0) == 0) {
                     c.mirror_mult = std::atoi(extra.c_str() + 5);
                     if (c.mirror_mult < 1) c.mirror_mult = 1;
+                } else if (extra.rfind("dc=", 0) == 0) {
+                    c.dc_text = extra.substr(3);
+                } else if (extra.rfind("ac=", 0) == 0) {
+                    c.ac_text = extra.substr(3);
                 } else {
                     c.links.push_back(extra);
                 }

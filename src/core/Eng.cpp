@@ -51,6 +51,69 @@ double prefix_value(char c) {
 
 } // namespace
 
+// Exact decimal -> rational. Accepts an optional sign, digits with an optional
+// single '.', and an optional e/E exponent. No SI suffix, no whitespace.
+bool parse_exact_decimal(const std::string& text, long long& num, long long& den) {
+    std::string t = trim(text);
+    if (t.empty()) return false;
+    size_t i = 0;
+    bool neg = false;
+    if (t[i] == '+' || t[i] == '-') {
+        neg = t[i] == '-';
+        ++i;
+    }
+    std::string digits;
+    int frac = 0;
+    bool any = false;
+    bool seen_dot = false;
+    for (; i < t.size(); ++i) {
+        char ch = t[i];
+        if (ch >= '0' && ch <= '9') {
+            digits += ch;
+            any = true;
+            if (seen_dot) ++frac;
+        } else if (ch == '.') {
+            if (seen_dot) return false; // second '.'
+            seen_dot = true;
+        } else {
+            break;
+        }
+    }
+    if (!any) return false;
+    long long exp10 = 0;
+    if (i < t.size() && (t[i] == 'e' || t[i] == 'E')) {
+        ++i;
+        bool eneg = false;
+        if (i < t.size() && (t[i] == '+' || t[i] == '-')) {
+            eneg = t[i] == '-';
+            ++i;
+        }
+        if (i >= t.size()) return false;
+        long long e = 0;
+        for (; i < t.size(); ++i) {
+            if (t[i] < '0' || t[i] > '9') return false;
+            e = e * 10 + (t[i] - '0');
+        }
+        exp10 = eneg ? -e : e;
+    }
+    if (i != t.size()) return false; // trailing junk (e.g. an SI suffix)
+
+    // value = digits * 10^(exp10 - frac)
+    long long n = 0, d = 1;
+    for (char ch : digits) n = n * 10 + (ch - '0');
+    if (n == 0) {
+        num = 0;
+        den = 1;
+        return true;
+    }
+    long long net = exp10 - frac;
+    while (net > 0) { n *= 10; --net; }
+    while (net < 0) { d *= 10; ++net; }
+    num = neg ? -n : n;
+    den = d;
+    return true;
+}
+
 bool parse_value(const std::string& text, double& out) {
     std::string t = trim(text);
     if (t.empty()) return false;

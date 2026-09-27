@@ -220,6 +220,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
 
 MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                     const std::set<std::string>& used_nodes) {
+    return build_mna(cin, input_ref, used_nodes, nullptr);
+}
+
+MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
+                    const std::set<std::string>& used_nodes,
+                    const MnaDcSupply* dc_supply) {
     // Resolve mirror copies into concrete scaled parameters first, so the MNA
     // stamp and the pruner both see the materialised device model.
     Circuit circ = cin;
@@ -229,14 +235,26 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     if (!circ.validate(err)) throw std::runtime_error(err);
 
     const Component* in = circ.find(input_ref);
-    if (!in)
+    if (!in && !input_ref.empty())
         throw std::runtime_error("input source '" + input_ref + "' not found");
-    if (!is_independent_source(in->kind))
+    if (in && !is_independent_source(in->kind))
         throw std::runtime_error("input must be an ideal source (V or I), got " +
                                  in->ref + " (" + kind_display(in->kind) + ")");
 
     MnaSystem sys;
     ex s = sys.params.get("s");
+    const bool dc_mode = dc_supply != nullptr;
+    // Parse a source's DC value once (used only in dc_mode). Prefer GiNaC's
+    // exact numeric (so "0.8" stays 4/5, not 0.80000000000000004), falling back
+    // to the SI-suffix parser for values like "1k".
+    auto dc_value_of = [](const Component& c) -> ex {
+        long long n = 0, d = 1;
+        if (eng::parse_exact_decimal(c.dc_text, n, d))
+            return ex(GiNaC::numeric(n, d));
+        double v = 0.0;
+        eng::parse_value(c.dc_text, v);
+        return ex(v);
+    };
 
     // Fold genuine series groups of same-class passives into held atoms BEFORE
     // anything is stamped (low-entropy by construction: R2+R3 becomes a held
@@ -298,6 +316,13 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.var_names.push_back("i(" + base + key + ")");
                 ++sys.n;
             }
+        }
+        // Large-signal DC: each MOSFET gets an extra unknown -- its drain
+        // current Id -- plus the KVL-like row that ties Vgs to that current.
+        if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
+            sys.branch_idx["Id:" + c.ref] = sys.n;
+            sys.var_names.push_back("Id(" + c.ref + ")");
+            ++sys.n;
         }
     }
     if (sys.n == 0) throw std::runtime_error("circuit has no unknowns");
@@ -498,18 +523,21 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(bb, k) -= 1;
                 sys.Y(k, bb) -= 1;
             }
-            sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
+            // DC bias solve: the branch voltage is the source's DC value.
+            // Otherwise: the selected input is driven per-unit (transfer
+            // function) and every other source is zeroed (AC).
+            sys.b(k, 0) = dc_mode ? dc_value_of(c)
+                                  : ((c.ref == input_ref) ? ex(1) : ex(0));
             break;
         }
         case Kind::I: {
-            ex drive = (c.ref == input_ref) ? ex(1) : ex(0);
+            ex drive = dc_mode ? dc_value_of(c)
+                               : ((c.ref == input_ref) ? ex(1) : ex(0));
             int a = idx(nd[0]), bb = idx(nd[1]);
             // SPICE independent-current-source convention: positive current
             // flows from n+ (pin 0, drawn at the top) through the source to n-
             // (pin 1, the tail). Node a therefore *loses* `drive` and node bb
-            // *gains* it. (The earlier sign pushed current the other way, so
-            // the glyph read upside-down relative to the maths: a +1 with the
-            // arrow pointing down implies positive current enters at the top.)
+            // *gains* it.
             if (a >= 0) sys.b(a, 0) -= drive;
             if (bb >= 0) sys.b(bb, 0) += drive;
             break;
@@ -543,19 +571,42 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             // table always exposes the full model; only enabled ones stamp MNA
             ex gm = reg_param(sys.params, c, "gm");
             ex ro = reg_param(sys.params, c, "ro");
+            ex rds = reg_param(sys.params, c, "rds");
+            ex vth = reg_param(sys.params, c, "Vth");
             ex cgs = reg_param(sys.params, c, "Cgs");
             ex cgd = reg_param(sys.params, c, "Cgd");
             ex cds = reg_param(sys.params, c, "Cds");
             ex cdb = reg_param(sys.params, c, "Cdb");
             ex csb = reg_param(sys.params, c, "Csb");
-            // no body terminal: the body is tied to the source
-            stamp_vccs(D, S, G, S, gm);
-            if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
-            if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
-            if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
-            if (c.param_enabled("Cds")) stamp_cap(D, S, cds);
-            if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
-            if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
+            if (dc_mode) {
+                // Large-signal saturation model. The unknown Id is the
+                // drain-to-source current (positive into D, out of S), so for a
+                // PMOS Id is negative in normal operation. With |Vdsat| =
+                // 2|Id|/gm and |Vgs| = |Vdsat| + |Vth|, the gate relation
+                // collapses to the same row for both polarities:
+                //     (v(G) - v(S)) - (2/gm)*Id = sgn*|Vth|
+                // with sgn = +1 (NMOS) / -1 (PMOS). Id flows D->S as a plain
+                // current source; channel-length modulation adds 1/rds D->S.
+                const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
+                int k = sys.branch_idx.at("Id:" + c.ref);
+                if (D >= 0) sys.Y(D, k) += 1;
+                if (S >= 0) sys.Y(S, k) -= 1;
+                if (G >= 0) sys.Y(k, G) += 1;
+                if (S >= 0) sys.Y(k, S) -= 1;
+                sys.Y(k, k) -= 2.0 / gm;
+                sys.b(k, 0) = sgn * vth;
+                // channel-length modulation
+                if (c.param_enabled("rds")) stamp_adm(D, S, ex(1) / rds);
+            } else {
+                // no body terminal: the body is tied to the source
+                stamp_vccs(D, S, G, S, gm);
+                if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
+                if (c.param_enabled("Cgs")) stamp_cap(G, S, cgs);
+                if (c.param_enabled("Cgd")) stamp_cap(G, D, cgd);
+                if (c.param_enabled("Cds")) stamp_cap(D, S, cds);
+                if (c.param_enabled("Cdb")) stamp_cap(D, S, cdb);
+                if (c.param_enabled("Csb")) stamp_cap(S, S, csb);
+            }
             break;
         }
         case Kind::NPN:

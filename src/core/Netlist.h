@@ -89,6 +89,12 @@ struct Component {
     std::vector<std::string> nodes;      // size == pin_count(kind)
     std::string value_text;              // "10k", "4.7u"; "" => symbolic/unity
     int size_db = 0;                     // order-of-magnitude offset, 10 dB steps
+    // Independent V/I sources carry a DC value and an AC value, used by the
+    // large-signal DC analysis and the (superposition) AC analysis respectively.
+    // Defaults: DC = 0, AC = 1 (so a plain source is a standard AC stimulus and
+    // a DC short/open). Ignored for non-source components.
+    std::string dc_text = "0";
+    std::string ac_text = "1";
     std::map<std::string, bool> param_on;          // parasitic toggles
     std::map<std::string, std::string> param_text; // per-parameter estimate
     std::map<std::string, int> param_db;           // per-parameter 10 dB offset
