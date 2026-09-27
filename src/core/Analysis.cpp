@@ -1017,56 +1017,41 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                                : xfer_from_current(src.na, src.nb);
 
     // ---- low-entropy symbolic |H(j2*pi*f)|^2 -----------------------------
-    // Factor the transfer into gain x (1 + s*tau) factors (|| atoms held),
-    // then |H(jw)|^2 = K^2 * prod_num (1 + (w*tau)^2) / prod_den (1 + (w*tau)^2)
-    // with w = 2*pi*f. This is the low-entropy form: each physical pole/zero
-    // contributes one (1 + (f/f_c)^2) bracket rather than an expanded
-    // polynomial ratio.
+    // Factor the transfer into gain x (1 + s*tau) factors (|| atoms held), then
+    //   |H(jw)|^2 = K^2 * prod_num |brick(jw)|^2 / prod_den |brick(jw)|^2
+    // with w = 2*pi*f and |1 + s*tau at s=jw|^2 = 1 + (w*tau)^2 built as
+    // re^2 + im^2 per brick. Crucially this never expands or rationalizes the
+    // whole expression: the result stays a product of physical brackets (e.g.
+    // (Cgs+Cgd)*R2) rather than a single giant polynomial ratio.
     ex f_sym = pt.get("f");
     pt.set("f", s.f0_hz, UnitClass::Plain);
     ex w_expr = 2 * GiNaC::Pi * f_sym;
+    auto brick2 = [&](const ex& b) -> ex {
+        int deg = 0;
+        try { deg = b.has(s_sym) ? b.degree(s_sym) : 0; } catch (...) { deg = 0; }
+        if (deg <= 0) { ex c0 = b.coeff(s_sym, 0); return c0 * c0; }
+        if (deg == 1) {
+            ex c0 = b.coeff(s_sym, 0), c1 = b.coeff(s_sym, 1);
+            return c0 * c0 + (c1 * w_expr) * (c1 * w_expr);
+        }
+        // 1 + a*s + b*s^2 (a complex pair): |.|^2 = (1 - b w^2)^2 + (a w)^2
+        ex c0 = b.coeff(s_sym, 0), c1 = b.coeff(s_sym, 1),
+           c2 = b.coeff(s_sym, 2);
+        ex re = c0 - c2 * w_expr * w_expr, im = c1 * w_expr;
+        return re * re + im * im;
+    };
     auto mag2f = [&](const ex& H) -> ex {
         if (H.is_zero()) return ex(0);
         try {
             ex ratio = (H.numer() / H.denom()).normal();
             Pruned p = prune_low_entropy(ratio.numer(), ratio.denom(), pt,
                                          opts_of(s));
-            ex num = p.gain;
-            for (const auto& fac : p.num_factors) num *= fac.expr;
-            ex den = ex(1);
-            for (const auto& fac : p.den_factors) den *= fac.expr;
-            auto bracks = [&](const ex& prod) -> ex {
-                // prod is a product of (1 + s*tau) bricks (or gain-like
-                // constants). |1 + jw*tau|^2 = 1 + (w*tau)^2.
-                ex acc = ex(1);
-                std::vector<ex> fs;
-                if (GiNaC::is_a<GiNaC::mul>(prod))
-                    for (size_t i = 0; i < prod.nops(); ++i)
-                        fs.push_back(prod.op(i));
-                else
-                    fs.push_back(prod);
-                for (const ex& b : fs) {
-                    int deg = 0;
-                    try { deg = b.has(s_sym) ? b.degree(s_sym) : 0; }
-                    catch (...) { deg = 0; }
-                    if (deg == 0) { acc *= b * b; continue; }
-                    if (deg == 1) {
-                        ex c0 = b.coeff(s_sym, 0);
-                        ex c1 = b.coeff(s_sym, 1);
-                        acc *= (c0 * c0 + (c1 * w_expr) * (c1 * w_expr));
-                        continue;
-                    }
-                    // higher order: fall back to H(jw)*conj.
-                    ex hw = b.subs(s_sym == GiNaC::I * w_expr);
-                    GiNaC::exmap negw; negw[w_expr] = -w_expr;
-                    acc *= (hw * hw.subs(negw)).expand().normal();
-                }
-                return acc;
-            };
-            ex n2 = bracks(num);
-            ex d2 = bracks(den);
+            ex n2 = p.gain * p.gain;
+            for (const auto& fac : p.num_factors) n2 *= brick2(fac.expr);
+            ex d2 = ex(1);
+            for (const auto& fac : p.den_factors) d2 *= brick2(fac.expr);
             if (d2.is_zero()) return ex(0);
-            return (n2 / d2).normal().expand();
+            return n2 / d2; // raw product/quotient, no normal()/expand()
         } catch (const std::exception&) {
             return ex(0);
         }
@@ -1141,7 +1126,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         ex S0 = src.psd_sym.is_zero() ? ex(GiNaC::numeric(src.psd_const))
                                       : src.psd_sym;
         ex fcn = src.corner_hz > 0.0 ? ex(GiNaC::numeric(src.corner_hz)) : ex(0);
-        ex psd = (h2 * (S0 + S0 * fcn / f_sym)).normal().expand();
+        // Keep the density as a product/sum of brackets -- never expand.
+        ex psd = h2 * (S0 + S0 * fcn / f_sym);
         syms.push_back({src.ref, psd});
         bool merged = false;
         for (auto& g : groups)
@@ -1161,12 +1147,14 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     }
     // Keep the total as a *sum of per-group densities* (not one combined
     // fraction): this reads as the low-entropy sum it physically is.
+    // Keep the total as a raw sum of per-group densities (do NOT call
+    // normal(): that would force a common denominator and explode the
+    // expression). GiNaC keeps unlike-denominator terms separate.
     std::vector<ex> total_terms;
     for (const auto& g : groups)
-        total_terms.push_back((g.h2 * (g.flat + g.flick / f_sym)).normal());
+        total_terms.push_back(g.h2 * (g.flat + g.flick / f_sym));
     ex S_total = 0;
     for (const auto& t : total_terms) S_total += t;
-    S_total = S_total.normal();
 
     // ---- input referral --------------------------------------------------
     // Choose the excitation: the card's input source if usable, else any ideal
