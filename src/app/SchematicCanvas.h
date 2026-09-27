@@ -90,6 +90,7 @@ public:
     void zoom_to_fit();
     void clamp_view();
     double zoom() const { return zoom_; }
+    void set_show_grid(bool on) { show_grid_ = on; Refresh(false); }
 
     // Name the net a wire belongs to (creates a label anchored on it).
     void set_wire_net_name(int wire_index, const std::string& name);
@@ -149,6 +150,7 @@ private:
     std::vector<Pt> wire_pts_;
     int wire_idx_ = -1; // index of the in-progress wire in doc_->wires, or -1
     bool wire_h_first_ = true; // routing preference
+    bool show_grid_ = true;    // dot lattice on/off (View toggle)
     std::vector<std::string> label_queue_; // pending net names to place
     wxPoint mouse_;
     bool has_mouse_ = false; // mouse_ has seen at least one event
@@ -181,6 +183,8 @@ private:
     Pt to_doc(const wxPoint& p) const;
     Pt to_view(Pt p) const; // document -> client (for hit testing)
     wxPoint to_screen(Pt p) const; // document -> integer screen (for labels)
+    // Electrical hit tolerance in document units (constant on screen: 6 px).
+    double snap_r() const { return 6.0 / zoom_; }
     std::string hit_component(Pt p) const;
     int hit_pin(const std::string& ref, Pt p) const; // -1 if none
     int hit_any_pin(Pt p, std::string& ref) const;

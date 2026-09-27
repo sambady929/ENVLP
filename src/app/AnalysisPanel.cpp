@@ -1,4 +1,5 @@
 #include "AnalysisPanel.h"
+#include "Theme.h"
 #include "core/Eng.h"
 
 #include <wx/choice.h>
@@ -45,7 +46,7 @@ AnalysisPanel::AnalysisPanel(wxWindow* parent)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                        wxVSCROLL) {
     SetScrollRate(0, 10);
-    SetBackgroundColour(wxColour(245, 245, 243));
+    SetBackgroundColour(theme::chrome_bg);
 }
 
 void AnalysisPanel::add_card(AnalysisKind kind) {

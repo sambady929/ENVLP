@@ -1,5 +1,6 @@
 #include "Symbols.h"
 #include "SymbolGeom.h"
+#include "Theme.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,14 +15,14 @@ using syms::Kind;
 // ---------------------------------------------------------------------------
 namespace {
 
-const wxColour kInk(0, 0, 0);        // components: black
-const wxColour kSel(0, 92, 200);     // selection highlight
-const wxColour kRefInk(0, 70, 150);  // reference designator
-const wxColour kValInk(80, 80, 80);  // value text
+const wxColour kInk = theme::ink;         // components: black
+const wxColour kSel = theme::accent;      // selection highlight
+const wxColour kRefInk = theme::ref_ink;  // reference designator
+const wxColour kValInk = theme::val_ink;  // value text
 
 // Stroke weights, in px: thin = leads, thick = device bars / plates / bodies.
-constexpr double kWire = 2.0;
-constexpr double kBody = 3.0;
+constexpr double kWire = theme::kStrokeWire;
+constexpr double kBody = theme::kStrokeEmphasis;
 
 struct Ctx {
     wxDC& dc;

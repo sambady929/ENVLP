@@ -94,17 +94,16 @@ Kind PalettePanel::place_kind() const {
 }
 
 void PalettePanel::set_active(Tool t, syms::Kind k) {
+    // Idempotent: only touch the list when the active tile actually changes.
+    // Otherwise every placement calls EnsureVisible (which can scroll the
+    // palette) and repaints the list -- a visible hitch while placing parts.
+    int want = (t == Tool::Place) ? comp_index_for(k) : -1;
+    if (want == active_idx_) return;
+    active_idx_ = want;
     updating_ = true;
-    if (t == Tool::Place) {
-        int idx = comp_index_for(k);
-        comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
-        if (idx >= 0) {
-            comps_->SetItemState(idx, wxLIST_STATE_SELECTED,
-                                 wxLIST_STATE_SELECTED);
-            comps_->EnsureVisible(idx);
-        }
-    } else {
-        comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
+    comps_->SetItemState(-1, 0, wxLIST_STATE_SELECTED);
+    if (want >= 0) {
+        comps_->SetItemState(want, wxLIST_STATE_SELECTED, wxLIST_STATE_SELECTED);
     }
     updating_ = false;
 }

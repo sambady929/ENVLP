@@ -1,5 +1,6 @@
 #include "SchematicCanvas.h"
 #include "Symbols.h"
+#include "Theme.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,8 +28,10 @@ wxEND_EVENT_TABLE()
 
 namespace {
 constexpr double kGrid = 10.0;
-constexpr double kSnapR = 5.0;  // 1/2 grid in *document* units; pins and wires
-                                // both share this tolerance for hover/select
+// Electrical hit/capture tolerance, in *screen* px (the reference keeps the
+// capture radius constant on screen, ~6-24 px, so pins stay easy to hit at any
+// zoom). Converted to document units via the current zoom.
+constexpr double kSnapPx = 6.0;
 constexpr double kMinZoom = 0.05, kMaxZoom = 8.0;
 
 double dist(Pt a, Pt b) { return std::hypot(a.first - b.first, a.second - b.second); }
@@ -157,7 +160,7 @@ SchematicCanvas::SchematicCanvas(wxWindow* parent, Document* doc)
                wxWANTS_CHARS | wxFULL_REPAINT_ON_RESIZE),
       doc_(doc) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
-    SetBackgroundColour(*wxWHITE);
+    SetBackgroundColour(theme::canvas_bg);
     SetFocus();
 }
 
@@ -606,7 +609,7 @@ int SchematicCanvas::hit_pin(const std::string& ref, Pt p) const {
     if (pl == doc_->placements.end()) return -1;
     int n = int(pin_offsets(c->kind).size());
     for (int i = 0; i < n; ++i)
-        if (dist(pin_world(*c, pl->second, i), p) <= kSnapR) return i;
+        if (dist(pin_world(*c, pl->second, i), p) <= snap_r()) return i;
     return -1;
 }
 
@@ -616,7 +619,7 @@ int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
         if (pl == doc_->placements.end()) continue;
         int n = int(pin_offsets(c.kind).size());
         for (int i = 0; i < n; ++i)
-            if (dist(pin_world(c, pl->second, i), p) <= kSnapR) {
+            if (dist(pin_world(c, pl->second, i), p) <= snap_r()) {
                 ref = c.ref;
                 return i;
             }
@@ -629,7 +632,7 @@ bool SchematicCanvas::hit_wire(Pt p, int& idx) const {
     for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
         const auto& w = doc_->wires[i];
         for (size_t k = 1; k < w.pts.size(); ++k)
-            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= kSnapR) {
+            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= snap_r()) {
                 idx = i;
                 return true;
             }
@@ -641,7 +644,7 @@ bool SchematicCanvas::hit_wire_segment(Pt p, int& idx, int& seg) const {
     for (int i = int(doc_->wires.size()) - 1; i >= 0; --i) {
         const auto& w = doc_->wires[i];
         for (size_t k = 1; k < w.pts.size(); ++k)
-            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= kSnapR) {
+            if (seg_dist(p, w.pts[k - 1], w.pts[k]) <= snap_r()) {
                 idx = i;
                 seg = int(k) - 1;
                 return true;
@@ -664,11 +667,11 @@ bool SchematicCanvas::hit_label(Pt p, int& idx) const {
             idx = i;
             return true;
         }
-        if (dist(a, p) <= kSnapR) {
+        if (dist(a, p) <= snap_r()) {
             idx = i;
             return true;
         }
-        if (dist(l.anchor, p) <= kSnapR) {
+        if (dist(l.anchor, p) <= snap_r()) {
             idx = i;
             return true;
         }
@@ -681,7 +684,7 @@ bool SchematicCanvas::hit_label(Pt p, int& idx) const {
 // ---------------------------------------------------------------------------
 void SchematicCanvas::on_paint(wxPaintEvent&) {
     wxAutoBufferedPaintDC dc(this);
-    dc.SetBackground(wxBrush(*wxWHITE));
+    dc.SetBackground(wxBrush(theme::canvas_bg));
     dc.Clear();
 
     wxSize cs = GetClientSize();
@@ -698,14 +701,20 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     double x0 = view_x_, y0 = view_y_;
     double x1 = view_x_ + cs.x / zoom_, y1 = view_y_ + cs.y / zoom_;
 
-    // grid: faint lines, spaced so they never crowd on screen
-    dc.SetPen(wxPen(wxColour(232, 232, 236)));
-    double step = kGrid;
-    while (step * zoom_ < 22.0) step *= 2.0;
-    for (double x = std::floor(x0 / step) * step; x < x1 + step; x += step)
-        dc.DrawLine(wxPoint(int(x), int(y0)), wxPoint(int(x), int(y1)));
-    for (double y = std::floor(y0 / step) * step; y < y1 + step; y += step)
-        dc.DrawLine(wxPoint(int(x0), int(y)), wxPoint(int(x1), int(y)));
+    // grid: a 10-unit dot lattice (analog-canvas draws dots, not lines). The
+    // dot radius is in *screen* px so it stays crisp at any zoom; we skip dots
+    // when they would crowd.
+    if (show_grid_ && kGrid * zoom_ >= 5.0) {
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(theme::grid_dot));
+        double r = std::max(1.0, 0.7 * zoom_);
+        int ri = int(std::lround(r));
+        for (double x = std::floor(x0 / kGrid) * kGrid; x < x1 + kGrid; x += kGrid)
+            for (double y = std::floor(y0 / kGrid) * kGrid; y < y1 + kGrid;
+                 y += kGrid)
+                dc.DrawCircle(wxPoint(int(x), int(y)), ri);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+    }
 
     auto doc_line = [&](Pt a, Pt b, const wxColour& col, int w) {
         dc.SetPen(wxPen(col, w));
@@ -739,7 +748,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
             bool seg_sel = si.type == Selection::WireSegment &&
                            si.wire == int(i) && si.seg == int(k) - 1;
             doc_line(a, b,
-                     (seg_sel || whole) ? wxColour(0, 92, 200) : wxColour(0, 0, 0),
+                     (seg_sel || whole) ? theme::accent : theme::ink,
                      (seg_sel || whole) ? 3 : 2);
         }
     }
@@ -748,21 +757,25 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     // into the middle of another must read as a real connection)
     for (const auto& j : junction_pts()) {
         if (!on_screen(j.first, j.second, 20)) continue;
-        doc_circle(j, 4, wxColour(0, 0, 0), true);
+        doc_circle(j, theme::kJunctionRadius, theme::ink, true);
     }
 
     // wire in progress: the current (uncommitted) segment, from the last
-    // vertex to the snapped cursor
+    // vertex to the snapped cursor, drawn in the accent as a dashed preview.
     if (wiring_ && !wire_pts_.empty()) {
         Pt last = wire_pts_.back();
         Pt m = snap(to_doc(mouse_));
         auto mids = ortho_route(last, m, wire_h_first_);
+        dc.SetPen(wxPen(theme::accent, 2, wxPENSTYLE_SHORT_DASH));
         Pt prev = last;
         for (const auto& q : mids) {
-            doc_line(prev, q, wxColour(0, 120, 200), 2);
+            dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
+                        wxPoint(int(q.first), int(q.second)));
             prev = q;
         }
-        doc_line(prev, m, wxColour(0, 120, 200), 2);
+        dc.DrawLine(wxPoint(int(prev.first), int(prev.second)),
+                    wxPoint(int(m.first), int(m.second)));
+        dc.SetPen(*wxBLACK_PEN);
     }
 
     // net labels (font size is per-label; drawn above the anchor point)
@@ -783,7 +796,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         // visible footprint: a centred box around `pt`.
         wxPoint anchor(int(l.pt.first), int(l.pt.second));
         if (is_sel) {
-            dc.SetBrush(wxBrush(wxColour(0, 92, 200)));
+            dc.SetBrush(wxBrush(theme::accent));
             dc.SetPen(*wxTRANSPARENT_PEN);
             int bw = ts.x + 6, bh = ts.y + 2;
             if (rot == 90 || rot == 270) std::swap(bw, bh);
@@ -792,7 +805,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetTextForeground(*wxWHITE);
         } else {
-            dc.SetTextForeground(wxColour(0, 0, 0));
+            dc.SetTextForeground(theme::ink);
         }
         if (rot == 0 || rot == 180) {
             dc.DrawText(txt,
@@ -808,7 +821,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
             std::fabs(l.anchor.second - l.pt.second) > 0.5 ||
             is_sel) {
             doc_circle({l.anchor.first, l.anchor.second}, 3,
-                       wxColour(200, 40, 40), true);
+                       theme::accent, true);
         }
     }
     // Restore the font before drawing components: draw_symbol() reads the
@@ -824,15 +837,21 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         draw_symbol(dc, c, pl->second, sel_set_.count(c.ref) > 0);
     }
 
-    // box selection rubber band
+    // box selection rubber band: left-to-right = window (accent), right-to-
+    // left = crossing (green), matching the reference's marquee semantics.
     if (box_selecting_) {
         wxRect r(int(std::min(box_a_.first, box_b_.first)),
                  int(std::min(box_a_.second, box_b_.second)),
                  int(std::fabs(box_b_.first - box_a_.first)),
                  int(std::fabs(box_b_.second - box_a_.second)));
-        dc.SetPen(wxPen(wxColour(0, 92, 200), 1, wxPENSTYLE_SHORT_DASH));
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        bool crossing = box_b_.first < box_a_.first;
+        wxColour col = crossing ? theme::marquee_crossing : theme::accent;
+        dc.SetPen(wxPen(col, 1, crossing ? wxPENSTYLE_SHORT_DASH
+                                         : wxPENSTYLE_SOLID));
+        dc.SetBrush(wxBrush(crossing ? theme::marquee_crossing_soft
+                                     : theme::accent_soft));
         dc.DrawRectangle(r);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
     }
 
     // pending net-label placement: show the next name and its anchor point
@@ -841,7 +860,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         Pt anchor = snap(to_doc(mouse_));
         if (hit_wire(to_doc(mouse_), wi)) {
             Pt best = anchor;
-            double bestd = kSnapR / zoom_;
+            double bestd = kSnapPx / zoom_;
             for (const auto& v : doc_->wires[wi].pts)
                 if (dist(v, to_doc(mouse_)) < bestd) {
                     bestd = dist(v, to_doc(mouse_));
@@ -849,13 +868,13 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
                 }
             anchor = best;
         }
-        doc_circle(anchor, 5, wxColour(200, 40, 40), false);
+        doc_circle(anchor, 5, theme::accent, false);
         wxFont saved = dc.GetFont();
         wxFont f(9, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
         dc.SetFont(f);
         wxString txt = wxString::FromUTF8(label_queue_.front());
         wxSize ts = dc.GetTextExtent(txt);
-        dc.SetTextForeground(wxColour(0, 92, 200));
+        dc.SetTextForeground(theme::accent);
         dc.DrawText(txt, wxPoint(int(anchor.first - ts.x / 2.0),
                                  int(anchor.second - ts.y - 6.0)));
         dc.SetTextForeground(*wxBLACK);
@@ -866,7 +885,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     // it shows exactly where the segment/vertex will land
     if (tool_ == Tool::Wire && has_mouse_) {
         Pt g = snap(to_doc(mouse_));
-        doc_circle(g, 4, wxColour(210, 30, 30), true);
+        doc_circle(g, 4, theme::error_red, true);
     }
 
     // ghost of component being placed
@@ -878,7 +897,7 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         Placement pl{m.first, m.second, place_rot_};
         pl.flip_h = place_flip_h_;
         pl.flip_v = place_flip_v_;
-        dc.SetPen(wxPen(wxColour(0, 120, 200), 1, wxPENSTYLE_SHORT_DASH));
+        dc.SetPen(wxPen(theme::accent, 1, wxPENSTYLE_SHORT_DASH));
         draw_symbol(dc, tmp, pl, false);
     }
 
@@ -1629,7 +1648,9 @@ void SchematicCanvas::notify_doc() {
     doc_->dirty = true;
     net_cache_valid_ = false;
     if (on_document_changed) on_document_changed();
-    Refresh();
+    // Defer the repaint (Refresh(false)) so a burst of edits in one event
+    // coalesces into a single paint instead of one synchronous redraw per call.
+    Refresh(false);
 }
 
 // Lazy net-map cache: rebuilt at most once per edit, so the hover tooltip's

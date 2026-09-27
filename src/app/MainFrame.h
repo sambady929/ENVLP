@@ -85,6 +85,7 @@ private:
 
     void on_about(wxCommandEvent&);
     void on_ignore_neg(wxCommandEvent&);
+    void on_show_grid(wxCommandEvent&);
     void on_zoom_fit(wxCommandEvent&);
     void on_copy(wxCommandEvent&);
     void on_paste(wxCommandEvent&);

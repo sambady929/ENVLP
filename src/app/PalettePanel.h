@@ -31,6 +31,7 @@ private:
     wxImageList* glyphs_;
     wxListCtrl* comps_;
     bool updating_ = false;
+    int active_idx_ = -1;
 
     int comp_index_for(syms::Kind k) const;
 

@@ -34,6 +34,7 @@ enum {
     ID_COPY,
     ID_PASTE,
     ID_DC_SETTINGS,
+    ID_SHOW_GRID,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -53,6 +54,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_COPY, MainFrame::on_copy)
     EVT_MENU(ID_PASTE, MainFrame::on_paste)
     EVT_MENU(ID_DC_SETTINGS, MainFrame::on_dc_settings)
+    EVT_MENU(ID_SHOW_GRID, MainFrame::on_show_grid)
     EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
 
@@ -102,6 +104,10 @@ void MainFrame::build_menu() {
     auto* view = new wxMenu;
     view->Append(ID_ZOOM_FIT, "&Fit components",
                  "Zoom to frame every component (also F)");
+    view->AppendSeparator();
+    view->AppendCheckItem(ID_SHOW_GRID, "Show &grid\tF7",
+                          "Toggle the 10-unit dot grid");
+    view->Check(ID_SHOW_GRID, true);
     view->AppendSeparator();
     mi_ignore_ = view->AppendCheckItem(
         ID_IGNORE_NEG, "&Ignore negligible terms",
@@ -205,6 +211,10 @@ void MainFrame::set_ignore_negligible(bool on) {
 
 void MainFrame::on_ignore_neg(wxCommandEvent& e) {
     set_ignore_negligible(e.IsChecked());
+}
+
+void MainFrame::on_show_grid(wxCommandEvent& e) {
+    canvas_->set_show_grid(e.IsChecked());
 }
 
 // DC settings: process values for the large-signal DC analysis. Continuous

@@ -86,20 +86,23 @@ int main() {
     CHECK(r_root == v_root);
 
     // Idempotency: a second sync with no placement change must not add any
-    // vertices (the escape-lead insertion has to replace, not accumulate --
+    // vertices (the endpoint resolution has to replace, not accumulate --
     // otherwise a slow drag grows the polyline on every motion event).
     size_t before = d.wires[0].pts.size();
     d.sync_wire_endpoints();
     CHECK(d.wires[0].pts.size() == before);
 
-    // Escape direction: R1's pin 0 is its left pin (offset -30,0), so a wire
-    // leaving it must head west: the vertex right after the pin has the same
-    // y and a smaller x.
+    // analog-canvas semantics: the outward axis is advisory, so the wire is NOT
+    // forced to leave R1's pin along a manufactured lead. The last point is the
+    // pin itself, and the sync does not invent a vertex there.
     const auto& pts = d.wires[0].pts;
     Pt end = pts.back();
-    Pt lead = pts[pts.size() - 2];
-    CHECK(std::fabs(lead.second - end.second) < 1e-6);
-    CHECK(lead.first < end.first);
+    CHECK(std::fabs(end.first - 570.0) < 1e-6);
+    CHECK(std::fabs(end.second - 250.0) < 1e-6);
+    bool has_artificial_lead =
+        pts.size() >= 3 && std::fabs(pts[pts.size() - 2].second - end.second) < 1e-6 &&
+        std::fabs(pts[pts.size() - 2].first - (end.first - 10.0)) < 1e-6;
+    CHECK(!has_artificial_lead);
 
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "WIREBIND FAILED" : "wirebind ok", g_fail);

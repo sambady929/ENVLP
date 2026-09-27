@@ -1,4 +1,5 @@
 #include "PropertiesPanel.h"
+#include "Theme.h"
 #include "core/Eng.h"
 
 #include <cmath>
@@ -137,7 +138,7 @@ PropertiesPanel::PropertiesPanel(wxWindow* parent)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                        wxVSCROLL) {
     SetScrollRate(0, 10);
-    SetBackgroundColour(wxColour(245, 245, 243));
+    SetBackgroundColour(theme::chrome_bg);
 }
 
 void PropertiesPanel::add_header(const wxString& text) {
@@ -294,55 +295,29 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
     add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text));
 }
 
-// A typeable mantissa + exponent row (the same widget the device parameters
-// use, so the value is a continuous number, not locked to the fixed steps) that
-// writes "<mant><exp>" into *target. Used for a source's DC and AC values.
+// A free-text value field (a source's DC or AC value). The user may type
+// anything `parse_value` accepts -- a bare number, an SI-suffixed value
+// ("10k"), or just "0" -- rather than being forced into a mantissa/exponent
+// dropdown pair.
 void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
                                      const std::string& unit) {
     auto* host = cards_host();
-    double v = 0.0;
-    if (!syms::eng::parse_value(*target, v)) v = 0.0;
-    double mant;
-    int exp;
-    decompose(v, mant, exp);
-
     auto* card = new_card(this, label);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
-    auto* man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                               wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
-    auto* ex = new wxComboBox(card, wxID_ANY, exp_display(exp),
-                              wxDefaultPosition, wxSize(58, -1), kExponents,
-                              wxCB_DROPDOWN);
-    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
-    sub->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
-    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
+    auto* tc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(*target),
+                              wxDefaultPosition, wxSize(80, -1));
+    sub->Add(tc, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
     sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
              wxALIGN_CENTER_VERTICAL);
     card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
     card->Fit();
     host->Add(card, 0, wxALL, 3);
 
-    auto commit = [this, target, man, ex] {
-        double m = 0.0;
-        if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 0.0;
-        long e = 0;
-        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
-        *target = fmt_value(m, int(e)).ToStdString();
+    tc->Bind(wxEVT_TEXT, [this, target, tc](wxCommandEvent&) {
+        if (rebuilding_) return;
+        *target = tc->GetValue().ToStdString(); // keep exactly what was typed
         doc_->dirty = true;
         if (on_edited) on_edited();
-    };
-    man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    man->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
     });
 }
 
@@ -643,6 +618,10 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                     if (cc->mirror_mult < 1) cc->mirror_mult = 1;
                     doc_->dirty = true;
                     if (on_edited) on_edited();
+                    // Rebuild the panel now so the "Copies (m)" row appears (or
+                    // disappears) immediately -- otherwise the user has to click
+                    // off the part and reselect it to see the change.
+                    CallAfter([this] { refresh(doc_, sel_); });
                 });
 
                 if (!comp->mirror_ref.empty()) {
@@ -674,9 +653,9 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                     note->Wrap(220);
                     sizer2->Add(note, 0, wxALL, 4);
                     sizer->AddSpacer(6);
-                    FitInside();
-                    rebuilding_ = false;
-                    return;
+                    // Fall through: still show the inherited parameter cards
+                    // below, so the user sees the model this copy uses. The
+                    // common FitInside() at the end lays it all out.
                 }
             }
 

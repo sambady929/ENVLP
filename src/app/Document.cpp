@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 
 namespace symcirc {
 
@@ -257,18 +258,44 @@ NetMap Document::net_map() const {
         }
     }
 
-    // Coincident points join.
-    for (int i = 0; i < n; ++i)
-        for (int j = i + 1; j < n; ++j) {
-            double dx = pts[i].first - pts[j].first;
-            double dy = pts[i].second - pts[j].second;
-            if (dx * dx + dy * dy <= kJoinTol * kJoinTol) uf.join(i, j);
+    // Coincident points join. Use a spatial hash keyed at the join tolerance so
+    // this is near-linear instead of O(n^2) (which dominated large schematics:
+    // ~20 ms per net_map at 800 components, recomputed after every edit).
+    auto cell_key = [](long long cx, long long cy) -> long long {
+        return (cx << 32) ^ (cy & 0xffffffffLL);
+    };
+    auto key_of = [](double v) -> long long {
+        return (long long)std::floor(v / kJoinTol);
+    };
+    {
+        std::unordered_map<long long, std::vector<int>> buckets;
+        buckets.reserve(n * 2);
+        for (int i = 0; i < n; ++i)
+            buckets[cell_key(key_of(pts[i].first), key_of(pts[i].second))]
+                .push_back(i);
+        for (int i = 0; i < n; ++i) {
+            long long cx = key_of(pts[i].first), cy = key_of(pts[i].second);
+            for (long long dx = -1; dx <= 1; ++dx)
+                for (long long dy = -1; dy <= 1; ++dy) {
+                    auto it = buckets.find(cell_key(cx + dx, cy + dy));
+                    if (it == buckets.end()) continue;
+                    for (int j : it->second) {
+                        if (j <= i) continue;
+                        double ddx = pts[i].first - pts[j].first;
+                        double ddy = pts[i].second - pts[j].second;
+                        if (ddx * ddx + ddy * ddy <= kJoinTol * kJoinTol)
+                            uf.join(i, j);
+                    }
+                }
         }
+    }
 
     // A point lying on a wire segment joins that wire. This covers pins,
     // label anchors, *and* other wires' vertices -- so a wire drawn
     // perpendicular into the middle of another (a T-junction) merges the two
-    // nets, which is what makes the connection real in SPICE terms.
+    // nets, which is what makes the connection real in SPICE terms. Segments
+    // are bucketed by their bounding cells (all axis-aligned) so the test is
+    // near-linear rather than points x segments.
     {
         std::vector<std::pair<size_t, size_t>> spans;
         size_t idx = wire_base;
@@ -276,14 +303,28 @@ NetMap Document::net_map() const {
             spans.push_back({idx, w.pts.size()});
             idx += w.pts.size();
         }
+        struct SegRef { int a, b; };  // global point indices
+        std::unordered_map<long long, std::vector<SegRef>> segb;
+        for (const auto& sp : spans)
+            for (size_t k = 1; k < sp.second; ++k) {
+                int a = int(sp.first + k - 1), b = int(sp.first + k);
+                long long x0 = key_of(std::min(pts[a].first, pts[b].first));
+                long long x1 = key_of(std::max(pts[a].first, pts[b].first));
+                long long y0 = key_of(std::min(pts[a].second, pts[b].second));
+                long long y1 = key_of(std::max(pts[a].second, pts[b].second));
+                for (long long cx = x0; cx <= x1; ++cx)
+                    for (long long cy = y0; cy <= y1; ++cy)
+                        segb[cell_key(cx, cy)].push_back({a, b});
+            }
         auto attach_point = [&](int pi) {
-            for (const auto& sp : spans)
-                for (size_t k = 1; k < sp.second; ++k)
-                    if (point_on_seg(pts[pi], pts[sp.first + k - 1],
-                                     pts[sp.first + k], kJoinTol)) {
-                        uf.join(pi, int(sp.first + k));
-                        uf.join(pi, int(sp.first + k - 1));
-                    }
+            auto it = segb.find(cell_key(key_of(pts[pi].first),
+                                         key_of(pts[pi].second)));
+            if (it == segb.end()) return;
+            for (const auto& s : it->second)
+                if (point_on_seg(pts[pi], pts[s.a], pts[s.b], kJoinTol)) {
+                    uf.join(pi, s.a);
+                    uf.join(pi, s.b);
+                }
         };
         for (size_t i = 0; i < nm.pin_comp.size(); ++i) attach_point(int(i));
         for (size_t k = 0; k < labels.size(); ++k)
@@ -522,16 +563,12 @@ void Document::sync_wire_endpoints() {
 
 void Document::escape_pin_ends(Wire& w) {
     if (w.pts.size() < 2) return;
-    // A wire that ends on a pin with a defined outward axis gets a short
-    // orthogonal lead in that direction, so the first segment leaves along
-    // the pin axis. Without it a wire can appear to sprout sideways out of
-    // a pin (or run straight back through the symbol).
-    //
-    // Idempotency: this runs on every drag step, so it must *replace* the
-    // lead vertex rather than accumulate new ones. If the current neighbour
-    // already lies on the pin's outward axis (a lead we inserted, or a
-    // genuine bend the user drew on-axis) we move that vertex to the fresh
-    // lead point; otherwise we insert one.
+    // analog-canvas: the outward axis is *advisory*. A wire may reach a pin
+    // from any direction -- "reaching a downward pin from the side is an
+    // ordinary drawing". So we do NOT force a lead along the pin axis. The
+    // only thing we keep is idempotency: if the wire already has a short
+    // on-axis lead vertex (e.g. from an older file), snap it to the pin so a
+    // drag does not accumulate vertices. No new vertices are ever inserted.
     auto do_end = [&](bool start) {
         const WireEnd& e = start ? w.a : w.b;
         if (e.kind != WireEnd::Kind::Pin) return;
@@ -543,27 +580,16 @@ void Document::escape_pin_ends(Wire& w) {
         Pt pin = pin_world(*c, pl->second, e.pin);
         size_t ni = start ? 1 : w.pts.size() - 2;
         Pt next = w.pts[ni];
-        // Is `next` on the pin's outward axis? (perpendicular offset ~0 and
-        // in front of the pin)
         double perp = (next.first - pin.first) * (-dir.second) +
                       (next.second - pin.second) * dir.first;
         double along = (next.first - pin.first) * dir.first +
                        (next.second - pin.second) * dir.second;
-        double lead = std::max(10.0, std::fabs(along));
-        Pt lead_pt{pin.first + dir.first * lead,
-                   pin.second + dir.second * lead};
-        bool on_axis = std::fabs(perp) < 1e-6 && along >= -1e-6;
-        if (on_axis) {
-            // Replace the existing on-axis vertex with the fresh lead point.
-            if (std::hypot(w.pts[ni].first - lead_pt.first,
-                           w.pts[ni].second - lead_pt.second) > 1e-6) {
-                w.pts[ni] = lead_pt;
-            }
-        } else {
-            // Neighbour is off-axis: splice a lead in so the escape is
-            // orthogonal, leaving the user's vertex where it is.
-            w.pts.insert(start ? w.pts.begin() + 1 : w.pts.end() - 1,
-                         lead_pt);
+        // Only normalise an existing on-axis lead vertex; leave off-axis
+        // neighbours exactly as drawn (the orthogonaliser handles diagonals).
+        if (std::fabs(perp) < 1e-6 && along > 1e-6 && along <= 20.0) {
+            Pt lead_pt{pin.first + dir.first * 10.0,
+                       pin.second + dir.second * 10.0};
+            w.pts[ni] = lead_pt;
         }
     };
     do_end(true);
