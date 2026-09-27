@@ -223,4 +223,29 @@ void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
     y1 += pad;
 }
 
+void symbol_body_bbox(const syms::Component& c, const Placement& pl,
+                      double& x0, double& y0, double& x1, double& y1,
+                      double pad) {
+    LocalBox lb = body_local_box(c.kind);
+    double bx0 = 1e18, by0 = 1e18, bx1 = -1e18, by1 = -1e18;
+    auto acc = [&](Pt w) {
+        bx0 = std::min(bx0, w.first);
+        by0 = std::min(by0, w.second);
+        bx1 = std::max(bx1, w.first);
+        by1 = std::max(by1, w.second);
+    };
+    Pt corners[4] = {{lb.x0, lb.y0}, {lb.x1, lb.y0},
+                     {lb.x1, lb.y1}, {lb.x0, lb.y1}};
+    for (const auto& cpt : corners) {
+        Pt r = transform_pt(cpt, pl);
+        acc({pl.x + r.first, pl.y + r.second});
+    }
+    // Include the origin so a body-less kind still has a small grab box.
+    acc({pl.x, pl.y});
+    x0 = bx0 - pad;
+    y0 = by0 - pad;
+    x1 = bx1 + pad;
+    y1 = by1 + pad;
+}
+
 } // namespace symcirc

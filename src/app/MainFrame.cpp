@@ -623,7 +623,7 @@ void MainFrame::document_changed() {
 
 void MainFrame::selection_changed(const std::string& sel) {
     props_->refresh(&doc_, sel);
-    canvas_->Refresh();
+    canvas_->Refresh(false); // deferred repaint
 }
 
 // ---------------------------------------------------------------------------

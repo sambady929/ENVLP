@@ -3,9 +3,13 @@
 #include "Theme.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <wx/dcbuffer.h>
+#include <wx/image.h>
 
 namespace symcirc {
 
@@ -603,14 +607,16 @@ Selection SchematicCanvas::selection_info() const {
 // hit testing
 // ---------------------------------------------------------------------------
 std::string SchematicCanvas::hit_component(Pt p) const {
-    // Only the symbol body's own box (small pad) counts as a hit, so a click
-    // near a pin lands on the wire attached there instead of on the symbol.
+    // Hit on the symbol's *artwork* (drawn body), not its bounding box: a
+    // device's bbox spans its pin lines, which made its grab area many times a
+    // wire's and made selection feel arbitrary. The body box plus the pin
+    // circles (hit_any_pin) is what the reference uses.
     for (auto it = doc_->circuit.comps.rbegin();
          it != doc_->circuit.comps.rend(); ++it) {
         auto pl = doc_->placements.find(it->ref);
         if (pl == doc_->placements.end()) continue;
         double x0, y0, x1, y1;
-        symbol_bbox(*it, pl->second, x0, y0, x1, y1, 4.0);
+        symbol_body_bbox(*it, pl->second, x0, y0, x1, y1, 3.0);
         if (p.first >= x0 && p.first <= x1 && p.second >= y0 && p.second <= y1)
             return it->ref;
     }
@@ -716,19 +722,51 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
     double x0 = view_x_, y0 = view_y_;
     double x1 = view_x_ + cs.x / zoom_, y1 = view_y_ + cs.y / zoom_;
 
-    // grid: a 10-unit dot lattice (analog-canvas draws dots, not lines). The
-    // dot radius is in *screen* px so it stays crisp at any zoom; we skip dots
-    // when they would crowd.
+    // grid: a 10-unit dot lattice. Drawing one circle per cell costs ~30 ms per
+    // paint (>5000 GDI calls) -- the pause felt after every edit. Render the
+    // grid into an offscreen document-space bitmap ONCE per (size, view, zoom)
+    // and blit it back under the normal transform.
     if (show_grid_ && kGrid * zoom_ >= 5.0) {
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.SetBrush(wxBrush(theme::grid_dot));
-        double r = std::max(1.0, 0.7 * zoom_);
-        int ri = int(std::lround(r));
-        for (double x = std::floor(x0 / kGrid) * kGrid; x < x1 + kGrid; x += kGrid)
-            for (double y = std::floor(y0 / kGrid) * kGrid; y < y1 + kGrid;
-                 y += kGrid)
-                dc.DrawCircle(wxPoint(int(x), int(y)), ri);
-        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        int wpx = int(std::ceil(cs.x / zoom_)) + 2;
+        int hpx = int(std::ceil(cs.y / zoom_)) + 2;
+        auto key = std::make_tuple(wpx, hpx, int(std::lround(view_x_)),
+                                   int(std::lround(view_y_)),
+                                   int(std::lround(zoom_ * 1000)));
+        if (grid_cache_key_ != key || !grid_cache_.IsOk()) {
+            // Build the tile with a wxImage and set pixels directly: a
+            // wxMemoryDC on a bare bitmap proved unreliable here (the Dots
+            // never landed). For a dot lattice, direct pixel writes are also
+            // faster and exact.
+            wxImage img(wpx, hpx);
+            unsigned char bg_r = theme::canvas_bg.Red();
+            unsigned char bg_g = theme::canvas_bg.Green();
+            unsigned char bg_b = theme::canvas_bg.Blue();
+            unsigned char dot_r = theme::grid_dot.Red();
+            unsigned char dot_g = theme::grid_dot.Green();
+            unsigned char dot_b = theme::grid_dot.Blue();
+            std::memset(img.GetData(), 0, size_t(wpx) * hpx * 3);
+            unsigned char* d = img.GetData();
+            for (int y = 0; y < hpx; ++y)
+                for (int x = 0; x < wpx; ++x) {
+                    unsigned char* p = d + (size_t(y) * wpx + x) * 3;
+                    p[0] = bg_r; p[1] = bg_g; p[2] = bg_b;
+                }
+            // A 2x2 dot block per grid point reads as a crisp ~1.4px dot.
+            int startx = ((int(view_x_) % int(kGrid)) + int(kGrid)) % int(kGrid);
+            int starty = ((int(view_y_) % int(kGrid)) + int(kGrid)) % int(kGrid);
+            for (int gx = -startx; gx < wpx; gx += int(kGrid))
+                for (int gy = -starty; gy < hpx; gy += int(kGrid))
+                    for (int dx = 0; dx < 2; ++dx)
+                        for (int dy = 0; dy < 2; ++dy) {
+                            int x = gx + dx, y = gy + dy;
+                            if (x < 0 || x >= wpx || y < 0 || y >= hpx) continue;
+                            unsigned char* p = d + (size_t(y) * wpx + x) * 3;
+                            p[0] = dot_r; p[1] = dot_g; p[2] = dot_b;
+                        }
+            grid_cache_ = wxBitmap(img);
+            grid_cache_key_ = key;
+        }
+        dc.DrawBitmap(grid_cache_, view_x_, view_y_, false);
     }
 
     auto doc_line = [&](Pt a, Pt b, const wxColour& col, int w) {

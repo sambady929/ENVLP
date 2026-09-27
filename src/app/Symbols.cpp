@@ -528,22 +528,6 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
         marker_y = stack_y + (val_text.IsEmpty() ? 0 : lh) + lh;
     }
     dc.SetFont(base);
-
-    // device non-ideality marker (¶): sits just past the label text when at
-    // least one parasitic is enabled.
-    if (syms::is_device(c.kind)) {
-        bool any = false;
-        for (const auto& kv : c.param_on)
-            if (kv.second) any = true;
-        if (any) {
-            dc.SetTextForeground(wxColour(170, 60, 20));
-            // Use an explicitly constructed Unicode char: a raw "\u00b6"
-            // narrow literal is UTF-8 (0xC2 0xB6) and wxString's implicit
-            // conversion misreads it as two Latin-1 bytes ("Â¶").
-            dc.DrawText(wxString(wxUniChar(0x00B6)),
-                        wxPoint(int(marker_x), int(marker_y)));
-        }
-    }
 }
 
 void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,

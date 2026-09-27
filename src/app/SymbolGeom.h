@@ -32,4 +32,13 @@ Pt pin_outward(const syms::Component& c, const Placement& pl, int pin_index);
 void symbol_bbox(const syms::Component& c, const Placement& pl, double& x0,
                  double& y0, double& x1, double& y1, double pad = 18.0);
 
+// The symbol's *drawn body* box only (no pins), in world coordinates. Used for
+// hit-testing: a click selects a part by its artwork, not by the long span of
+// its pin lines -- otherwise a MOSFET's hit box is many times a wire's, which
+// makes selecting between a device and its wires feel arbitrary. `pad` grows
+// the box a little so the outline itself is easy to grab.
+void symbol_body_bbox(const syms::Component& c, const Placement& pl,
+                      double& x0, double& y0, double& x1, double& y1,
+                      double pad = 0.0);
+
 } // namespace symcirc

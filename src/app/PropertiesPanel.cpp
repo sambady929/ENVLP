@@ -2,7 +2,9 @@
 #include "Theme.h"
 #include "core/Eng.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <wx/checkbox.h>
 #include <wx/choice.h>

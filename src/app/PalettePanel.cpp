@@ -133,8 +133,10 @@ void PalettePanel::on_paint(wxPaintEvent&) {
         bool sel = (i == active_idx_);
         bool hov = (i == hover_idx_);
         // Card: muted surface, 1px border; hover lifts to white; active uses
-        // the accent border + soft accent fill.
-        dc.SetBrush(wxBrush(sel ? theme::accent_soft
+        // the accent border + a soft accent *tint* fill. NOTE: use the opaque
+        // tint, not an alpha colour -- wxMSW renders an unsupported alpha brush
+        // as solid accent, which would hide the accent-coloured label.
+        dc.SetBrush(wxBrush(sel ? theme::accent_tint
                                 : hov ? theme::surface : theme::surface_muted));
         dc.SetPen(wxPen(sel ? theme::accent
                             : hov ? theme::border_strong : theme::border));

@@ -7,6 +7,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace symcirc {
@@ -174,6 +175,10 @@ private:
 
     // view: an origin + zoom, giving effectively infinite panning
     double zoom_ = 1.0;
+    // Cached whole-viewport grid bitmap, keyed by (size, origin); rebuilt only
+    // when the view changes so edits pay nothing for the grid.
+    wxBitmap grid_cache_;
+    std::tuple<int, int, int, int, int> grid_cache_key_{0, 0, 0, 0, 0};
     double view_x_ = -60.0, view_y_ = -60.0; // document coord at client (0,0)
     bool panning_ = false;
     wxPoint pan_last_;

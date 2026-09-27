@@ -625,6 +625,41 @@ static void test_latex_output() {
     CHECK(r.pruned.latex.find("\\parallel") != std::string::npos);
 }
 
+// A sum that appears as a FACTOR inside a product must be parenthesised in the
+// LaTeX, matching the text result. cs_test's denominator is
+// (1 + s*(Cds_M1 + C1)*R1): the (Cds_M1 + C1) grouped factor is the case that
+// regressed -- to_latex_cdot dropped the parens.
+static void test_latex_factor_parens() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = false;
+    m.param_on["Cgs"] = false;
+    m.param_on["Cgd"] = false;
+    m.param_on["Cdb"] = false;
+    m.param_on["Csb"] = false;
+    m.param_on["Cds"] = true;  m.param_text["Cds"] = "20f";
+    m.param_text["gm"] = "1m";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "R1", {"out", "VDD"}, "1k"));
+    c.comps.push_back(comp(Kind::VDD, "VDD1", {"VDD"}));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "100f"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.f0_hz = 1.0;
+    req.sweep.f_start_hz = 1.0;
+    req.sweep.f_stop_hz = 1e9;
+    AnalysisResult r = analyze(c, req);
+    // The grouped (Cds_M1 + C1) must be a parenthesised factor in the LaTeX
+    // (order-tolerant: GiNaC may print C1 + Cds_M1).
+    bool grouped =
+        r.pruned.latex.find("\\left(Cds_M1 + C1\\right)") != std::string::npos ||
+        r.pruned.latex.find("\\left(C1 + Cds_M1\\right)") != std::string::npos;
+    CHECK(grouped);
+}
+
 static void test_report_has_latex_and_factors() {
     Circuit c = cs_amp(1e-12, true);
     AnalysisRequest req;
@@ -1878,6 +1913,7 @@ int main(int argc, char** argv) {
         {"magnitude_pruning", test_magnitude_pruning},
         {"parallel_collapse", test_parallel_collapse},
         {"latex_output", test_latex_output},
+        {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},
         {"le_no_bogus_factor", test_low_entropy_no_bogus_factor},
         {"approx_factor_accuracy", test_approx_factor_accuracy},

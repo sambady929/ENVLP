@@ -1104,7 +1104,13 @@ std::string to_latex_cdot(const ex& e) {
         if (!coeff.is_equal(ex(1))) body += to_latex_cdot(coeff);
         for (size_t i = 0; i < sym.size(); ++i) {
             if (i > 0 || !body.empty()) body += "\\cdot ";
-            body += to_latex_cdot(sym[i]);
+            // A factor that is itself a sum (e.g. (Cds_M1 + C1) inside
+            // s*(Cds_M1 + C1)*R1) must be parenthesised, or the printed form
+            // loses its grouping and no longer matches the text result.
+            std::string ft = to_latex_cdot(sym[i]);
+            if (is_a<GiNaC::add>(sym[i]) || is_a<GiNaC::add>(sym[i].expand()))
+                ft = "\\left(" + ft + "\\right)";
+            body += ft;
         }
         return (neg ? "-" : "") + body;
     }
