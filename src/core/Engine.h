@@ -23,6 +23,24 @@ struct AnalysisResult {
     PruneOptions opts;
     SweepSpec sweep;          // plotting / ranking sweep
     std::string report;       // full human-readable report (results panel)
+
+    // Loop-gain extras (present only for the return-ratio analysis): the
+    // unity-gain frequency and phase margin, in numeric and symbolic form.
+    bool has_pm = false;
+    std::string ugf_hz;       // formatted unity-gain frequency
+    double pm_deg = 0.0;
+    std::string pm_sym;       // text form, e.g. "180 - atan(w_ug/w_p0) ..."
+    std::string pm_sym_latex; // LaTeX form
+
+    // Noise extras (present only for the noise analysis): the output-referred
+    // voltage noise density spectrum (Hz -> V/sqrt(Hz)), plus the input-referred
+    // current noise when the excitation is a current source.
+    bool has_noise = false;
+    std::vector<double> noise_f_hz;
+    std::vector<double> noise_vout;   // V/sqrt(Hz)
+    double noise_vout_total = 0.0;    // integrated over the band (V rms)
+    bool noise_input_is_current = false;
+    double noise_iin_total = 0.0;     // input-referred current noise (A rms)
 };
 
 // Throws std::runtime_error with a user-facing message.

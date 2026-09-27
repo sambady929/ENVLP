@@ -9,7 +9,7 @@
 namespace symcirc {
 
 // Which curve family the plot canvas draws.
-enum class PlotMode { Bode, Nyquist, Nichols };
+enum class PlotMode { Bode, Nyquist, Nichols, Noise };
 
 // The plotting canvas (Bode magnitude/phase, Nyquist, or Nichols) with
 // SVG/PNG/CSV export and user-controllable axis ranges.
@@ -71,6 +71,7 @@ private:
     void paint_bode(wxDC& dc, const wxSize& sz) const;
     void paint_nyquist(wxDC& dc, const wxSize& sz) const;
     void paint_nichols(wxDC& dc, const wxSize& sz) const;
+    void paint_noise(wxDC& dc, const wxSize& sz) const;
     void on_paint(wxPaintEvent& e);
     void on_size(wxSizeEvent& e);
     wxDECLARE_EVENT_TABLE();
@@ -87,6 +88,7 @@ public:
 
 private:
     BodeCanvas* plot_ = nullptr;
+    wxChoice* mode_ = nullptr;
     wxTextCtrl* xmin_ = nullptr;
     wxTextCtrl* xmax_ = nullptr;
     wxTextCtrl* ymin_ = nullptr;

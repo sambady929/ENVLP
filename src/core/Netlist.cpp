@@ -217,6 +217,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"Cds", "20f", true, true, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
+        {"fcn", "10k", true, true, "Hz",
+         "1/f noise corner frequency (flicker = thermal below this)"},
     };
     static const std::vector<ParamDef> pmos = {
         {"gm", "1m", false, true, "S", "transconductance"},
@@ -226,6 +228,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"Cds", "20f", true, true, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
+        {"fcn", "10k", true, true, "Hz",
+         "1/f noise corner frequency (flicker = thermal below this)"},
     };
     static const std::vector<ParamDef> npn = {
         {"gm", "40m", false, true, "S", "transconductance"},
@@ -234,12 +238,16 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"ro", "50k", true, true, "Ohm", "output resistance (Early effect)"},
         {"Cpi", "10p", true, true, "F", "base-emitter capacitance"},
         {"Cmu", "1p", true, true, "F", "base-collector (Miller) capacitance"},
+        {"fcn", "1k", true, true, "Hz",
+         "1/f noise corner frequency (flicker = thermal below this)"},
     };
     static const std::vector<ParamDef> pnp = npn;
     static const std::vector<ParamDef> diode = {
         {"gm", "40m", false, true, "S", "small-signal conductance"},
         {"rd", "1k", true, false, "Ohm", "series/ohmic resistance"},
         {"Cd", "10p", true, true, "F", "junction capacitance"},
+        {"fcn", "1k", true, false, "Hz",
+         "1/f noise corner frequency (flicker = thermal below this)"},
     };
     // Op-amps / gain blocks: the DC gain lives in value_text (edited as
     // "Gain"); GBW is the gain-bandwidth product (Hz) that sets the single
@@ -247,6 +255,11 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     // an ideal (infinite-bandwidth) amplifier.
     static const std::vector<ParamDef> opamp = {
         {"GBW", "1M", true, true, "Hz", "gain-bandwidth product"},
+        // input-referred noise voltage density (V/sqrt(Hz)); the optional
+        // white+1/f pair lets a noise analysis form the corner frequency.
+        {"en", "10n", true, true, "V", "input voltage noise density"},
+        {"en_flicker", "100n", true, false, "V",
+         "1/f input voltage noise density at 1 Hz"},
     };
 
     switch (k) {

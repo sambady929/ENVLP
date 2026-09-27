@@ -254,6 +254,7 @@ bool BodeCanvas::save_png(const std::string& path) const {
             case PlotMode::Bode: paint_bode(dc, sz); break;
             case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
             case PlotMode::Nichols: paint_nichols(dc, sz); break;
+            case PlotMode::Noise: paint_noise(dc, sz); break;
         }
     }
     wxImage img = bmp.ConvertToImage();
@@ -290,6 +291,7 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
         case PlotMode::Bode: paint_bode(dc, sz); break;
         case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
         case PlotMode::Nichols: paint_nichols(dc, sz); break;
+        case PlotMode::Noise: paint_noise(dc, sz); break;
     }
 }
 
@@ -750,16 +752,107 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
     dc.DrawText("|H| [dB]", 4, mT + 4);
 }
 
+// Noise density: output-referred voltage noise (V/sqrt(Hz)) versus frequency,
+// on a log-log grid. When the excitation is a current source the same curve is
+// the input-referred current noise divided by the transimpedance; the headline
+// reflects the source type.
+void BodeCanvas::paint_noise(wxDC& dc, const wxSize& sz) const {
+    const int mL = 78, mR = 16, mT = 30, mB = 44;
+    const int W = sz.x - mL - mR;
+    const int H = sz.y - mT - mB;
+    if (W < 50 || H < 50 || !res_ || res_->noise_f_hz.size() < 2) return;
+
+    const auto& fs = res_->noise_f_hz;
+    const auto& vs = res_->noise_vout;
+    double f_lo = fs.front(), f_hi = fs.back();
+    double v_lo = 1e300, v_hi = -1e300;
+    for (double v : vs)
+        if (std::isfinite(v) && v > 0.0) {
+            v_lo = std::min(v_lo, v);
+            v_hi = std::max(v_hi, v);
+        }
+    if (!(v_hi > 0.0)) return;
+    v_lo *= 0.7;
+    v_hi *= 1.4;
+
+    auto X = [&](double f) {
+        double t = (std::log10(f) - std::log10(f_lo)) /
+                   (std::log10(f_hi) - std::log10(f_lo));
+        return mL + t * W;
+    };
+    auto Y = [&](double v) {
+        double t = (std::log10(v) - std::log10(v_lo)) /
+                   (std::log10(v_hi) - std::log10(v_lo));
+        return mT + H - t * H;
+    };
+
+    if (!title_.empty()) {
+        dc.SetTextForeground(wxColour(40, 40, 45));
+        wxFont bold = dc.GetFont(); bold.SetWeight(wxFONTWEIGHT_BOLD);
+        dc.SetFont(bold);
+        dc.DrawText(wxString::FromUTF8(title_), mL, 2);
+        dc.SetFont(wxNullFont);
+    }
+    dc.SetTextForeground(wxColour(200, 40, 40));
+    dc.DrawText(res_->noise_input_is_current
+                    ? "Input-Referred Current Noise (A/sqrt(Hz))"
+                    : "Output Noise Density (V/sqrt(Hz))",
+                mL, mT - 16);
+
+    // decade gridlines
+    int e0 = int(std::floor(std::log10(f_lo)));
+    int e1 = int(std::ceil(std::log10(f_hi)));
+    for (int e = e0; e <= e1; ++e) {
+        double f = std::pow(10.0, e);
+        if (f < f_lo || f > f_hi) continue;
+        int x = int(X(f));
+        dc.SetPen(wxPen(wxColour(140, 148, 166)));
+        dc.DrawLine(x, mT, x, mT + H);
+        dc.SetTextForeground(wxColour(110, 110, 118));
+        dc.DrawText(wxString::FromUTF8(syms::eng::format_eng(f, 1)), x + 2,
+                    mT + H + 4);
+    }
+    // vertical decade gridlines for the amplitude
+    int ve0 = int(std::floor(std::log10(v_lo)));
+    int ve1 = int(std::ceil(std::log10(v_hi)));
+    for (int e = ve0; e <= ve1; ++e) {
+        double v = std::pow(10.0, e);
+        if (v < v_lo || v > v_hi) continue;
+        int y = int(Y(v));
+        dc.SetPen(wxPen(wxColour(205, 210, 220)));
+        dc.DrawLine(mL, y, mL + W, y);
+        dc.SetTextForeground(wxColour(110, 110, 118));
+        dc.DrawText(wxString::FromUTF8(syms::eng::format_eng(v, 1)), 4, y - 6);
+    }
+    dc.SetPen(wxPen(wxColour(120, 128, 145)));
+    dc.DrawRectangle(mL, mT, W, H);
+
+    dc.SetPen(wxPen(wxColour(190, 40, 40), 2));
+    bool started = false;
+    wxPoint prev(0, 0);
+    for (size_t i = 0; i < fs.size(); ++i) {
+        if (!std::isfinite(vs[i]) || vs[i] <= 0.0) { started = false; continue; }
+        wxPoint p(int(X(fs[i])), int(Y(vs[i])));
+        if (started) dc.DrawLine(prev, p);
+        prev = p;
+        started = true;
+    }
+    dc.SetTextForeground(wxColour(110, 110, 118));
+    dc.DrawText("f [Hz]", mL + W - 30, mT + H + 4);
+}
+
 // ---------------------------------------------------------------------------
 BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     auto* root = new wxBoxSizer(wxVERTICAL);
 
     // Toolbar: plot mode + axis spin controls + save buttons.
     auto* bar = new wxBoxSizer(wxHORIZONTAL);
-    auto* mode = new wxChoice(this, wxID_ANY);
+    mode_ = new wxChoice(this, wxID_ANY);
+    wxChoice* mode = mode_;
     mode->Append("Bode");
     mode->Append("Nyquist");
     mode->Append("Nichols");
+    mode->Append("Noise");
     mode->SetSelection(0);
     auto* svg = new wxButton(this, wxID_ANY, "Save SVG...");
     auto* png = new wxButton(this, wxID_ANY, "Save PNG...");
@@ -810,6 +903,7 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
         switch (mode->GetSelection()) {
             case 1: plot_->set_mode(PlotMode::Nyquist); break;
             case 2: plot_->set_mode(PlotMode::Nichols); break;
+            case 3: plot_->set_mode(PlotMode::Noise); break;
             default: plot_->set_mode(PlotMode::Bode); break;
         }
     });
@@ -877,6 +971,12 @@ void BodePanel::apply_axis() {
 }
 
 void BodePanel::set_result(const syms::AnalysisResult* r) {
+    // A noise result carries a spectrum, not a transfer function: switch the
+    // plot to the noise view so the tab shows something useful.
+    if (r && r->has_noise) {
+        plot_->set_mode(PlotMode::Noise);
+        if (mode_) mode_->SetSelection(3);
+    }
     plot_->set_result(r);
     Refresh();
 }

@@ -211,6 +211,9 @@ struct Metrics {
     std::string bw3, bw3_sym;          // -3 dB bandwidth
     std::string ugbw, ugbw_sym;        // unity-gain bandwidth
     std::string dc_sym_latex, bw3_sym_latex, ugbw_sym_latex;
+    // Loop gain only: phase margin (numeric + symbolic).
+    bool has_pm = false;
+    std::string pm, pm_sym, pm_sym_latex;
 };
 
 Metrics compute_metrics(const AnalysisResult& r) {
@@ -281,6 +284,16 @@ Metrics compute_metrics(const AnalysisResult& r) {
                            to_latex(K) + "\\cdot " +
                            to_latex(p0.omega_expr);
     }
+
+    // ---- loop gain: phase margin lives in this same block ----
+    if (r.has_pm) {
+        m.has_pm = true;
+        char pb[64];
+        std::snprintf(pb, sizeof(pb), "%.1f deg", r.pm_deg);
+        m.pm = pb;
+        m.pm_sym = r.pm_sym;
+        m.pm_sym_latex = r.pm_sym_latex;
+    }
     return m;
 }
 
@@ -296,6 +309,11 @@ std::string metrics_text(const AnalysisResult& r) {
     out += "  Unity-Gain (0 dB) Bandwidth: " + m.ugbw;
     if (!m.ugbw_sym.empty()) out += "   [" + m.ugbw_sym + "]";
     out += "\n";
+    if (m.has_pm) {
+        out += "  Phase Margin: " + m.pm;
+        if (!m.pm_sym.empty()) out += "   [" + m.pm_sym + "]";
+        out += "\n";
+    }
     // Symbolic pole corner frequencies (omega_p0 = 1/tau_0, ...).
     std::vector<std::string> ptxt, ptex;
     pole_wp_lines(r, ptxt, ptex);
@@ -322,6 +340,12 @@ std::string metrics_latex(const AnalysisResult& r) {
            (m.ugbw_sym_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
                                      : m.ugbw_sym_latex) +
            "\\quad = \\mathrm{" + m.ugbw + "}\n";
+    if (m.has_pm) {
+        out += "\\mathrm{Phase\\ Margin} = " +
+               (m.pm_sym_latex.empty() ? "\\mathrm{" + m.pm + "}"
+                                       : m.pm_sym_latex) +
+               "\\quad = \\mathrm{" + m.pm + "}\n";
+    }
     std::vector<std::string> ptxt, ptex;
     pole_wp_lines(r, ptxt, ptex);
     for (const auto& line : ptex) out += line + "\n";

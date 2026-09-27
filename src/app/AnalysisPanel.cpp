@@ -170,7 +170,9 @@ void AnalysisPanel::refresh(Document* doc) {
             add_field("probe", wxString::FromUTF8(c.probe_ref),
                       [&c](const wxString& v) { c.probe_ref = v.ToStdString(); });
 
-        if (c.kind != AnalysisKind::DC && c.kind != AnalysisKind::Noise) {
+        if (c.kind != AnalysisKind::DC) {
+            // Noise uses the sweep as its integration band, so it keeps the
+            // sweep row too (only DC has no frequency axis).
             // Frequency sweep in the usual SPICE terms: start, stop, the
             // interval type (decade / octave / linear) and points per interval.
             auto* sweep_row = new wxBoxSizer(wxHORIZONTAL);

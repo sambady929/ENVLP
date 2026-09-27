@@ -513,7 +513,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     res.pruned = Tp;
     res.report = format_report(res);
 
-    // Phase margin: at the unity-gain crossover, PM = 180 + angle(T).
+    // Phase margin: at the unity-gain crossover, PM = 180 + angle(T). Also
+    // capture the pole corner frequencies so the symbolic PM below can be
+    // written in terms of the dominant pole.
     double pm = -1.0, ugf = -1.0;
     {
         double f0 = s.sweep.f_start_hz > 0 ? s.sweep.f_start_hz : 1.0;
@@ -535,6 +537,47 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
             prev_f = f;
             prev_m = m;
         }
+    }
+
+    // A closed-form phase margin. With the loop factored as
+    //   T(s) = K / prod(1 + j*w/w_pi) * prod(1 + j*w/w_zj),
+    // the phase at the unity-gain frequency w_ug is a sum of arctangents, so
+    //   PM = 180 - sum_i atan(w_ug/w_pi) + sum_j atan(w_ug/w_zj).
+    // w_ug itself has no closed form for a general loop, but for the common
+    // single-pole case w_ug = K*w_p0 and PM = 180 - atan(K), which we write
+    // symbolically; a two-pole loop gives the classic
+    //   PM = 90 - atan(w_ug/w_p1).
+    // PM = 180 - sum atan(w_ug/w_pi) + sum atan(w_ug/w_zj). The unity-gain
+    // frequency w_ug is a plain number (it was found numerically), so the
+    // symbolic PM is the exact arctangent sum with w_ug pinned to that number
+    // and the pole corner frequencies kept symbolic: this is low entropy and
+    // matches the numeric PM.
+    // PM is written in the low-entropy form
+    //   PM = 180 - sum_i atan(w_ug / w_pi)  [+ sum_j atan(w_ug/w_zj)]
+    // with w_ug pinned to its numeric value and each w_pi kept as the symbol
+    // omega_pi (their symbolic values are listed under Pole Corner
+    // Frequencies), so the reader sees the structure, not a substituted mess.
+    std::string pm_sym_txt, pm_sym_tex;
+    if (pm >= 0.0 && ugf > 0.0) {
+        char wugb[64];
+        std::snprintf(wugb, sizeof(wugb), "%s", eng::format_rads(2 * M_PI * ugf).c_str());
+        std::string t = "180";
+        std::string l = "180";
+        for (size_t i = 0; i < Tp.poles.size(); ++i) {
+            t += " - atan(" + std::string("omega_ug") + "/omega_p" +
+                 std::to_string(i) + ")";
+            l += " - \\atan\\left(\\frac{\\omega_{ug}}{\\omega_{p" +
+                 std::to_string(i) + "}}\\right)";
+        }
+        for (size_t i = 0; i < Tp.zeros.size(); ++i) {
+            t += " + atan(omega_ug/omega_z" + std::to_string(i) + ")";
+            l += " + \\atan\\left(\\frac{\\omega_{ug}}{\\omega_{z" +
+                 std::to_string(i) + "}}\\right)";
+        }
+        pm_sym_txt = "PM = " + t + "   (omega_ug = " + wugb +
+                     ", one atan per pole/zero)";
+        pm_sym_tex = "\\mathrm{PM} = " + l +
+                     ",\\quad \\omega_{ug} = \\mathrm{" + wugb + "}";
     }
 
     // H_0: the forward gain with the reference amplifier's gain set to zero.
@@ -579,56 +622,45 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         }
     }
 
-    // Stability (item 7): keep it up with the other headline results, before
-    // the gain/bandwidth block.
-    std::string stab;
-    // Symbolic phase margin. For a loop that is effectively single-pole up to
-    // the crossover -- T(s) = K/(1 + s*tau_p) with every other pole at least
-    // 60 dB beyond -- the phase margin is exactly 90 degrees and the crossover
-    // is K/tau_p. Otherwise PM is only known numerically (it is set by the
-    // relative pole/zero positions), so no closed form is offered.
-    std::string pm_sym, pm_sym_latex;
-    if (pm >= 0.0 && !Tp.poles.empty() &&
-        Tp.poles.front().omega != 0.0 && !Tp.poles.front().omega_expr.is_zero()) {
-        // are all other poles far above the dominant one?
-        bool single = true;
-        double f0p = std::fabs(Tp.poles.front().omega) / (2.0 * M_PI);
-        for (size_t i = 1; i < Tp.poles.size(); ++i) {
-            if (Tp.poles[i].omega == 0.0 ||
-                std::fabs(Tp.poles[i].omega) / (2.0 * M_PI) <
-                    f0p * std::pow(10.0, s.pole_zero_threshold_db / 20.0)) {
-                single = false;
-                break;
-            }
-        }
-        if (single && Tp.zeros.empty()) {
-            pm_sym = "PM = 90 deg  (single-pole loop: the phase is -90 deg at "
-                     "every frequency past the dominant pole)";
-            pm_sym_latex =
-                "\\mathrm{PM} = 90\\degree\\quad (\\mathrm{single\\ pole:}"
-                "\\ \\angle T = -90\\degree\\ \\mathrm{above}\\ \\omega_{p0})";
-        }
-    }
-
-    if (pm >= 0.0) {
-        char b[200];
-        std::snprintf(b, sizeof(b),
-                      "  Unity-Gain Frequency: %s\n  Phase Margin: %.1f deg\n",
-                      eng::format_hz(ugf).c_str(), pm);
-        stab = b;
-        if (!pm_sym.empty()) stab += "  " + pm_sym + "\n";
-    } else {
-        stab = "  T never crosses 0 dB within the sweep (no Unity-Gain "
-               "Frequency)\n";
-    }
+    // Phase margin is reported inside the gain/bandwidth block (there is no
+    // separate "Stability" section). Its symbolic form is the arctangent sum
+    // derived above.
+    std::string pm_sym = pm_sym_txt, pm_sym_latex = pm_sym_tex;
 
     // Closed-loop gain assembled from the asymptotic-gain formula, so the
     // printed expression is exactly what the formula evaluates to:
     //   H = H_inf*T/(1+T) + H_0/(1+T) = (H_inf*T + H_0)/(1+T).
-    ex Hinf = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
-    ex Hcl_formula = ((Hinf * T + H0) / (1 + T)).normal();
-    Pruned Hcl_p = prune_low_entropy(Hcl_formula.numer(), Hcl_formula.denom(),
-                                     pt, o);
+    //
+    // Rebuild H_inf and T from their *low-entropy* forms (gain x factors) so a
+    // parallel combination stays the held atom (R1||R2) instead of being
+    // multiplied back out into R1*R2/(R1+R2), which would make the product
+    // high-entropy.
+    auto le_expr = [](const Pruned& p) {
+        ex e = p.gain;
+        for (const auto& f : p.num_factors) e *= f.expr;
+        ex d = ex(1);
+        for (const auto& f : p.den_factors) d *= f.expr;
+        return (e / d).normal();
+    };
+    ex Hinf = le_expr(ideal.transfer.pruned);
+    ex Tle = le_expr(Tp);
+    ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
+    // Factor each s-coefficient and recover any parallel atoms before
+    // factoring, so a residual R1*R2/(R1+R2) collapses back to (R1||R2).
+    ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
+    Pruned Hcl_p = prune_low_entropy(Hcl_ratio.numer(), Hcl_ratio.denom(), pt,
+                                     o);
+
+    // Publish the phase margin on the return-ratio result so the gain/bandwidth
+    // metrics block can print it alongside the other characteristics.
+    if (pm >= 0.0) {
+        res.has_pm = true;
+        res.ugf_hz = eng::format_hz(ugf);
+        res.pm_deg = pm;
+        res.pm_sym = pm_sym;
+        res.pm_sym_latex = pm_sym_latex;
+    }
+    res.report = format_report(res);
 
     std::string rep = "Return-ratio / loop-gain analysis\n";
     rep += "reference amplifier: " + s.probe_ref + "\n";
@@ -640,9 +672,8 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     rep += "\nFeedback factor:\n  beta(s) = " + pretty(beta) + "\n";
     rep += "\nClosed-loop gain:\n";
     rep += "  H(s) = H_inf*T/(1+T) + H_0/(1+T) = " + Hcl_p.text + "\n";
-    rep += "\nStability:\n" + stab;
-    // The return ratio's own gain/bandwidth and poles/zeros, with the leading
-    // "H(s) = ..." line stripped (T is already shown above).
+    // The return ratio's own gain/bandwidth (which now carries the phase
+    // margin) and poles/zeros, with the leading "H(s) = ..." line stripped.
     rep += "\n" + strip_first_line(res.report);
     rep += "\n";
 
@@ -661,19 +692,8 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     lrep += "Closed-loop gain:\n";
     lrep += "H(s) = \\frac{H_{\\infty} T}{1+T} + \\frac{H_0}{1+T} = " +
             latex_rhs(Hcl_p.latex) + "\n";
-    lrep += "\nStability:\n";
-    if (pm >= 0.0) {
-        char b[192];
-        std::snprintf(b, sizeof(b),
-                      "\\mathrm{Unity-Gain\\ Frequency} = \\mathrm{%s},"
-                      "\\quad \\mathrm{Phase\\ Margin} = %.1f\\degree\n",
-                      eng::format_hz(ugf).c_str(), pm);
-        lrep += b;
-        if (!pm_sym_latex.empty()) lrep += pm_sym_latex + "\n";
-    } else {
-        lrep += "\\mathrm{T\\ never\\ crosses\\ 0\\ dB\\ within\\ the\\ sweep}\n";
-    }
     lrep += "\n";
+    // The gain/bandwidth block (which now includes the phase margin) follows.
     lrep += format_report_latex(res);
 
     cr.text = "T(s) = " + Tp.text;
@@ -720,19 +740,41 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// Input impedance: Zin = V(in)/I(in) with the input source at 1 V.
+// Input impedance: Zin = V(in)/I(in) seen by the excitation.
+//
+// The generic, source-agnostic definition: apply a 1 A test current *into the
+// input node* and read the voltage there. This works whether the driving
+// source is a voltage or a current source (and does not depend on the source
+// being of one particular type). The input node is the node the configured
+// input source's first terminal sits on.
 // ---------------------------------------------------------------------------
 CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
-    // I(Vsrc) with a 1 V drive gives Y = I/V = numI/det, so
-    //   Zin = V/I = det/numI = den_H / num_H.
+    // Find the input node from the configured source.
+    const Component* in = c.find(s.input_ref);
+    std::string node;
+    if (in && !in->nodes.empty()) node = in->nodes[0];
+
+    // Zero every independent source, inject 1 A into the input node, and read
+    // the node voltage: Zin = V(node)/1A.
+    Circuit cs = c;
+    for (auto& cc : cs.comps)
+        if (is_independent_source(cc.kind)) cc.value_text = "0";
+    Component it;
+    it.kind = Kind::I;
+    it.ref = "__ITEST__";
+    it.nodes = {node.empty() ? std::string("0") : node, "0"};
+    it.value_text = "1";
+    cs.comps.push_back(it);
+
     AnalysisSpec s2 = s;
-    s2.output = "I(" + s.input_ref + ")";
-    CardResult isrc = analyze_tf(c, s2);
+    s2.input_ref = "__ITEST__";
+    s2.output = "V(" + node + ")";
+    CardResult isrc = analyze_tf(cs, s2);
 
     PruneOptions o = opts_of(s);
     ParamTable pt = isrc.transfer.params;
-    // reduce den/num into one rational before pruning
-    ex Z = (isrc.transfer.den_raw / isrc.transfer.num_raw).normal();
+    // Zin = V/I with a 1 A drive is the node voltage itself.
+    ex Z = (isrc.transfer.num_raw / isrc.transfer.den_raw).normal();
     Pruned p = prune_low_entropy(Z.numer(), Z.denom(), pt, o);
 
     CardResult cr;
@@ -751,8 +793,9 @@ CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
     cr.has_transfer = true;
     {
         AnalysisResult res;
-        res.input_desc = "I(" + s.input_ref + ")";
+        res.input_desc = "I(test)";
         res.output_desc = "Zin";
+        res.sweep = s.sweep;
         res.num_raw = Z.numer();
         res.den_raw = Z.denom();
         res.params = pt;
@@ -800,11 +843,20 @@ CardResult analyze_zout(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// Noise: input- and output-referred noise from resistor and device noise
-// sources (thermal 4kT/R for resistors, 4kT*(2/3)*gm channel noise for
-// MOSFETs; a BJT's base shot noise 2q*Ib and collector shot noise 2q*Ic are
-// included via gm). Each source is injected at its physical terminals and
-// propagated to the selected output with a 1 A test current.
+// Noise: output- and input-referred noise over the sweep band.
+//
+// Every noisy element is modelled as a current source between its physical
+// terminals (thermal 4kT/R for resistors, 4kT*(2/3)*gm + 1/f for MOSFETs,
+// shot + 1/f for BJTs/diodes), or as a voltage source in series with an
+// amplifier's input (en, the op-amp's input voltage noise density). Each
+// source's transfer to the output is found once symbolically and evaluated
+// across the sweep; powers add. Flicker noise follows the standard
+//   i_n^2(f) = i_th^2 * (1 + fcn/f)
+// so `fcn` is the 1/f corner frequency where flicker equals thermal.
+//
+// Input referral: with a voltage-source excitation the result is V/sqrt(Hz);
+// with a current-source excitation it is A/sqrt(Hz) (input-referred current
+// noise). The integrated (rms) noise over the sweep band is also reported.
 // ---------------------------------------------------------------------------
 CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
@@ -814,212 +866,325 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     const double kT = 1.380649e-23 * 300.15; // kT at 300.15 K
     const double q = 1.602176634e-19;        // electron charge
 
-    // Sum the output noise contributions: for each noisy element add a
-    // current/voltage source, propagate it to the output, and add powers.
-    //
-    // Noise is an output-referred quantity; the signal gain is only needed to
-    // refer it to the input, and that needs a valid ideal input source. When
-    // the card's input is not an ideal source (e.g. a current-driven TIA whose
-    // excitation is a current source not named as the input), still report the
-    // output-referred noise -- just skip the input referral.
     ParamTable pt;
-    double w0 = 2.0 * M_PI * s.f0_hz;
-    double gain = 0.0;
-    bool have_gain = false;
-    // Preferred excitation is the card's input source; when that is not an
-    // ideal source (or is absent) fall back to any ideal source in the circuit.
-    // The noise transfer functions only depend on the network, so any source
-    // works -- the gain is used solely to refer noise to the input.
-    std::vector<std::string> candidates;
-    if (!s.input_ref.empty()) candidates.push_back(s.input_ref);
-    for (const auto& cc : c.comps)
-        if (is_independent_source(cc.kind) && cc.ref != s.input_ref)
-            candidates.push_back(cc.ref);
-    for (const auto& src : candidates) {
+    // Register every component symbol/estimate so the noise transfer functions
+    // can be evaluated numerically (independent of the excitation type).
+    for (const auto& cc : c.comps) {
         try {
-            RawTF sig = raw_tf(c, src, s.output);
-            ex Hsig = (sig.num / sig.den).normal();
-            double g = std::abs(eval_complex(Hsig, sig.params, w0));
-            if (g > 0.0) {
-                pt = sig.params;
-                gain = g;
-                have_gain = true;
-                break;
-            }
+            MnaSystem sys = build_mna(c, cc.ref);
+            pt = sys.params;
+            break;
         } catch (const std::exception&) {
-            // not a usable source; try the next
-        }
-    }
-    if (pt.est.empty()) {
-        // No source worked: register the component symbols via a raw solve so
-        // the noise transfer functions can still be evaluated numerically.
-        for (const auto& cc : c.comps) {
-            try {
-                MnaSystem sys = build_mna(c, cc.ref);
-                pt = sys.params;
-                break;
-            } catch (const std::exception&) {
-            }
         }
     }
     ex s_sym = pt.get("s");
-    if (!have_gain) gain = 1e-30;
 
-    double vout2 = 0.0;
-    int nsrc = 0;
-    std::string detail;
-    std::vector<std::pair<std::string, double>> per_source;
+    // Sweep band (for the spectrum, corner frequency and integrated noise).
+    double f0 = s.sweep.f_start_hz > 0 ? s.sweep.f_start_hz : 1.0;
+    double f1 = s.sweep.f_stop_hz > f0 ? s.sweep.f_stop_hz : f0 * 1e6;
+    if (f1 <= f0) f1 = f0 * 1e3;
+    int npts = s.sweep.points_per_interval > 0 ? s.sweep.points_per_interval * 20
+                                               : 200;
+    npts = std::max(50, std::min(2000, npts));
+    std::vector<double> freqs = sweep_hz(f0, f1, npts);
 
-    // helper: transfer from a 1A current injected at `node` to V(out)
-    auto z_from_current = [&](const std::string& node, const std::string& gnd)
+    // ---- collect noise sources -------------------------------------------
+    struct Src {
+        std::string ref, mech;
+        bool voltage = false;         // true: series voltage source
+        std::string na, nb;           // terminals
+        double psd_const = 0.0;       // A^2/Hz (or V^2/Hz) thermal/shot part
+        double corner_hz = 0.0;       // 1/f corner (0 = no flicker)
+        ex xfer;                      // unit-source transfer to V(out)
+    };
+    std::vector<Src> srcs;
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::R) {
+            double R = cc.estimate();
+            if (R > 0.0)
+                srcs.push_back({cc.ref, "4kT/R", false, cc.nodes[0],
+                                cc.nodes[1], 4.0 * kT / R, 0.0, ex(0)});
+        } else if (cc.kind == Kind::NMOS || cc.kind == Kind::PMOS) {
+            double gm = cc.param_estimate("gm");
+            if (gm > 0.0) {
+                double fcn = cc.param_enabled("fcn")
+                                 ? cc.param_estimate("fcn")
+                                 : 0.0;
+                srcs.push_back({cc.ref, "4kT(2/3)gm + 1/f", false, cc.nodes[0],
+                                cc.nodes[2], 4.0 * kT * (2.0 / 3.0) * gm, fcn,
+                                ex(0)});
+            }
+        } else if (cc.kind == Kind::NPN || cc.kind == Kind::PNP) {
+            double gm = cc.param_estimate("gm");
+            double beta = 100.0;
+            double ic = gm * kT / q;
+            double ib = ic / beta;
+            double i2 = 2.0 * q * (ic + ib);
+            if (i2 > 0.0) {
+                double fcn = cc.param_enabled("fcn")
+                                 ? cc.param_estimate("fcn")
+                                 : 0.0;
+                srcs.push_back({cc.ref, "2q(Ic+Ib) + 1/f", false, cc.nodes[0],
+                                cc.nodes[2], i2, fcn, ex(0)});
+            }
+        } else if (cc.kind == Kind::D) {
+            double gm = cc.param_estimate("gm");
+            double id = gm * kT / q;
+            double i2 = 2.0 * q * id + 4.0 * kT * gm * (2.0 / 3.0);
+            if (i2 > 0.0) {
+                double fcn = cc.param_enabled("fcn")
+                                 ? cc.param_estimate("fcn")
+                                 : 0.0;
+                srcs.push_back({cc.ref, "2qId + 4kTgm + 1/f", false, cc.nodes[0],
+                                cc.nodes[1], i2, fcn, ex(0)});
+            }
+        } else if (cc.kind == Kind::OPAMP || cc.kind == Kind::FDOPAMP ||
+                   cc.kind == Kind::AMP) {
+            // input voltage noise density en (V/sqrt(Hz)), optional 1/f below
+            // en_flicker ... simplified: en is the flat density, and en_flicker
+            // is the density at 1 Hz, so the corner is (en_flicker/en)^2.
+            if (!cc.param_enabled("en")) continue;
+            double en = cc.param_estimate("en");
+            if (!(en > 0.0)) continue;
+            double en1 = cc.param_enabled("en_flicker")
+                             ? cc.param_estimate("en_flicker")
+                             : 0.0;
+            double fcn = 0.0;
+            if (en1 > en) fcn = (en1 / en) * (en1 / en); // where 1/f = flat
+            std::string ip = cc.nodes.size() > 0 ? cc.nodes[0] : "0";
+            std::string im = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
+            srcs.push_back({cc.ref, "en (input voltage)", true, ip, im,
+                            en * en, fcn, ex(0)});
+        }
+    }
+    if (srcs.empty()) {
+        cr.summary = "No noise sources (no resistors, devices or amplifiers)";
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
+
+    // ---- transfer of each unit source to V(out) --------------------------
+    auto xfer_from_current = [&](const std::string& na, const std::string& nb)
         -> ex {
         Circuit ct = c;
         Component it;
         it.kind = Kind::I;
         it.ref = "__INOISE__";
-        it.nodes = {node, gnd};
+        it.nodes = {na, nb};
         it.value_text = "1";
         ct.comps.push_back(it);
-        AnalysisRequest r;
-        r.input_ref = "__INOISE__";
-        r.output = s.output;
-        Solved sv = solve(ct, r);
-        return (sv.num / sv.den).normal();
-    };
-
-    // A 1 A current between the two terminals of a noisy element is the
-    // natural dual of its thermal / shot noise current. (For a MOSFET the
-    // channel noise sits between drain and source.)
-    struct NoiseSrc {
-        std::string ref;
-        std::string mech;
-        double i2;        // A^2/Hz
-        std::string node_a, node_b;
-    };
-    std::vector<NoiseSrc> noise;
-    for (const auto& cc : c.comps) {
-        if (cc.kind == Kind::R) {
-            double R = cc.estimate();
-            if (R > 0.0)
-                noise.push_back({cc.ref, "4kT/R", 4.0 * kT / R, cc.nodes[0],
-                                 cc.nodes[1]});
-        } else if (cc.kind == Kind::NMOS || cc.kind == Kind::PMOS) {
-            double gm = cc.param_estimate("gm");
-            if (gm > 0.0)
-                noise.push_back({cc.ref, "4kT*(2/3)*gm",
-                                 4.0 * kT * (2.0 / 3.0) * gm, cc.nodes[0],
-                                 cc.nodes[2]});
-        } else if (cc.kind == Kind::NPN || cc.kind == Kind::PNP) {
-            double gm = cc.param_estimate("gm");
-            double beta = 100.0; // typical; base shot noise is 2q*Ic/beta
-            double ic = gm * kT / q; // Ic = gm*VT
-            double ib = ic / beta;
-            double i2 = 2.0 * q * (ic + ib);
-            if (i2 > 0.0)
-                noise.push_back({cc.ref, "2q*(Ic+Ib)",
-                                 i2, cc.nodes[0], cc.nodes[2]});
-        } else if (cc.kind == Kind::D) {
-            double gm = cc.param_estimate("gm");
-            double id = gm * kT / q;
-            double i2 = 2.0 * q * id + 4.0 * kT * gm * (2.0 / 3.0);
-            if (i2 > 0.0)
-                noise.push_back({cc.ref, "2q*Id + 4kT*gm",
-                                 i2, cc.nodes[0], cc.nodes[1]});
+        try {
+            RawTF t = raw_tf(ct, "__INOISE__", s.output);
+            return (t.num / t.den).normal();
+        } catch (const std::exception&) {
+            return ex(0);
         }
+    };
+    auto xfer_from_voltage = [&](const std::string& na, const std::string& nb)
+        -> ex {
+        Circuit ct = c;
+        Component vt;
+        vt.kind = Kind::V;
+        vt.ref = "__VNOISE__";
+        vt.nodes = {na, nb};
+        vt.value_text = "1";
+        ct.comps.push_back(vt);
+        try {
+            RawTF t = raw_tf(ct, "__VNOISE__", s.output);
+            return (t.num / t.den).normal();
+        } catch (const std::exception&) {
+            return ex(0);
+        }
+    };
+    for (auto& src : srcs)
+        src.xfer = src.voltage ? xfer_from_voltage(src.na, src.nb)
+                               : xfer_from_current(src.na, src.nb);
+
+    // ---- output noise spectrum -------------------------------------------
+    auto psd_of = [](const Src& src, double f) {
+        double p = src.psd_const;
+        if (src.corner_hz > 0.0 && f > 0.0)
+            p *= (1.0 + src.corner_hz / f);
+        return p;
+    };
+    std::vector<double> vout(npts, 0.0); // V^2/Hz
+    std::vector<std::pair<std::string, double>> per_source; // integrated V^2
+    for (auto& src : srcs) {
+        double integ = 0.0;
+        for (int i = 0; i < npts; ++i) {
+            double f = freqs[i];
+            double w = 2.0 * M_PI * f;
+            double x2 = std::norm(eval_complex(src.xfer, pt, w));
+            double c = psd_of(src, f) * x2;
+            vout[i] += c;
+            integ += c;
+        }
+        // trapezoid in log-f for the integrated power
+        double area = 0.0;
+        for (int i = 1; i < npts; ++i) {
+            double w = 2.0 * M_PI * freqs[i];
+            double x2 = std::norm(eval_complex(src.xfer, pt, w));
+            double c = psd_of(src, freqs[i]) * x2;
+            double wm = 2.0 * M_PI * freqs[i - 1];
+            double x2m = std::norm(eval_complex(src.xfer, pt, wm));
+            double cm = psd_of(src, freqs[i - 1]) * x2m;
+            double lf = std::log(freqs[i] / freqs[i - 1]);
+            area += 0.5 * (c * freqs[i] + cm * freqs[i - 1]) * lf;
+        }
+        per_source.push_back({src.ref, area});
+        (void)integ;
+    }
+    // total integrated output noise power (V rms^2) over the band
+    double vout_total2 = 0.0;
+    for (const auto& ps : per_source) vout_total2 += ps.second;
+
+    // ---- input referral --------------------------------------------------
+    // Choose the excitation: the card's input source if usable, else any ideal
+    // source (the transfer functions only depend on the network).
+    double gain0 = 0.0;
+    bool input_is_current = false;
+    {
+        std::vector<std::string> cands;
+        if (!s.input_ref.empty()) cands.push_back(s.input_ref);
+        for (const auto& cc : c.comps)
+            if (is_independent_source(cc.kind) && cc.ref != s.input_ref)
+                cands.push_back(cc.ref);
+        bool got = false;
+        for (const auto& src : cands) {
+            const Component* sc = c.find(src);
+            if (!sc) continue;
+            try {
+                RawTF t = raw_tf(c, src, s.output);
+                double g = std::abs(eval_complex((t.num / t.den).normal(),
+                                                 t.params, 2.0 * M_PI * f0));
+                if (g > 0.0) {
+                    gain0 = g;
+                    input_is_current = (sc->kind == Kind::I);
+                    got = true;
+                    break;
+                }
+            } catch (const std::exception&) {
+            }
+        }
+        (void)got;
     }
 
-    for (const auto& n : noise) {
-        ex zt = z_from_current(n.node_a, n.node_b);
-        double z2 = std::norm(eval_complex(zt, pt, w0));
-        double contrib = n.i2 * z2;
-        vout2 += contrib;
-        per_source.push_back({n.ref, contrib});
-        ++nsrc;
-        char buf[192];
-        std::snprintf(buf, sizeof(buf),
-                      "    %-8s %-16s i_n^2=%.3g A^2/Hz   |Zout|^2=%.3g   "
-                      "%.3g V^2/Hz",
-                      n.ref.c_str(), n.mech.c_str(), n.i2, z2, contrib);
-        detail += buf;
-        detail += "\n";
-    }
-
-    if (nsrc == 0) {
-        cr.summary = "No noise sources (no resistors or devices found)";
-        cr.report = cr.summary + "\n";
-        return cr;
-    }
-
-    double vout_rms = std::sqrt(vout2);
-    double vin_rms = vout_rms / gain;
-    auto db20 = [](double x) {
+    auto db20 = [](double x) -> double {
         return x > 0 ? 20.0 * std::log10(x) : -1e300;
     };
-    auto db10 = [](double x) {
-        return x > 0 ? 10.0 * std::log10(x) : -1e300;
-    };
 
-    // sort descending by contribution
-    std::sort(per_source.begin(), per_source.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-    double total = vout2 > 0 ? vout2 : 1e-300;
+    double vout_rms = std::sqrt(vout_total2);
+    double iin_rms = input_is_current && gain0 > 0 ? vout_rms / gain0 : 0.0;
+    double vin_rms = !input_is_current && gain0 > 0 ? vout_rms / gain0 : 0.0;
 
-    std::string rep = "Noise Analysis @ " + eng::format_hz(s.f0_hz) + "   (" +
-                      std::to_string(nsrc) +
-                      " sources: thermal + channel/shot)\n";
+    // ---- per-source spectrum contribution (for the report) ---------------
+    // (already accumulated in per_source as integrated power)
+
+    // ---- report ----------------------------------------------------------
+    std::string rep = "Noise Analysis   " + eng::format_hz(f0) + " .. " +
+                      eng::format_hz(f1) + "   (" +
+                      std::to_string(srcs.size()) + " sources)\n";
     rep += "========================================\n";
-    rep += detail;
-    rep += "  Signal Gain |H(f0)| = " + eng::format_eng(gain, 3) + "  (" +
-           eng::format_db(db20(gain), 2) + ")\n";
-    rep += "\n  Integrated Output Noise Density:\n";
+    for (const auto& src : srcs) {
+        char buf[220];
+        std::snprintf(buf, sizeof(buf), "  %-8s %-24s floor=%.3g %s^2/Hz",
+                      src.ref.c_str(), src.mech.c_str(), src.psd_const,
+                      src.voltage ? "V" : "A");
+        rep += buf;
+        if (src.corner_hz > 0)
+            rep += "   1/f corner = " + eng::format_hz(src.corner_hz);
+        rep += "\n";
+    }
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-                  "    Output-Referred: %.4g V/sqrt(Hz)  (%.2f dBV, %.2f "
-                  "dBV^2/Hz)\n"
-                  "    Input-Referred:  %.4g V/sqrt(Hz)  (%.2f dBV)\n",
-                  vout_rms, db20(vout_rms), db10(vout2), vin_rms,
-                  db20(vin_rms));
+                  "\n  Integrated over the band:\n"
+                  "    Output-Referred: %.4g V rms   (%.2f dBV)\n",
+                  vout_rms, db20(vout_rms));
     rep += buf;
-    rep += "\n  Per-Source Contribution to the Output Noise Power:\n";
+    if (input_is_current) {
+        std::snprintf(buf, sizeof(buf),
+                      "    Input-Referred Current Noise: %.4g A rms   (%.2f "
+                      "dBA)\n",
+                      iin_rms, db20(iin_rms));
+        rep += buf;
+    } else {
+        std::snprintf(buf, sizeof(buf),
+                      "    Input-Referred Voltage Noise: %.4g V rms   (%.2f "
+                      "dBV)\n",
+                      vin_rms, db20(vin_rms));
+        rep += buf;
+    }
+    rep += "\n  Per-Source Contribution to the Integrated Output Noise:\n";
+    std::sort(per_source.begin(), per_source.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    double tot = vout_total2 > 0 ? vout_total2 : 1e-300;
     for (const auto& ps : per_source) {
         char sb[160];
-        std::snprintf(sb, sizeof(sb), "    %-8s %8.2f %%   %.3g V^2/Hz\n",
-                      ps.first.c_str(), 100.0 * ps.second / total, ps.second);
+        std::snprintf(sb, sizeof(sb), "    %-8s %8.2f %%   %.3g V^2\n",
+                      ps.first.c_str(), 100.0 * ps.second / tot, ps.second);
         rep += sb;
     }
 
-    // The typeset headline (so the "Results" (LaTeX) tab is not blank) and a
-    // short LaTeX report of the noise density.
+    // ---- publish spectrum + metrics on the result ------------------------
+    cr.has_transfer = false;
+    {
+        AnalysisResult res;
+        res.input_desc = s.input_ref;
+        res.output_desc = s.output;
+        res.params = pt;
+        res.sweep = s.sweep;
+        res.has_noise = true;
+        res.noise_input_is_current = input_is_current;
+        res.noise_vout_total = vout_rms;
+        res.noise_iin_total = iin_rms;
+        for (int i = 0; i < npts; ++i) {
+            res.noise_f_hz.push_back(freqs[i]);
+            res.noise_vout.push_back(std::sqrt(vout[i]));
+        }
+        cr.transfer = res;
+        cr.has_transfer = true;
+    }
+
+    // ---- typeset output --------------------------------------------------
     {
         std::ostringstream lx;
         lx << "\\mathrm{V_{n,out}} = " << eng::format_si(vout_rms, 4)
-           << "\\ \\mathrm{V/\\sqrt{Hz}}";
-        lx << "\\quad\\mathrm{V_{n,in}} = " << eng::format_si(vin_rms, 4)
-           << "\\ \\mathrm{V/\\sqrt{Hz}}";
+           << "\\ \\mathrm{V_{rms}}";
+        if (input_is_current)
+            lx << ",\\quad \\mathrm{I_{n,in}} = " << eng::format_si(iin_rms, 4)
+               << "\\ \\mathrm{A_{rms}}";
+        else
+            lx << ",\\quad \\mathrm{V_{n,in}} = " << eng::format_si(vin_rms, 4)
+               << "\\ \\mathrm{V_{rms}}";
         cr.latex = lx.str();
     }
     {
         std::ostringstream lr;
-        lr << "Noise @ " << eng::format_hz(s.f0_hz) << ":\n";
+        lr << "Noise (" << eng::format_hz(f0) << " to " << eng::format_hz(f1)
+           << "):\n";
         lr << "\\mathrm{V_{n,out}} = \\mathrm{" << eng::format_si(vout_rms, 4)
-           << "\\ V/\\sqrt{Hz}}\n";
-        lr << "\\mathrm{V_{n,in}} = \\mathrm{" << eng::format_si(vin_rms, 4)
-           << "\\ V/\\sqrt{Hz}}\n";
-        lr << "Signal Gain:\n";
-        lr << "|H(f_0)| = \\mathrm{" << eng::format_eng(gain, 3) << "}\\quad("
-           << eng::format_db(db20(gain), 2) << ")\n";
+           << "\\ V_{rms}}\n";
+        if (input_is_current)
+            lr << "\\mathrm{I_{n,in}} = \\mathrm{" << eng::format_si(iin_rms, 4)
+               << "\\ A_{rms}}\n";
+        else
+            lr << "\\mathrm{V_{n,in}} = \\mathrm{" << eng::format_si(vin_rms, 4)
+               << "\\ V_{rms}}\n";
         lr << "Per-Source Contribution:\n";
         for (const auto& ps : per_source)
             lr << "\\mathrm{" << ps.first << "} = "
-               << eng::format_si(100.0 * ps.second / total, 3) << "\\%\n";
+               << eng::format_si(100.0 * ps.second / tot, 3) << "\\%\n";
         cr.latex_report = lr.str();
     }
 
-    cr.summary = buf;
-    cr.text = buf;
+    cr.summary = rep.substr(rep.find("Integrated") - 2);
+    cr.text = cr.summary;
     cr.report = rep;
     cr.values.push_back({"Vout_n", eng::format_si(vout_rms, 8)});
-    cr.values.push_back({"Vin_n", eng::format_si(vin_rms, 8)});
+    if (input_is_current)
+        cr.values.push_back({"Iin_n", eng::format_si(iin_rms, 8)});
+    else
+        cr.values.push_back({"Vin_n", eng::format_si(vin_rms, 8)});
     (void)s_sym;
     return cr;
 }

@@ -790,9 +790,9 @@ static void test_dc_analysis() {
 }
 
 static void test_noise_analysis_input_referred() {
-    // resistive divider driven by V1: Input-Referred noise density is
-    // sqrt(4kT*(R1||R2)) (the two resistors' thermal noise seen at the input),
-    // Output-Referred is half of that; check the ratio and the value.
+    // resistive divider driven by V1: the input-referred voltage noise density
+    // is sqrt(4kT*(R1||R2)); the output-referred is half that. Input referral
+    // is a ratio, so it holds for the integrated rms values too.
     Circuit c;
     c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
     c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
@@ -802,13 +802,14 @@ static void test_noise_analysis_input_referred() {
     sp.kind = AnalysisKind::Noise;
     sp.input_ref = "V1";
     sp.output = "V(out)";
-    sp.f0_hz = 1e3;
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e6;
     CardResult cr = run_analysis(c, sp);
     CHECK(cr.report.find("Output-Referred") != std::string::npos);
     CHECK(cr.report.find("Input-Referred") != std::string::npos);
     CHECK(cr.values.size() == 2);
 
-    // numeric: gain = 1/2, so vin_rms = 2*vout_rms
+    // numeric: gain = 1/2, so vin = 2*vout
     auto get = [&](const std::string& k) -> double {
         for (const auto& v : cr.values)
             if (v.first == k) return std::atof(v.second.c_str());
@@ -816,16 +817,47 @@ static void test_noise_analysis_input_referred() {
     };
     double vout = get("Vout_n"), vin = get("Vin_n");
     CHECK_CLOSE(vin / vout, 2.0, 0.01);
-    // Both resistors contribute 4kT/R seen through R1||R2, so
-    //   vout^2 = 2*(4kT/R)*(R1||R2)^2 = 4kT*(R1||R2)
-    double expect_vout = std::sqrt(4.0 * 1.380649e-23 * 300.15 * 5000.0);
-    CHECK_CLOSE(vout, expect_vout, expect_vout * 0.02);
-    CHECK_CLOSE(vin, 2.0 * expect_vout, expect_vout * 0.03);
+    // Both resistors contribute 4kT/R seen through R1||R2, so the output
+    // voltage noise density is sqrt(4kT*(R1||R2)); integrating that flat
+    // density over a 1 Hz..1 MHz band gives sqrt(4kT*(R1||R2)*(1e6-1)).
+    double expect_density = std::sqrt(4.0 * 1.380649e-23 * 300.15 * 5000.0);
+    double expect_vout = expect_density * std::sqrt(1e6 - 1.0);
+    CHECK_CLOSE(vout, expect_vout, expect_vout * 0.03);
+    CHECK_CLOSE(vin, 2.0 * expect_vout, expect_vout * 0.04);
     // The typeset (LaTeX) result must be populated, otherwise the default
     // "Results" tab is blank.
     CHECK(!cr.latex.empty());
     CHECK(!cr.latex_report.empty());
     CHECK(cr.latex.find("V_{n,out}") != std::string::npos);
+    // a spectrum is published for the plot tab
+    CHECK(cr.transfer.has_noise);
+    CHECK(cr.transfer.noise_f_hz.size() > 10);
+    CHECK(cr.transfer.noise_vout.size() == cr.transfer.noise_f_hz.size());
+}
+
+// Noise with a current-source excitation reports input-referred *current*
+// noise, and an amplifier's en contributes an input voltage noise term.
+static void test_noise_current_input_and_amp() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.param_text["en"] = "10n";
+    op.param_on["en"] = true;
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::Noise;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e6;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("Input-Referred Current Noise") != std::string::npos);
+    CHECK(cr.report.find("en (input voltage)") != std::string::npos);
+    CHECK(cr.transfer.has_noise);
+    CHECK(cr.transfer.noise_input_is_current);
+    CHECK(cr.transfer.noise_iin_total > 0.0);
 }
 
 // Noise must still work when the card's input is not an ideal source (it falls
@@ -1187,19 +1219,20 @@ static void test_loop_gain_report_sections() {
     CardResult cr = run_analysis(c, sp);
 
     // order: asymptotic -> H_0 -> return ratio -> feedback -> closed loop ->
-    // stability -> gain/bandwidth
+    // gain/bandwidth (which now carries the phase margin; no separate
+    // Stability section)
     size_t pa = cr.report.find("Asymptotic");
     size_t ph0 = cr.report.find("H_0");
     size_t pr = cr.report.find("Return ratio");
     size_t pf = cr.report.find("Feedback factor");
     size_t pc = cr.report.find("Closed-loop gain");
-    size_t pst = cr.report.find("Stability");
     size_t pg = cr.report.find("Gain / Bandwidth");
     CHECK(pa != std::string::npos && ph0 != std::string::npos &&
           pr != std::string::npos && pf != std::string::npos &&
           pc != std::string::npos);
-    CHECK(pa < ph0 && ph0 < pr && pr < pf && pf < pc);
-    CHECK(pst != std::string::npos && pst < pg);
+    CHECK(pa < ph0 && ph0 < pr && pr < pf && pf < pc && pc < pg);
+    CHECK(cr.report.find("Stability") == std::string::npos);
+    CHECK(cr.report.find("Phase Margin") != std::string::npos);
     CHECK(cr.report.find("Noise gain") == std::string::npos);
 
     // The return ratio is labelled T(s), not a stray "H(s) = ..." header, and
@@ -1213,10 +1246,9 @@ static void test_loop_gain_report_sections() {
     CHECK(cr.latex_report.find("Return ratio") != std::string::npos);
     CHECK(cr.latex_report.find("Feedback factor") != std::string::npos);
     CHECK(cr.latex_report.find("Closed-loop gain") != std::string::npos);
-    CHECK(cr.latex_report.find("Stability") != std::string::npos);
+    CHECK(cr.latex_report.find("Phase\\ Margin") != std::string::npos);
     CHECK(cr.latex_report.find("Gain / Bandwidth") != std::string::npos);
     CHECK(cr.latex_report.find("H_{\\infty}") != std::string::npos);
-    CHECK(cr.latex_report.find("\\degree") != std::string::npos);
     CHECK(cr.latex_report.find("\\omega") != std::string::npos);
     CHECK(cr.latex_report.find("Noise gain") == std::string::npos);
 }
@@ -1313,6 +1345,7 @@ int main(int argc, char** argv) {
         {"loop_gain_sections", test_loop_gain_report_sections},
         {"mirror_multiplicity", test_mirror_multiplicity},
         {"noise_bad_input", test_noise_survives_bad_input},
+        {"noise_current_amp", test_noise_current_input_and_amp},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
