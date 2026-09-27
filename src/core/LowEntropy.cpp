@@ -1174,6 +1174,24 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                 ex c = poly.coeff(s, k);
                 if (c.is_zero()) continue;
                 c = c.expand();
+                // Factor the coefficient so a product denominator such as
+                // (R1+R2)*(1+A) is exposed: this lets to_parallel recover an
+                // embedded (R1||R2) that an expanded coefficient would hide.
+                // Only do this when the coefficient actually has a rational
+                // structure (a negative power), to avoid factoring every
+                // plain polynomial coefficient (which is slow and needless).
+                bool has_den = false;
+                if (is_a<GiNaC::mul>(c))
+                    for (size_t i = 0; i < c.nops(); ++i) {
+                        const ex& op = c.op(i);
+                        if (is_a<GiNaC::power>(op) &&
+                            is_a<numeric>(op.op(1)) &&
+                            GiNaC::ex_to<numeric>(op.op(1)).is_negative()) {
+                            has_den = true;
+                            break;
+                        }
+                    }
+                if (has_den) c = GiNaC::factor(c);
                 if (is_a<GiNaC::add>(c)) {
                     ex cc = 0;
                     for (size_t i = 0; i < c.nops(); ++i)
@@ -1283,6 +1301,10 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // A = 1e9 becomes 1, but A/(A+1) with A = 1 stays exact.
     if (opts.prune && !K.is_zero())
         K = simplify_gain(K, params, opts.threshold_db);
+    // Recover parallel structure in the gain too: -R1*R2*A/(A*(R1+R2)) is
+    // -(R1||R2). This is what makes a TIA's gain read -(R1||R2) rather than
+    // an expanded resistor ratio.
+    if (opts.use_parallel && !K.is_zero()) K = to_parallel(K.normal());
     R.gain = K;
 
     // 7. origin factors

@@ -57,8 +57,11 @@ void par_print_latex(const ex& a, const ex& b, const GiNaC::print_context& c) {
 // ---------------------------------------------------------------------------
 // Pattern extraction:  k * a * b / (a + b)  ->  k * par(a, b)
 // ---------------------------------------------------------------------------
-// Given a product's numerator factor list and a single two-term denominator,
-// return par(a,b) if both denominator terms are present in the numerator.
+// Given a product's numerator factor list and denominator factors, return
+// par(a,b) when some two-term denominator factor (a+b) has both its terms
+// present among the numerator factors: k*a*b/[(a+b)*rest] -> k*par(a,b)/rest.
+// The `rest` handles the common case where the a+b sits inside a larger
+// product such as (R1+R2)*(1+A) (a TIA's closed-loop pole).
 bool extract_from_product(const ex& prod, ex& out_gain) {
     // collect multiplicative factors (flattening)
     std::vector<ex> nums, dens;
@@ -84,27 +87,32 @@ bool extract_from_product(const ex& prod, ex& out_gain) {
     };
     walk(prod);
 
-    if (dens.size() != 1) return false;
-    const ex& den = dens[0];
-    if (!is_a<GiNaC::add>(den) || den.nops() != 2) return false;
-    ex d1 = den.op(0), d2 = den.op(1);
-
-    // both denominator terms must appear among the numerator factors
-    auto take = [&](const ex& want) -> bool {
-        for (size_t i = 0; i < nums.size(); ++i) {
-            if (nums[i].is_equal(want)) {
-                nums.erase(nums.begin() + i);
-                return true;
-            }
+    // Try each two-term additive denominator factor for a parallel match.
+    for (size_t di = 0; di < dens.size(); ++di) {
+        const ex& den = dens[di];
+        if (!is_a<GiNaC::add>(den) || den.nops() != 2) continue;
+        ex d1 = den.op(0), d2 = den.op(1);
+        auto has = [&](const ex& want) {
+            for (const ex& n : nums)
+                if (n.is_equal(want)) return true;
+            return false;
+        };
+        if (!has(d1) || !has(d2)) continue;
+        // remove one d1 and one d2 from the numerator factors
+        ex rest = lead;
+        bool r1 = false, r2 = false;
+        for (const ex& n : nums) {
+            if (!r1 && n.is_equal(d1)) { r1 = true; continue; }
+            if (!r2 && n.is_equal(d2)) { r2 = true; continue; }
+            rest = rest * n;
         }
-        return false;
-    };
-    if (!take(d1) || !take(d2)) return false;
-
-    ex gain = lead * par(d1, d2);
-    for (const ex& f : nums) gain = gain * f;
-    out_gain = gain;
-    return true;
+        ex out = rest * par(d1, d2);
+        for (size_t dj = 0; dj < dens.size(); ++dj)
+            if (dj != di) out = out / dens[dj];
+        out_gain = out.normal();
+        return true;
+    }
+    return false;
 }
 
 ex rewrite(const ex& e) {

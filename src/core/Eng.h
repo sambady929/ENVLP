@@ -23,6 +23,10 @@ std::string format_rads(double w, int sig = 3);
 
 std::string format_db(double db, int decimals = 1);
 
+// A percentage as a plain decimal (no scientific notation):
+// 56.68 -> "56.68", 0.0084 -> "0.0084". `sig` significant figures.
+std::string format_percent(double pct, int sig = 3);
+
 // magnitude conversions: factor = 10^(db/20)
 double db_to_factor(double db);
 double factor_to_db(double factor);

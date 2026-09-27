@@ -898,6 +898,9 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         ex xfer;                      // unit-source transfer to V(out)
         ex psd_sym;                   // symbolic thermal/shot PSD
         ex psd_flick_sym;             // symbolic flicker coefficient (times 1/f)
+        bool unity = false;           // amplifier en: appears at the output with
+                                      // unity gain (see below), so no transfer
+                                      // solve is needed
     };
     // kT is a symbolic design constant so the noise densities stay analytic
     // (e.g. 4*kT/R1) rather than collapsing to a decimal.
@@ -978,8 +981,13 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             pt.set("en_" + cc.ref, en, UnitClass::Plain);
             ex v_th = ens * ens;
             ex v_fl = fcn > 0.0 ? v_th * GiNaC::numeric(fcn) : ex(0);
-            srcs.push_back({cc.ref, "en (input voltage)", true, ip, im,
-                            en * en, fcn, ex(0), v_th, v_fl});
+            // From en's own perspective the amplifier is in unity-gain
+            // configuration, so its input voltage noise appears at the output
+            // with |H_en|^2 = 1 (the in-band value). No transfer solve needed.
+            Src s_en{cc.ref, "en (input voltage)", true, ip, im, en * en, fcn,
+                     ex(1), v_th, v_fl};
+            s_en.unity = true;
+            srcs.push_back(s_en);
         }
     }
     if (srcs.empty()) {
@@ -1021,9 +1029,11 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             return ex(0);
         }
     };
-    for (auto& src : srcs)
+    for (auto& src : srcs) {
+        if (src.unity) continue; // en already has its output gain (= 1) set
         src.xfer = src.voltage ? xfer_from_voltage(src.na, src.nb)
                                : xfer_from_current(src.na, src.nb);
+    }
 
     // ---- low-entropy symbolic |H(j2*pi*f)|^2 -----------------------------
     // Factor the transfer into gain x (1 + s*tau) factors (|| atoms held), then
@@ -1316,43 +1326,77 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         int_tex = x.str();
     }
 
-    // ---- report: density first, then integrated, then symbolic -----------
-    std::string rep = "Noise Analysis   " + eng::format_hz(f0) + " .. " +
-                      eng::format_hz(f1) + "   (" +
-                      std::to_string(srcs.size()) + " sources)\n";
-    rep += "========================================\n";
-    for (const auto& src : srcs) {
-        char b[220];
-        std::snprintf(b, sizeof(b), "  %-8s %-24s floor=%.3g %s^2/Hz",
-                      src.ref.c_str(), src.mech.c_str(), src.psd_const,
-                      src.voltage ? "V" : "A");
-        rep += b;
-        if (src.corner_hz > 0)
-            rep += "   1/f corner = " + eng::format_hz(src.corner_hz);
-        rep += "\n";
-    }
-    rep += "\n  Output Noise Density at " + eng::format_hz(f0) + ":\n";
-    {
-        double s0 = sv_at_f0;
-        char b[160];
-        std::snprintf(b, sizeof(b), "    total S_v = %.4g V^2/Hz   (%.2f "
-                                    "dBV^2/Hz, %.4g V/sqrt(Hz))\n",
-                      s0, s0 > 0 ? 10.0 * std::log10(s0) : -1e300,
-                      std::sqrt(std::max(0.0, s0)));
-        rep += b;
-    }
-    rep += "\n" + int_txt;
-    rep += "\nSymbolic (low-entropy) forms:\n";
-    rep += sym_txt;
-    rep += "\n  Per-Source Contribution to the Integrated Output Noise:\n";
+    // ---- reports: text and LaTeX, section-for-section identical ----------
+    // Both list the sources, the density at f0, the integrated result, the
+    // symbolic forms, then the per-source breakdown, in that order.
     std::sort(per_source.begin(), per_source.end(),
               [](const auto& a, const auto& b) { return a.second > b.second; });
     double tot = vout_total2 > 0 ? vout_total2 : 1e-300;
-    for (const auto& ps : per_source) {
-        char sb[160];
-        std::snprintf(sb, sizeof(sb), "    %-8s %8.2f %%   %.3g V^2\n",
-                      ps.first.c_str(), 100.0 * ps.second / tot, ps.second);
-        rep += sb;
+
+    std::string rep, lrep;
+    {
+        std::ostringstream t, x;
+        // Header
+        std::string hdr = "Noise Analysis   " + eng::format_hz(f0) + " .. " +
+                          eng::format_hz(f1) + "   (" +
+                          std::to_string(srcs.size()) + " sources)";
+        t << hdr << "\n========================================\n";
+        x << "Noise:\\quad \\mathrm{" << eng::format_hz(f0) << "} .. \\mathrm{"
+          << eng::format_hz(f1) << "} \\quad(" << srcs.size()
+          << "\\ \\mathrm{sources})\n";
+        // Source table
+        for (const auto& src : srcs) {
+            char b[256];
+            std::snprintf(b, sizeof(b), "  %-8s %-24s floor=%.3g %s^2/Hz",
+                          src.ref.c_str(), src.mech.c_str(), src.psd_const,
+                          src.voltage ? "V" : "A");
+            t << b;
+            if (src.corner_hz > 0)
+                t << "   1/f corner = " << eng::format_hz(src.corner_hz);
+            t << "\n";
+            x << "\\mathrm{" << src.ref << "}:\\ \\mathrm{" << src.mech
+              << "},\\ i_n^2 = \\mathrm{" << eng::format_si(src.psd_const, 3)
+              << "\\ " << (src.voltage ? "V" : "A") << "^2/Hz}";
+            if (src.corner_hz > 0)
+                x << ",\\ f_{1/f} = \\mathrm{" << eng::format_hz(src.corner_hz)
+                  << "}";
+            x << "\n";
+        }
+        // Density at f0
+        double s0 = sv_at_f0;
+        t << "\n  Output Noise Density at " << eng::format_hz(f0) << ":\n";
+        x << "\nOutput Noise Density at \\mathrm{" << eng::format_hz(f0)
+          << "}:\\quad ";
+        {
+            char b[200];
+            std::snprintf(b, sizeof(b),
+                          "    total S_v = %.4g V^2/Hz   (%.2f dBV^2/Hz, "
+                          "%.4g V/sqrt(Hz))\n",
+                          s0, s0 > 0 ? 10.0 * std::log10(s0) : -1e300,
+                          std::sqrt(std::max(0.0, s0)));
+            t << b;
+            x << "S_v = \\mathrm{" << eng::format_si(s0, 4)
+              << "\\ V^2/Hz}\n";
+        }
+        // Integrated
+        t << "\n" << int_txt;
+        x << int_tex << "\n";
+        // Symbolic
+        t << "\nSymbolic (low-entropy) forms:\n" << sym_txt;
+        x << sym_tex << "\n";
+        // Per-source breakdown
+        t << "\n  Per-Source Contribution to the Integrated Output Noise:\n";
+        x << "Per-Source Contribution:\n";
+        for (const auto& ps : per_source) {
+            std::string pct = eng::format_percent(100.0 * ps.second / tot, 3);
+            char sb[192];
+            std::snprintf(sb, sizeof(sb), "    %-8s %8s %%   %.3g V^2\n",
+                          ps.first.c_str(), pct.c_str(), ps.second);
+            t << sb;
+            x << "\\mathrm{" << ps.first << "} = " << pct << "\\%\n";
+        }
+        rep = t.str();
+        lrep = x.str();
     }
 
     // ---- publish spectrum + metrics on the result ------------------------
@@ -1400,19 +1444,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         cr.latex = lx.str();
         cr.summary = tx.str();
     }
-    {
-        std::ostringstream lr;
-        lr << "Noise (" << eng::format_hz(f0) << " to " << eng::format_hz(f1)
-           << "):\n";
-        lr << sym_tex;           // symbolic densities + transfers
-        lr << "\n" << int_tex;   // numeric integrated values
-        lr << "Per-Source Contribution:\n";
-        for (const auto& ps : per_source)
-            lr << "\\mathrm{" << ps.first << "} = "
-               << eng::format_si(100.0 * ps.second / tot, 3) << "\\%\n";
-        cr.latex_report = lr.str();
-    }
-
+    cr.latex_report = lrep;
     cr.text = cr.summary;
     cr.report = rep;
     cr.values.push_back({"Vout_n", eng::format_si(vout_rms, 8)});

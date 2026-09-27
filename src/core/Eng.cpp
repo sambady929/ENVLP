@@ -184,6 +184,31 @@ std::string format_rads(double w, int sig) {
     return format_eng(w, sig) + "rad/s";
 }
 
+std::string format_percent(double pct, int sig) {
+    // Percentages are small, human-scale numbers: never use scientific
+    // notation. Show `sig` significant figures as plain decimals
+    // (56.68, 0.57, 0.0084, ...).
+    if (sig < 1) sig = 1;
+    if (pct == 0.0) return "0";
+    double a = std::fabs(pct);
+    int int_digits = a >= 100.0 ? 3 : a >= 10.0 ? 2 : a >= 1.0 ? 1 : 0;
+    int decimals = sig - int_digits;
+    if (a < 1.0) {
+        // count the leading zeros after the decimal point and add them
+        decimals = sig - int_digits + int(std::floor(-std::log10(a)));
+    }
+    if (decimals < 0) decimals = 0;
+    if (decimals > 12) decimals = 12;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals, pct);
+    std::string s(buf);
+    if (s.find('.') != std::string::npos) {
+        while (!s.empty() && s.back() == '0') s.pop_back();
+        if (!s.empty() && s.back() == '.') s.pop_back();
+    }
+    return s;
+}
+
 std::string format_db(double db, int decimals) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.*f dB", decimals, db);

@@ -874,6 +874,56 @@ static void test_noise_current_input_and_amp() {
     CHECK(cr.transfer.has_noise);
     CHECK(cr.transfer.noise_input_is_current);
     CHECK(cr.transfer.noise_iin_total > 0.0);
+    // The amplifier's en sees the amp in unity gain, so its transfer is 1.
+    CHECK(cr.report.find("H1(s) = 1") != std::string::npos ||
+          cr.report.find("H(s) = 1") != std::string::npos);
+    // The LaTeX mirrors the text sections (density, integrated, transfers,
+    // per-source) and percentages are plain decimals (no exponents).
+    CHECK(cr.latex_report.find("V_{n,out}") != std::string::npos);
+    CHECK(cr.latex_report.find("H1(s)") != std::string::npos ||
+          cr.latex_report.find("H(s)") != std::string::npos);
+    // the percent line is a plain decimal (no "e" exponent)
+    size_t ppos = cr.latex_report.find("\\%");
+    CHECK(ppos != std::string::npos);
+    if (ppos != std::string::npos) {
+        size_t eq = cr.latex_report.rfind('=', ppos);
+        std::string val = cr.latex_report.substr(eq + 1, ppos - eq - 1);
+        CHECK(val.find('e') == std::string::npos &&
+              val.find('E') == std::string::npos);
+    }
+}
+
+// Transfer-function low-entropy form must match loop gain: a parallel load
+// reads (R1||R2), not an expanded resistor ratio.
+static void test_tf_low_entropy_parallel() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.param_text["GBW"] = "1e7";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"n1", "out"}, "3.3k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.transfer.pruned.text.find("||") != std::string::npos);
+    // the gain reads -(R1||R2), not R1*R2/(R1+R2)
+    CHECK(cr.transfer.pruned.gain.is_equal(ex(1)) == false);
+    CHECK(cr.transfer.pruned.text.find("(R1||R2)") != std::string::npos ||
+          cr.transfer.pruned.text.find("(R2||R1)") != std::string::npos);
+}
+
+// The amplifier-noise percent must not use scientific notation.
+static void test_percent_no_exponent() {
+    CHECK(eng::format_percent(96.5, 3) == "96.5");
+    CHECK(eng::format_percent(0.0084, 3).find("e") == std::string::npos);
+    CHECK(eng::format_percent(0.0084, 3) == "0.0084");
+    CHECK(eng::format_percent(100.0, 3) == "100");
 }
 
 // Noise must still work when the card's input is not an ideal source (it falls
@@ -1362,6 +1412,8 @@ int main(int argc, char** argv) {
         {"mirror_multiplicity", test_mirror_multiplicity},
         {"noise_bad_input", test_noise_survives_bad_input},
         {"noise_current_amp", test_noise_current_input_and_amp},
+        {"tf_low_entropy_parallel", test_tf_low_entropy_parallel},
+        {"percent_no_exponent", test_percent_no_exponent},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
