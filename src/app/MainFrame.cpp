@@ -5,6 +5,7 @@
 #include "PalettePanel.h"
 #include "PropertiesPanel.h"
 #include "SchematicCanvas.h"
+#include "Theme.h"
 #include "core/Analysis.h"
 
 #include <wx/filedlg.h>
@@ -130,12 +131,21 @@ void MainFrame::build_menu() {
 }
 
 void MainFrame::build_toolbar() {
-    toolbar_ = CreateToolBar(wxTB_HORIZONTAL | wxTB_TEXT | wxTB_NOICONS);
+    // Use flat text tools on the muted chrome background (analog-canvas's
+    // toolbar-row). Select / Wire are radio-style check tools so the active
+    // tool reads as "pressed" (accent) the way the reference draw-tools do.
+    toolbar_ = CreateToolBar(wxTB_HORIZONTAL | wxTB_TEXT | wxTB_NOICONS |
+                             wxTB_FLAT | wxTB_NODIVIDER);
+    toolbar_->SetBackgroundColour(theme::surface_muted);
+
     auto add = [&](int id, const wxString& label, const wxString& help) {
         toolbar_->AddTool(id, label, wxBitmapBundle(), help);
     };
-    add(ID_SELECT_TOOL, "Select", "Box-select and drag components");
-    add(ID_WIRE_TOOL, "Wire (W)", "Draw a wire");
+    toolbar_->AddRadioTool(ID_SELECT_TOOL, "Select", wxBitmapBundle(),
+                           wxBitmapBundle(), "Box-select and drag components");
+    toolbar_->AddRadioTool(ID_WIRE_TOOL, "Wire (W)", wxBitmapBundle(),
+                           wxBitmapBundle(), "Draw a wire");
+    toolbar_->ToggleTool(ID_SELECT_TOOL, true);
     toolbar_->AddSeparator();
     add(ID_NET_LABEL, "Net label (N)", "Name one or more nets");
     add(ID_ZOOM_FIT, "Fit (F)", "Zoom to frame every component");
@@ -533,6 +543,14 @@ void MainFrame::prompt_net_labels() {
 
 void MainFrame::sync_palette() {
     palette_->set_active(canvas_->tool(), canvas_->place_kind());
+    // Keep the toolbar radio buttons in step with the canvas tool (e.g. after
+    // the W / S keys), the way the reference's draw-tools reflect the mode.
+    if (toolbar_) {
+        Tool t = canvas_->tool();
+        toolbar_->ToggleTool(ID_SELECT_TOOL, t == Tool::Select);
+        toolbar_->ToggleTool(ID_WIRE_TOOL, t == Tool::Wire);
+        toolbar_->Refresh();
+    }
 }
 
 void MainFrame::show_instance_menu() {

@@ -302,6 +302,47 @@ static void test_label_follows_wire() {
     CHECK(d.labels.empty());
 }
 
+// Moving a component repeatedly must not accumulate stale elbows: the wire is
+// rebuilt from its stable waypoints each time, so after any number of moves it
+// is still just the two end legs.
+static void test_wire_move_no_stale_bends() {
+    Document d;
+    syms::Component r1;
+    r1.kind = syms::Kind::R;
+    r1.ref = "R1";
+    r1.nodes = {"a", "b"};
+    d.add(r1, 100, 100);
+    syms::Component r2;
+    r2.kind = syms::Kind::R;
+    r2.ref = "R2";
+    r2.nodes = {"a", "b"};
+    d.add(r2, 300, 100);
+    Wire w;
+    w.pts = {{130, 100}, {270, 100}};
+    d.bind_wire_ends(w);
+    d.wires.push_back(w);
+
+    auto pl = d.placements.find("R2");
+    for (auto mv : {std::pair<double, double>{400, 250},
+                    {250, 180}, {500, 60}}) {
+        pl->second.x = mv.first;
+        pl->second.y = mv.second;
+        d.sync_wire_endpoints();
+        // A plain two-point route dragged around must stay at most 3 points
+        // (end - one elbow - end), never piling up old bends.
+        CHECK(d.wires[0].pts.size() <= 3);
+    }
+    // The wire still connects R1:1 and R2:0 (one net).
+    NetMap nm = d.net_map();
+    int ci_r1 = -1, ci_r2 = -1;
+    for (size_t i = 0; i < d.circuit.comps.size(); ++i) {
+        if (d.circuit.comps[i].ref == "R1") ci_r1 = int(i);
+        if (d.circuit.comps[i].ref == "R2") ci_r2 = int(i);
+    }
+    CHECK(ci_r1 >= 0 && ci_r2 >= 0);
+    CHECK(nm.root_of_pin(ci_r1, 1) == nm.root_of_pin(ci_r2, 0));
+}
+
 int main() {
     test_net_map_topology();
     test_net_name_default();
@@ -311,6 +352,7 @@ int main() {
     test_serialize_legacy_loads();
     test_remove_detaches_wire_bindings();
     test_label_follows_wire();
+    test_wire_move_no_stale_bends();
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "DOCUMENT FAILED" : "document ok", g_fail);
     return g_fail == 0 ? 0 : 1;
