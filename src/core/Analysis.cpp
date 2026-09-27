@@ -1216,12 +1216,15 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                 double fcn = cc.param_enabled("fcn")
                                  ? cc.param_estimate("fcn")
                                  : 0.0;
-                ex gms = pt.get("gm_" + cc.ref);
+                // Mirror-aware: a copied device's gm is mult*gm_unit, so the
+                // noise of, say, four parallel devices is expressed via M1.
+                ex gms = reg_param(pt, cc, "gm");
                 // thermal: 4kT*(2/3)*gm; flicker coefficient: (thermal)*fcn,
                 // with fcn the 1/f corner frequency kept symbolic.
                 ex i_th = 4 * kT_sym * (ex(2) / 3) * gms;
-                ex fcn_sym = pt.get("fcn_" + cc.ref);
-                pt.set("fcn_" + cc.ref, fcn, UnitClass::Plain);
+                // The 1/f corner is a property of the unit device, so a copy
+                // shares M1's fcn symbol.
+                ex fcn_sym = reg_param(pt, cc, "fcn");
                 ex i_fl = fcn > 0.0 ? i_th * fcn_sym : ex(0);
                 srcs.push_back({cc.ref, "4kT(2/3)gm + 1/f", false, cc.nodes[0],
                                 cc.nodes[2], 4.0 * kT * (2.0 / 3.0) * gm, fcn,

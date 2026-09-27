@@ -569,22 +569,29 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 });
             }
 
+            // Supply rail: a free-text voltage so the user can enter any value
+            // (3.3, 5, 12, 1.8, ...), not a fixed mantissa/exponent menu.
+            if (c->kind == Kind::VDD)
+                add_scalar_row("Supply", &comp->value_text, "V");
+
             // Value selector for passives and the non-source blocks. Voltage
             // and current sources are handled separately below (they carry DC
             // and AC values, not a single "value").
             if (c->kind == Kind::R || c->kind == Kind::C ||
-                c->kind == Kind::L || c->kind == Kind::VDD ||
+                c->kind == Kind::L ||
                 c->kind == Kind::D || c->kind == Kind::OPAMP ||
                 c->kind == Kind::FDOPAMP || c->kind == Kind::AMP ||
                 c->kind == Kind::E || c->kind == Kind::G)
                 add_value_selector(comp, true);
 
-            // Independent V/I sources carry two typeable values, DC and AC,
-            // each with an engineering exponent. DC defaults to 0, AC to 1.
+            // Independent V/I sources carry two typeable values, DC and AC.
+            // The unit is fixed by the source kind: a voltage source is in
+            // volts, a current source in amps.
             if (c->kind == Kind::V || c->kind == Kind::I) {
+                const char* unit = (c->kind == Kind::V) ? "V" : "A";
                 add_header("Source values");
-                add_scalar_row("DC", &comp->dc_text, "V or A");
-                add_scalar_row("AC", &comp->ac_text, "V or A");
+                add_scalar_row("DC", &comp->dc_text, unit);
+                add_scalar_row("AC", &comp->ac_text, unit);
             }
 
             // Device mirroring (MOSFETs / BJTs): a copy of another device of

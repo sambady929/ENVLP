@@ -232,7 +232,10 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         ex vov;
         if (it != sys.branch_idx.end()) {
             id = solution(it->second);
-            ex gm = out.params.get(param_symbol(cc, "gm"));
+            // Mirror-aware: a copied device's gm is mult*gm_unit, so Vdsat =
+            // 2*Id/gm is expressed through the unit device (and the copy count
+            // cancels when Id also scales with it).
+            ex gm = reg_param(out.params, cc, "gm");
             vov = (2 * id / gm).normal();
         } else {
             // Square-law mode: Id and Vov are symbolic (Vov_<ref> is the design

@@ -13,17 +13,40 @@
 #include <vector>
 
 namespace syms {
+// A mirrored device's parameter is not an independent variable: it is the unit
+// device's parameter scaled by the copy count (a current mirror leg is `mult`
+// parallel unit devices). Returning `mult*gm_M1` (rather than a fresh `gm_M2`)
+// lets the solver cancel e.g. gm_M1/gm_M2 -> 1 and factor gm_M4 -> 4*gm_M1,
+// which is what makes a mirror's result collapse to a handful of terms. The
+// unit device itself registers its own symbol, so nothing is lost.
+GiNaC::ex reg_param(ParamTable& pt, const Component& c,
+                    const std::string& p) {
+    std::string name = param_symbol(c, p);
+    GiNaC::ex sym = pt.get(name);
+    UnitClass uc = param_unit_class(c.kind, p);
+    pt.set(name, c.param_estimate(p), uc);
+    if (c.mirror_ref.empty()) return sym;
+    // Unit symbol name: `<param>_<unit ref>`. The unit is stamped as a normal
+    // component and always registers this symbol (with its own estimate).
+    GiNaC::ex usym = pt.get(p + "_" + c.mirror_ref);
+    int mult = c.multiplicity();
+    switch (uc) {
+        // transconductance and capacitance are additive over parallel units
+        case UnitClass::Siemens:
+        case UnitClass::Farad:
+            return mult == 1 ? usym : GiNaC::ex(mult) * usym;
+        // a resistance made of `mult` units in parallel is divided
+        case UnitClass::Ohm:
+            return mult == 1 ? usym : usym / GiNaC::ex(mult);
+        default:
+            return usym;
+    }
+}
+
 namespace {
 
 using GiNaC::ex;
 using GiNaC::matrix;
-
-ex reg_param(ParamTable& pt, const Component& c, const std::string& p) {
-    std::string name = param_symbol(c, p);
-    ex sym = pt.get(name);
-    pt.set(name, c.param_estimate(p), param_unit_class(c.kind, p));
-    return sym;
-}
 
 // Ideal controlled-source gains are dimensionless numbers: stamp them
 // numerically so H(s) stays in terms of the real design variables. Integral
@@ -1117,8 +1140,9 @@ std::vector<TimeConstant> open_circuit_time_constants(
             else { a = n0; b = n1; }
             if (a == b) continue;
             std::string sym_name = param_symbol(cc, pd.name);
-            ex sym = params.get(sym_name);
-            params.set(sym_name, cc.param_estimate(pd.name), UnitClass::Farad);
+            // reg_param returns mult*Cgs_unit for a mirrored device, so the
+            // octc sum keeps the copy's capacitance expressed via the unit.
+            ex sym = reg_param(params, cc, pd.name);
             add_tc(sym_name, a, b, true, sym);
         }
     }

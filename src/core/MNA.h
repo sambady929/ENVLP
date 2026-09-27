@@ -95,4 +95,12 @@ struct MnaTest {
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
                     const MnaTest* test);
 
+// Register a device parameter symbol and return the expression to use in the
+// matrices. For a mirrored device this is NOT an independent symbol: it is the
+// unit device's symbol scaled by the copy count (gm_M2 -> gm_M1, gm_M4 ->
+// 4*gm_M1, ro_M2 -> ro_M1/mult), so the solver can cancel ratios and factor the
+// copy out. Exposed so the noise sources use the same substitution.
+GiNaC::ex reg_param(ParamTable& pt, const Component& c,
+                    const std::string& p);
+
 } // namespace syms
