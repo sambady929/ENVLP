@@ -41,12 +41,17 @@ MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
 // Large-signal DC ("supply") mode. When present, every independent source is
 // stamped with its *DC value* (Component::dc_text) on the right-hand side
 // instead of the per-unit AC excitation, and MOSFETs are stamped as their
-// large-signal saturation model (a drain current set by the Vgs/Vth relation in
-// parallel with 1/ro) rather than the linearised small-signal VCCS. This is
-// what makes the DC operating point a real bias solve. The caller checks each
-// device is in saturation.
+// large-signal saturation model rather than the linearised small-signal VCCS.
+// This is what makes the DC operating point a real bias solve. The caller
+// checks each device is in saturation.
 struct MnaDcSupply {
     double vth = 0.6;  // MOSFET threshold voltage, from the DC tech settings
+    // GmOverId (default): Id is an unknown and the gate row is
+    // vgs = 2*Id/gm + Vth. SquareLaw: Id = 1/2*uCox*(W/L)*Vov^2 is a symbolic
+    // current source (Vov, W, L are symbols); no Id unknown.
+    bool square_law = false;
+    double uncox = 200e-6; // uN*Cox (A/V^2), Mode 2
+    double upcox = 100e-6; // uP*Cox (A/V^2), Mode 2
 };
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
                     const std::set<std::string>& used_nodes,

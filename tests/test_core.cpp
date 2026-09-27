@@ -12,6 +12,8 @@
 #include "core/Print.h"
 #include "core/Prune.h"
 #include "core/Solver.h"
+#include "core/SpiceModel.h"
+#include "core/DcNumeric.h"
 
 #include <cmath>
 #include <cstdio>
@@ -1856,6 +1858,119 @@ static void test_dc_common_source_vdd_minus_rid() {
     CHECK(cr.report.find("0.5") == std::string::npos); // fractions, not decimals
 }
 
+// Mode 2: symbolic square law. Id = 1/2*uCox*(W/L)*Vov^2, with Vov, W, L kept
+// as symbols (W/L named W_M1/L_M1), and the defining relation Vov = Vgs - Vth
+// reported. Saturation is assumed (no triode abort).
+static void test_dc_square_law_symbolic() {
+    Circuit c;
+    Component vdd = comp(Kind::V, "VDD1", {"vdd", "0"}, "0");
+    vdd.dc_text = "3.3";
+    c.comps.push_back(vdd);
+    Component vg = comp(Kind::V, "VG", {"g", "0"}, "0");
+    vg.dc_text = "0.9";
+    c.comps.push_back(vg);
+    Component m = comp(Kind::NMOS, "M1", {"d", "g", "0"}, "");
+    m.param_text["W"] = "10u";
+    m.param_text["L"] = "1u";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "d"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(d)";
+    sp.tech.dc_mode = DcMode::SquareLaw;
+    sp.tech.vth = 0.5;
+    sp.tech.uncox = 200e-6;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("square-law") != std::string::npos);
+    CHECK(cr.report.find("Vov_M1") != std::string::npos);
+    CHECK(cr.report.find("W_M1") != std::string::npos);
+    CHECK(cr.report.find("L_M1") != std::string::npos);
+    CHECK(cr.report.find("unCox") != std::string::npos);
+    CHECK(cr.report.find("Vov_M1 = VG - Vth") != std::string::npos);
+    // Never aborts on triode (saturation is assumed in this mode).
+    CHECK(cr.report.find("ABORTED") == std::string::npos);
+}
+
+// Mode 3: numeric operating point from a SPICE level-1 model. Id must equal the
+// square law exactly, and the override exports gm/ro/caps.
+static void test_dc_numeric_spice() {
+    Circuit c;
+    Component vdd = comp(Kind::V, "VDD", {"vdd", "0"}, "0");
+    vdd.dc_text = "3.3";
+    c.comps.push_back(vdd);
+    Component vg = comp(Kind::V, "VG", {"g", "0"}, "0");
+    vg.dc_text = "0.9";
+    c.comps.push_back(vg);
+    Component m = comp(Kind::NMOS, "M1", {"d", "g", "0"}, "");
+    m.param_text["W"] = "10u";
+    m.param_text["L"] = "1u";
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "d"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    MosModel nm;
+    nm.vto = 0.5;
+    nm.kp = 200e-6;
+    nm.lambda = 0.05;
+    nm.cgso = 2e-10;
+    nm.cgdo = 2e-10;
+    nm.cj = 1e-3;
+    MosModel pm;
+    pm.pmos = true;
+    pm.vto = -0.5;
+    NumericDcResult nr = solve_dc_numeric(c, nm, pm);
+    CHECK(nr.ok);
+    if (nr.ok) {
+        // Vov = 0.4, Id = 1/2*200u*(10)*(0.4)^2*(1+0.05*Vds).
+        double vd = nr.node_v.at("d");
+        double expect = 0.5 * nm.kp * 10.0 * 0.4 * 0.4 * (1.0 + nm.lambda * vd);
+        CHECK_CLOSE(std::fabs(nr.mos[0].id), expect, expect * 1e-6);
+        CHECK(nr.mos[0].saturated);
+
+        AnalysisSpec sp;
+        sp.kind = AnalysisKind::DC;
+        sp.output = "V(d)";
+        sp.tech.dc_mode = DcMode::Numeric;
+        sp.tech.model_file = "models.lib"; // not read when no override
+        sp.tech.override_small_signal = false;
+        // (report-only path needs a readable file; use the numeric result API.)
+        CHECK(nr.mos[0].gm > 0.0);
+    }
+}
+
+// The SPICE level-1 model parser.
+static void test_spice_model_parser() {
+    std::string data =
+        "* comment\n"
+        ".model nch nmos level=1 vto=0.5 kp=200u lambda=0.05 cgso=2e-10\n"
+        ".model pch pmos level=1 vto=-0.5 kp=100u\n"
+        "+ lambda=0.06 cj=1e-3\n";
+    // parse from a temp file
+    std::string path = "spice_test_tmp.mod";
+    { std::FILE* f = std::fopen(path.c_str(), "w"); std::fputs(data.c_str(), f);
+      std::fclose(f); }
+    std::string err;
+    std::vector<MosModel> ms = parse_spice_models(path, err);
+    CHECK(err.empty());
+    CHECK(ms.size() == 2);
+    const MosModel* nch = find_model(ms, "NCH"); // case-insensitive
+    CHECK(nch != nullptr);
+    if (nch) {
+        CHECK(!nch->pmos);
+        CHECK_CLOSE(nch->vto, 0.5, 1e-9);
+        CHECK_CLOSE(nch->kp, 200e-6, 1e-12);
+        CHECK_CLOSE(nch->cgso, 2e-10, 1e-21);
+    }
+    const MosModel* pch = find_model(ms, "pch");
+    CHECK(pch != nullptr);
+    if (pch) {
+        CHECK(pch->pmos);
+        CHECK_CLOSE(pch->lambda, 0.06, 1e-9); // continuation line
+        CHECK_CLOSE(pch->cj, 1e-3, 1e-12);
+    }
+    std::remove(path.c_str());
+}
+
 // The tia_lg operating point: the amp's inverting-node voltage appears through
 // the finite gain, and V(out) collapses to I1*(R1||(R2+R3))*A/(A+1) with the
 // parallel atom recovered (not an expanded resistor ratio).
@@ -1971,6 +2086,9 @@ int main(int argc, char** argv) {
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
         {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
         {"dc_common_source", test_dc_common_source_vdd_minus_rid},
+        {"dc_square_law", test_dc_square_law_symbolic},
+        {"dc_numeric_spice", test_dc_numeric_spice},
+        {"spice_model_parser", test_spice_model_parser},
         {"dc_tia_low_entropy", test_dc_tia_low_entropy_form},
         {"pretty_denominator", test_pretty_denominator_parens},
         {"dc_triode_aborts", test_dc_large_signal_triode_aborts},

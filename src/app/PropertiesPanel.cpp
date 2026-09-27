@@ -664,10 +664,17 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 }
             }
 
-            // device model parameters: checkbox (parasitic) + mantissa/exponent
-            for (const auto& pd : syms::param_defs(c->kind))
+            // Device model parameters (checkbox + mantissa/exponent). W and L
+            // are only meaningful in the numeric DC mode; in the symbolic modes
+            // W/L are symbols (or unused), so hide them to avoid confusion.
+            for (const auto& pd : syms::param_defs(c->kind)) {
+                bool is_geometry = (pd.name == "W" || pd.name == "L");
+                if (is_geometry &&
+                    doc_->tech.dc_mode != syms::DcMode::Numeric)
+                    continue;
                 add_param_row(comp, pd.name, pd.unit, pd.parasitic,
                               pd.default_text);
+            }
 
             if (c->kind == Kind::K) {
                 auto* names = new wxArrayString();

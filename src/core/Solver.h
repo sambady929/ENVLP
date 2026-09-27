@@ -28,6 +28,18 @@ struct SweepSpec {
     int points_per_interval = 10;
 };
 
+// Large-signal DC model for MOSFETs. Three modes:
+//   GmOverId  : idealised. gm is a per-device small-signal parameter; the
+//               operating point is solved symbolically in gm (vgs = 2*Id/gm +
+//               Vth). No numeric bias point.
+//   SquareLaw : symbolic square law. uCox is a global process value and W/L is
+//               a per-device *symbol* (W_M1/L_M1); everything is symbolic in
+//               Vov (the overdrive). Assumes saturation.
+//   Numeric   : a real numeric operating point from a SPICE model card
+//               (.lib/.mod, level 1 or level 3), with per-device W/L numbers
+//               and a Newton solve.
+enum class DcMode { GmOverId, SquareLaw, Numeric };
+
 // Process/technology values for the large-signal DC model. These are universal
 // (one set per analysis), set from the toolbar's "DC settings" dialog, and may
 // be any continuous value (not locked to the component editor's 1/3/10 steps).
@@ -35,6 +47,22 @@ struct TechParams {
     double vth = 0.6;    // MOSFET threshold voltage (V)
     double is = 1e-16;   // diode/BJT saturation current (A), for future DC of
                          // diodes and BJTs (unused by the MOSFET model)
+
+    DcMode dc_mode = DcMode::GmOverId;
+
+    // Square-law process values (Mode 2). uN*Cox / uP*Cox, in A/V^2.
+    double uncox = 200e-6;
+    double upcox = 100e-6;
+
+    // Numeric model source (Mode 3).
+    std::string model_file;      // path to a SPICE .lib/.mod file
+    std::string nmos_model = "nmos"; // .model name to use for NMOS
+    std::string pmos_model = "pmos"; // .model name to use for PMOS
+
+    // After a numeric DC solve, replace each device's small-signal params
+    // (gm, ro, and the capacitances) with values extracted from the numeric
+    // operating point, so a following symbolic analysis reflects the real bias.
+    bool override_small_signal = false;
 };
 
 struct AnalysisRequest {

@@ -210,6 +210,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"gm", "1m", false, true, "S", "transconductance"},
         {"ro", "100k", true, true, "Ohm",
          "output resistance (channel-length modulation); also the DC bias rds"},
+        {"W", "10u", false, true, "m", "gate width (numeric DC mode)"},
+        {"L", "1u", false, true, "m", "gate length (numeric DC mode)"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
         // Cds defaults to the same value as Cgd (see param_estimate); listed
@@ -224,6 +226,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"gm", "1m", false, true, "S", "transconductance"},
         {"ro", "100k", true, true, "Ohm",
          "output resistance (channel-length modulation); also the DC bias rds"},
+        {"W", "10u", false, true, "m", "gate width (numeric DC mode)"},
+        {"L", "1u", false, true, "m", "gate length (numeric DC mode)"},
         {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
         {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
         {"Cds", "20f", true, true, "F", "drain-source capacitance"},

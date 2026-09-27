@@ -1,9 +1,11 @@
 #include "core/Analysis.h"
+#include "core/DcNumeric.h"
 #include "core/Eng.h"
 #include "core/LowEntropy.h"
 #include "core/MNA.h"
 #include "core/Par.h"
 #include "core/Print.h"
+#include "core/SpiceModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -257,19 +259,139 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// DC: large-signal operating point. Every source is stamped with its DC value;
-// every MOSFET is a saturation square-law device (Id at the operating point,
-// Vgs = 2*Id/gm + Vth from the DC tech settings, channel-length modulation via
-// ro). The system is solved for every node and each device's Id, then each
-// device is checked for saturation: its drain-source voltage magnitude must
-// exceed its Vdsat = 2*|Id|/gm. If any device is pushed into triode, the
-// analysis aborts and names it.
+// DC Mode 3: turn a numeric operating point into a report, and (optionally)
+// override each device's small-signal parameters from it. The override is the
+// point of the mode: e.g. a real bias may make a device's Cds far smaller than
+// the user's guess, so a following symbolic analysis prunes it by the normal
+// threshold rule.
+// ---------------------------------------------------------------------------
+CardResult dc_numeric_report(const Circuit& c, const AnalysisSpec& s,
+                             const NumericDcResult& nr) {
+    CardResult cr;
+    cr.kind = AnalysisKind::DC;
+    cr.title = "DC operating point (numeric)";
+
+    cr.report = "DC analysis -- numeric operating point (SPICE models)\n";
+    cr.report += "model file: " + s.tech.model_file + "   NMOS=" +
+                 s.tech.nmos_model + "   PMOS=" + s.tech.pmos_model + "\n";
+    cr.report += "----------------------------------------\n";
+
+    // Node voltages, sorted.
+    std::vector<std::string> names;
+    for (const auto& kv : nr.node_v) names.push_back(kv.first);
+    std::sort(names.begin(), names.end());
+    for (const auto& nd : names) {
+        char b[64];
+        std::snprintf(b, sizeof(b), "%.6g V", nr.node_v.at(nd));
+        cr.values.push_back({"V(" + nd + ")", b});
+        cr.report += "  V(" + nd + ") = " + b + "\n";
+    }
+    if (!nr.mos.empty()) {
+        cr.report += "\nDevice operating points:\n";
+        for (const auto& op : nr.mos) {
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                          "  %s: Vgs=%.4g Vds=%.4g Vov=%.4g Id=%.4g A "
+                          "gm=%.4g S%s\n",
+                          op.ref.c_str(), op.vgs, op.vds, op.vov, op.id, op.gm,
+                          op.saturated ? "" : "  [TRIODE]");
+            cr.report += b;
+            char ib[32];
+            std::snprintf(ib, sizeof(ib), "%.6g A", op.id);
+            cr.values.push_back({"I(" + op.ref + ")", ib});
+        }
+    }
+
+    // ---- optional small-signal override from the numeric bias ----
+    if (s.tech.override_small_signal) {
+        std::string err;
+        std::vector<MosModel> models = parse_spice_models(s.tech.model_file, err);
+        const MosModel* nm = find_model(models, s.tech.nmos_model);
+        const MosModel* pm = find_model(models, s.tech.pmos_model);
+        cr.report += "\nSmall-signal overrides (applied to subsequent analyses):\n";
+        for (const auto& op : nr.mos) {
+            const Component* cc = c.find(op.ref);
+            if (!cc) continue;
+            const MosModel* m = (cc->kind == Kind::NMOS) ? nm : pm;
+            double W = cc->param_estimate("W");
+            double L = cc->param_estimate("L");
+            cr.report += "  " + op.ref + ": gm=" + eng::format_si(op.gm) +
+                         " S, ro=" +
+                         eng::format_si(1.0 / std::max(op.gds, 1e-15)) + " Ohm";
+            if (m) {
+                // Overlap (gate) caps scale with width; junction caps with the
+                // drain/source area (W*L) and sidewall perimeter (~W).
+                double cgs = m->cgso * W;
+                double cgd = m->cgdo * W;
+                double cdb = m->cj * W * L + m->cjsw * W;
+                double csb = cdb;
+                cr.report += ", Cgs=" + eng::format_si(cgs) +
+                             " F, Cgd=" + eng::format_si(cgd) +
+                             " F, Cdb=" + eng::format_si(cdb) +
+                             " F, Csb=" + eng::format_si(csb) + " F";
+                cr.ss_overrides[op.ref]["Cgs"] = cgs;
+                cr.ss_overrides[op.ref]["Cgd"] = cgd;
+                cr.ss_overrides[op.ref]["Cdb"] = cdb;
+                cr.ss_overrides[op.ref]["Csb"] = csb;
+            }
+            cr.ss_overrides[op.ref]["gm"] = op.gm;
+            cr.ss_overrides[op.ref]["ro"] =
+                1.0 / std::max(op.gds, 1e-15);
+            cr.report += "\n";
+        }
+    }
+
+    cr.summary = cr.report.substr(cr.report.find('\n') + 1);
+    cr.latex_report = "DC operating point (numeric):\n";
+    for (const auto& kv : cr.values)
+        cr.latex_report += "\\mathrm{" + kv.first + "} = \\mathrm{" +
+                           kv.second + "}\n";
+    cr.latex.clear();
+    return cr;
+}
+
+// ---------------------------------------------------------------------------
+// DC Modes 1 & 2: symbolic operating point. Every source is stamped with its DC
+// value. Mode 1 (gm/Id): each MOSFET's Id is an unknown and Vgs = 2*Id/gm + Vth.
+// Mode 2 (square law): Vov is a symbolic design variable and
+// Id = 1/2*uCox*(W/L)*Vov^2. Both check saturation: a device pushed into triode
+// aborts the analysis and is named.
 // ---------------------------------------------------------------------------
 CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
     cr.kind = AnalysisKind::DC;
-    cr.title = "DC operating point (large-signal)";
 
+    // ---- Mode 3: numeric operating point from SPICE models ----
+    if (s.tech.dc_mode == DcMode::Numeric) {
+        cr.title = "DC operating point (numeric)";
+        std::string err;
+        std::vector<MosModel> models = parse_spice_models(s.tech.model_file, err);
+        if (!err.empty()) {
+            cr.summary = "DC (numeric): " + err;
+            cr.report = cr.summary + "\n";
+            return cr;
+        }
+        const MosModel* nm = find_model(models, s.tech.nmos_model);
+        const MosModel* pm = find_model(models, s.tech.pmos_model);
+        if (!nm || !pm) {
+            cr.summary =
+                "DC (numeric): model '" +
+                (nm ? s.tech.pmos_model : s.tech.nmos_model) +
+                "' not found in " + s.tech.model_file;
+            cr.report = cr.summary + "\n";
+            return cr;
+        }
+        NumericDcResult nr = solve_dc_numeric(c, *nm, *pm);
+        if (!nr.ok) {
+            cr.summary = nr.error;
+            cr.report = std::string("DC (numeric) -- FAILED\n") + nr.error + "\n";
+            return cr;
+        }
+        return dc_numeric_report(c, s, nr);
+    }
+
+    // ---- Modes 1 and 2: symbolic operating point ----
+    cr.title = "DC operating point (large-signal)";
     DcSolution dc;
     try {
         dc = solve_dc(c, s.tech);
@@ -307,29 +429,34 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
         return num / den;
     };
 
-    // ---- saturation check: Vds must exceed Vdsat = 2*Id/gm for each device --
-    // Signed per device polarity: NMOS is on when Vov = Vgs - Vth > 0 and is
-    // saturated when Vds >= Vov; PMOS is on when Vov < 0 and saturated when
-    // Vds <= Vov. (Vov = 2*Id/gm by the model's construction.)
-    for (const auto& ref : dc.mosfets) {
-        const Component* mc = c.find(ref);
-        const bool pmos = mc && mc->kind == Kind::PMOS;
-        double vds_n = eval_complex(dc.vds[ref], pt, 0.0).real();
-        double vov_n = eval_complex(dc.vov[ref], pt, 0.0).real();
-        if (!std::isfinite(vds_n) || !std::isfinite(vov_n)) continue;
-        bool saturated = pmos ? (vds_n <= vov_n) : (vds_n >= vov_n);
-        if (!saturated) {
-            ex vds = dc_value(dc.vds[ref]);
-            ex vov = dc_value(dc.vov[ref]);
-            char buf[256];
-            std::snprintf(buf, sizeof(buf),
-                          "device %s is not in saturation: Vds = %s, Vdsat = %s "
-                          "(pushed into triode). DC analysis stopped.",
-                          ref.c_str(), pretty(vds).c_str(), pretty(vov).c_str());
-            cr.summary = buf;
-            cr.report = std::string("DC (large-signal) -- ABORTED\n") +
-                        "----------------------------------------\n" + buf + "\n";
-            return cr;
+    // ---- saturation check (Mode 1 only) ----------------------------------
+    // Mode 1 solves Vgs = 2*Id/gm + Vth, so a device can land in triode and the
+    // analysis aborts. Mode 2 *assumes* saturation (the user picks the
+    // overdrive), so there is no numeric Vds to compare -- the report states
+    // the assumption and the defining relation instead.
+    if (s.tech.dc_mode == DcMode::GmOverId) {
+        for (const auto& ref : dc.mosfets) {
+            const Component* mc = c.find(ref);
+            const bool pmos = mc && mc->kind == Kind::PMOS;
+            double vds_n = eval_complex(dc.vds[ref], pt, 0.0).real();
+            double vov_n = eval_complex(dc.vov[ref], pt, 0.0).real();
+            if (!std::isfinite(vds_n) || !std::isfinite(vov_n)) continue;
+            bool saturated = pmos ? (vds_n <= vov_n) : (vds_n >= vov_n);
+            if (!saturated) {
+                ex vds = dc_value(dc.vds[ref]);
+                ex vov = dc_value(dc.vov[ref]);
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "device %s is not in saturation: Vds = %s, Vdsat "
+                              "= %s (pushed into triode). DC analysis stopped.",
+                              ref.c_str(), pretty(vds).c_str(),
+                              pretty(vov).c_str());
+                cr.summary = buf;
+                cr.report = std::string("DC (large-signal) -- ABORTED\n") +
+                            "----------------------------------------\n" + buf +
+                            "\n";
+                return cr;
+            }
         }
     }
 
@@ -367,7 +494,13 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     cr.latex.clear();
 
     std::string rep = "DC analysis -- large-signal operating point\n";
-    rep += "every source uses its DC value; MOSFETs assumed in saturation\n";
+    if (s.tech.dc_mode == DcMode::SquareLaw) {
+        rep += "square-law mode: Id = 1/2*uCox*(W/L)*Vov^2, saturation assumed\n";
+        rep += "Vov is a symbolic design variable; Vov = Vgs - Vth closes the "
+               "loop\n";
+    } else {
+        rep += "gm/Id mode: Vgs = 2*Id/gm + Vth, saturation assumed\n";
+    }
     rep += "pruning threshold = " + std::to_string(int(s.threshold_db)) + " dB\n";
     rep += "----------------------------------------\n";
     for (const auto& kv : cr.values)
@@ -379,6 +512,10 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
                    ", Vds = " + pretty(dc_value(dc.vds[ref])) +
                    ", Vdsat = " + pretty(dc_value(dc.vov[ref])) +
                    ", Id = " + pretty(dc_value(dc.id[ref])) + "\n";
+            if (s.tech.dc_mode == DcMode::SquareLaw)
+                rep += "      relation: " + pretty(dc.vov[ref]) + " = " +
+                       pretty(dc_value(dc.vgs[ref])) + " - " +
+                       pretty(pt.get("Vth")) + "  (= Vgs - Vth)\n";
         }
     }
     cr.report = rep;

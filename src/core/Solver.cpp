@@ -195,6 +195,9 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         }
     MnaDcSupply dc;
     dc.vth = tech.vth;
+    dc.square_law = tech.dc_mode == DcMode::SquareLaw;
+    dc.uncox = tech.uncox;
+    dc.upcox = tech.upcox;
     MnaSystem sys = build_mna(c, std::string(), used, &dc);
 
     DcSolution out;
@@ -225,16 +228,31 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
     for (const auto& cc : c.comps) {
         if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
         auto it = sys.branch_idx.find("Id:" + cc.ref);
-        if (it == sys.branch_idx.end()) continue;
-        ex id = solution(it->second);
+        ex id;
+        ex vov;
+        if (it != sys.branch_idx.end()) {
+            id = solution(it->second);
+            ex gm = out.params.get(param_symbol(cc, "gm"));
+            vov = (2 * id / gm).normal();
+        } else {
+            // Square-law mode: Id and Vov are symbolic (Vov_<ref> is the design
+            // variable; Id = 1/2*uCox*(W/L)*Vov^2).
+            std::string vov_name = "Vov_" + cc.ref;
+            auto fit = out.params.syms.find(vov_name);
+            if (fit == out.params.syms.end()) continue; // not a MOSFET we stamped
+            vov = out.params.get(vov_name);
+            ex wsym = out.params.get("W_" + cc.ref);
+            ex lsym = out.params.get("L_" + cc.ref);
+            ex ucox = out.params.get((cc.kind == Kind::NMOS) ? "unCox" : "upCox");
+            id = (ucox * wsym * vov * vov / (2 * lsym)).normal();
+        }
         out.mosfets.push_back(cc.ref);
         out.id[cc.ref] = id;
         ex vgs = (node_of(cc.nodes[1]) - node_of(cc.nodes[2])).normal();
         ex vds = (node_of(cc.nodes[0]) - node_of(cc.nodes[2])).normal();
         out.vgs[cc.ref] = vgs;
         out.vds[cc.ref] = vds;
-        ex gm = out.params.get(param_symbol(cc, "gm"));
-        out.vov[cc.ref] = (2 * id / gm).normal();
+        out.vov[cc.ref] = vov;
     }
     return out;
 }

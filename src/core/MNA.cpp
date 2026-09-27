@@ -322,9 +322,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 ++sys.n;
             }
         }
-        // Large-signal DC: each MOSFET gets an extra unknown -- its drain
-        // current Id -- plus the KVL-like row that ties Vgs to that current.
-        if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
+        // Large-signal DC (Mode 1): each MOSFET gets an extra unknown -- its
+        // drain current Id -- plus the row that ties Vgs to that current. In
+        // the square-law mode Id is an explicit symbolic current, so no unknown
+        // is needed.
+        if (dc_mode && !dc_supply->square_law &&
+            (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
             sys.branch_idx["Id:" + c.ref] = sys.n;
             sys.var_names.push_back("Id(" + c.ref + ")");
             ++sys.n;
@@ -591,16 +594,43 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             // Vth is a process value shared by every device (the DC tech
             // settings), so it is NOT a per-device parameter symbol.
             ex vth = sys.params.get("Vth");
-            if (dc_mode) {
-                // Large-signal saturation model. The unknown Id is the
-                // drain-to-source current (positive into D, out of S), so for a
-                // PMOS Id is negative in normal operation. With |Vdsat| =
-                // 2|Id|/gm and |Vgs| = |Vdsat| + |Vth|, the gate relation
-                // collapses to the same row for both polarities:
+            if (dc_mode && dc_supply->square_law) {
+                // Mode 2: symbolic square law. The device's overdrive is a
+                // *symbolic design variable* Vov_<ref> (not solved), so the
+                // saturation drain current
+                //     Id = 1/2 * uCox * (W/L) * Vov^2
+                // is a known symbolic current source D->S, with W_<ref>/L_<ref>
+                // kept symbolic. The gate bias is whatever the circuit drives;
+                // saturation is assumed (the caller reports consistency).
+                const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
+                std::string vov_name = "Vov_" + c.ref;
+                std::string w_name = "W_" + c.ref;
+                std::string l_name = "L_" + c.ref;
+                sys.params.set(vov_name, 0.2, UnitClass::Volt);
+                sys.params.set(w_name, c.param_estimate("W"), UnitClass::Plain);
+                sys.params.set(l_name, c.param_estimate("L"), UnitClass::Plain);
+                std::string ucox_name = (c.kind == Kind::NMOS) ? "unCox" : "upCox";
+                sys.params.set(ucox_name,
+                               (c.kind == Kind::NMOS) ? dc_supply->uncox
+                                                      : dc_supply->upcox,
+                               UnitClass::Plain);
+                ex vov = sys.params.get(vov_name);
+                ex wsym = sys.params.get(w_name);
+                ex lsym = sys.params.get(l_name);
+                ex ucox = sys.params.get(ucox_name);
+                ex id = (ucox * wsym * vov * vov / (2 * lsym)).normal();
+                // Inject Id from D to S (sign flipped for PMOS).
+                if (D >= 0) sys.b(D, 0) += sgn * id;
+                if (S >= 0) sys.b(S, 0) -= sgn * id;
+                if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
+            } else if (dc_mode) {
+                // Mode 1: Id is the unknown drain-to-source current (positive
+                // into D, out of S; negative for a PMOS in normal operation).
+                // With |Vdsat| = 2|Id|/gm and |Vgs| = |Vdsat| + |Vth|, the gate
+                // relation is the same row for both polarities:
                 //     (v(G) - v(S)) - (2/gm)*Id = sgn*|Vth|
                 // with sgn = +1 (NMOS) / -1 (PMOS). Id flows D->S as a plain
-                // current source; channel-length modulation adds 1/ro D->S
-                // (ro IS the DC output resistance -- there is no separate rds).
+                // current source; channel-length modulation adds 1/ro D->S.
                 const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
                 int k = sys.branch_idx.at("Id:" + c.ref);
                 if (D >= 0) sys.Y(D, k) += 1;

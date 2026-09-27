@@ -84,6 +84,8 @@ add_library(symcore STATIC
   src/core/Analysis.cpp
   src/core/Print.cpp
   src/core/Engine.cpp
+  src/core/SpiceModel.cpp
+  src/core/DcNumeric.cpp
 )
 target_include_directories(symcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(symcore PUBLIC PkgConfig::GINAC ${SYM_GMP_TARGET})

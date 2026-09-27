@@ -7,11 +7,14 @@
 #include "SchematicCanvas.h"
 #include "Theme.h"
 #include "core/Analysis.h"
+#include "core/Eng.h"
 
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
 #include <wx/textdlg.h>
 #include <wx/toolbar.h>
+#include <wx/checkbox.h>
+#include <wx/choice.h>
 
 namespace symcirc {
 
@@ -227,31 +230,65 @@ void MainFrame::on_show_grid(wxCommandEvent& e) {
     canvas_->set_show_grid(e.IsChecked());
 }
 
-// DC settings: process values for the large-signal DC analysis. Continuous
-// values (any number), not locked to the component editor's 1/3/10 steps.
+// DC settings: process values for the large-signal DC analysis, and the model
+// mode (gm/Id symbolic, square-law symbolic, or numeric from SPICE models).
 void MainFrame::on_dc_settings(wxCommandEvent&) {
     wxDialog dlg(this, wxID_ANY, "DC settings");
     auto* top = new wxBoxSizer(wxVERTICAL);
 
     auto* grid = new wxFlexGridSizer(2, 2, 6, 10);
+    auto add_row = [&](const wxString& label, wxWindow* w) {
+        grid->Add(new wxStaticText(&dlg, wxID_ANY, label), 0,
+                  wxALIGN_CENTER_VERTICAL);
+        grid->Add(w, 1, wxEXPAND);
+    };
 
-    grid->Add(new wxStaticText(&dlg, wxID_ANY, "Vth (V)"), 0,
-              wxALIGN_CENTER_VERTICAL);
+    auto* mode = new wxChoice(&dlg, wxID_ANY);
+    mode->Append("1. gm/Id symbolic (small-signal params)");
+    mode->Append("2. Square law symbolic (uCox, W/L symbols)");
+    mode->Append("3. Numeric (SPICE models)");
+    mode->SetSelection(doc_.tech.dc_mode == syms::DcMode::GmOverId
+                           ? 0
+                           : doc_.tech.dc_mode == syms::DcMode::SquareLaw ? 1 : 2);
+    add_row("Mode", mode);
+
     auto* vth = new wxTextCtrl(&dlg, wxID_ANY,
                                wxString::FromDouble(doc_.tech.vth, 6));
-    grid->Add(vth, 1, wxEXPAND);
+    add_row("Vth (V)", vth);
 
-    grid->Add(new wxStaticText(&dlg, wxID_ANY, "Is (A)"), 0,
-              wxALIGN_CENTER_VERTICAL);
     auto* is = new wxTextCtrl(&dlg, wxID_ANY,
                               wxString::FromDouble(doc_.tech.is, 6));
-    grid->Add(is, 1, wxEXPAND);
+    add_row("Is (A)", is);
+
+    auto* uncox = new wxTextCtrl(&dlg, wxID_ANY,
+                                 wxString::FromDouble(doc_.tech.uncox, 8));
+    add_row("uN*Cox (A/V^2)", uncox);
+    auto* upcox = new wxTextCtrl(&dlg, wxID_ANY,
+                                 wxString::FromDouble(doc_.tech.upcox, 8));
+    add_row("uP*Cox (A/V^2)", upcox);
+
+    auto* mfile = new wxTextCtrl(&dlg, wxID_ANY,
+                                 wxString::FromUTF8(doc_.tech.model_file));
+    add_row("Model file (.lib)", mfile);
+    auto* nmname = new wxTextCtrl(&dlg, wxID_ANY,
+                                  wxString::FromUTF8(doc_.tech.nmos_model));
+    add_row("NMOS model name", nmname);
+    auto* pmname = new wxTextCtrl(&dlg, wxID_ANY,
+                                  wxString::FromUTF8(doc_.tech.pmos_model));
+    add_row("PMOS model name", pmname);
+
+    auto* ovr = new wxCheckBox(&dlg, wxID_ANY,
+                               "Override small-signal params from numeric DC");
+    ovr->SetValue(doc_.tech.override_small_signal);
+    grid->AddSpacer(1);
+    grid->Add(ovr, 1, wxEXPAND);
 
     top->Add(grid, 0, wxEXPAND | wxALL, 12);
     top->Add(new wxStaticText(
                  &dlg, wxID_ANY,
-                 "Vth: MOSFET threshold.  Is: diode/BJT saturation current\n"
-                 "(used when diode/BJT large-signal DC is added)."),
+                 "Mode 1 uses gm per device. Mode 2 uses uCox and symbolic W/L.\n"
+                 "Mode 3 reads a SPICE .lib/.mod (level 1 or 3) for a numeric\n"
+                 "operating point; W/L are per-device numbers."),
              0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
     auto* buttons = new wxStdDialogButtonSizer();
     auto* ok = new wxButton(&dlg, wxID_OK);
@@ -263,12 +300,22 @@ void MainFrame::on_dc_settings(wxCommandEvent&) {
     dlg.SetSizerAndFit(top);
 
     if (dlg.ShowModal() != wxID_OK) return;
-    double v = 0.0, i = 0.0;
+    doc_.tech.dc_mode =
+        mode->GetSelection() == 0 ? syms::DcMode::GmOverId
+        : mode->GetSelection() == 1 ? syms::DcMode::SquareLaw
+                                    : syms::DcMode::Numeric;
+    double v = 0.0;
     if (vth->GetValue().ToDouble(&v)) doc_.tech.vth = v;
-    if (is->GetValue().ToDouble(&i)) doc_.tech.is = i;
-    SetStatusText(wxString::Format("DC settings: Vth = %g V, Is = %g A",
-                                   doc_.tech.vth, doc_.tech.is),
-                  0);
+    if (is->GetValue().ToDouble(&v)) doc_.tech.is = v;
+    if (uncox->GetValue().ToDouble(&v)) doc_.tech.uncox = v;
+    if (upcox->GetValue().ToDouble(&v)) doc_.tech.upcox = v;
+    doc_.tech.model_file = mfile->GetValue().ToStdString();
+    doc_.tech.nmos_model = nmname->GetValue().ToStdString();
+    doc_.tech.pmos_model = pmname->GetValue().ToStdString();
+    doc_.tech.override_small_signal = ovr->GetValue();
+    // W/L visibility depends on the mode, so rebuild the properties panel.
+    props_->refresh(&doc_, canvas_->selection());
+    SetStatusText("DC settings updated.", 0);
 }
 
 void MainFrame::build_layout() {
@@ -828,6 +875,20 @@ void MainFrame::run_card(int index) {
         sp.tech = doc_.tech;
 
         syms::CardResult cr = syms::run_analysis(c, sp);
+        // A numeric DC card can export small-signal overrides extracted from
+        // its operating point (Mode 3 + the override checkbox). Apply them to
+        // the working circuit so the FOLLOWING cards reflect the real bias
+        // (e.g. a device's Cds shrinks and the threshold rule prunes it).
+        for (const auto& kv : cr.ss_overrides) {
+            for (auto& comp : c.comps) {
+                if (comp.ref != kv.first) continue;
+                for (const auto& pv : kv.second) {
+                    comp.param_text[pv.first] =
+                        syms::eng::format_eng(pv.second, 4);
+                    comp.param_on[pv.first] = true;
+                }
+            }
+        }
         report += cr.title + "\n";
         report += std::string(cr.title.size() + 8, '-') + "\n";
         report += cr.report;

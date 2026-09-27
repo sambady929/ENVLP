@@ -837,6 +837,12 @@ std::string Document::serialize() const {
       << (req.prune ? 1 : 0) << " " << (req.use_parallel ? 1 : 0) << " "
       << (req.approx_factor ? 1 : 0)
       << "\n";
+    // DC tech settings (large-signal model): mode, Vth, uCox, and the SPICE
+    // model source. Absent in older files (defaults apply).
+    o << "tech " << int(tech.dc_mode) << " " << tech.vth << " " << tech.is << " "
+      << tech.uncox << " " << tech.upcox << " " << quote(tech.model_file) << " "
+      << quote(tech.nmos_model) << " " << quote(tech.pmos_model) << " "
+      << (tech.override_small_signal ? 1 : 0) << "\n";
     for (const auto& c : circuit.comps) {
         auto pl = placements.find(c.ref);
         double x = pl == placements.end() ? 0.0 : pl->second.x;
@@ -977,6 +983,24 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 req.sweep.f_start_hz = req.f0_hz > 0 ? req.f0_hz : 1.0;
                 req.sweep.f_stop_hz = req.sweep.f_start_hz * 1e6;
             }
+        } else if (kw == "tech") {
+            std::string smode, svth, sis, sun, sup, sfile, snm, spm, sovr;
+            if (!need(smode) || !need(svth) || !need(sis) || !need(sun) ||
+                !need(sup) || !need(sfile) || !need(snm) || !need(spm) ||
+                !need(sovr))
+                return fail("bad tech");
+            int md = std::atoi(smode.c_str());
+            tech.dc_mode = md == 0   ? syms::DcMode::GmOverId
+                           : md == 1 ? syms::DcMode::SquareLaw
+                                     : syms::DcMode::Numeric;
+            tech.vth = std::atof(svth.c_str());
+            tech.is = std::atof(sis.c_str());
+            tech.uncox = std::atof(sun.c_str());
+            tech.upcox = std::atof(sup.c_str());
+            tech.model_file = sfile;
+            tech.nmos_model = snm;
+            tech.pmos_model = spm;
+            tech.override_small_signal = sovr != "0";
         } else if (kw == "comp") {
             std::string ref, tok, sx, sy, srot, sfh, sfv, sdb, val;
             if (!need(ref) || !need(tok) || !need(sx) || !need(sy) ||

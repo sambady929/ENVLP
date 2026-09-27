@@ -10,7 +10,9 @@
 #undef As
 #endif
 
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace syms {
@@ -68,6 +70,12 @@ struct CardResult {
     bool has_transfer = false;
     AnalysisResult transfer;
     std::vector<std::pair<std::string, std::string>> values; // name -> expr
+    // Small-signal parameter overrides extracted from a numeric DC operating
+    // point (Mode 3 with the override checkbox): ref -> {param -> value}. A
+    // caller running several cards back-to-back applies these to the circuit
+    // before the following cards, so later symbolic analyses reflect the real
+    // bias (e.g. a device's Cds shrinks and gets pruned by the threshold rule).
+    std::map<std::string, std::map<std::string, double>> ss_overrides;
 };
 
 // Runs one analysis card. Throws std::runtime_error on user-facing errors.
