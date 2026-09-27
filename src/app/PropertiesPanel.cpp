@@ -139,7 +139,7 @@ bool parse_exp_string(const wxString& s, long& out) {
 PropertiesPanel::PropertiesPanel(wxWindow* parent)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                        wxVSCROLL) {
-    SetScrollRate(0, 10);
+    SetScrollRate(FromDIP(10), FromDIP(10));
     SetBackgroundColour(theme::chrome_bg);
 }
 
@@ -198,7 +198,7 @@ wxPanel* new_card(wxWindow* parent, const wxString& title) {
     f.SetWeight(wxFONTWEIGHT_BOLD);
     t->SetFont(f);
     t->SetForegroundColour(wxColour(70, 78, 92));
-    s->Add(t, 0, wxLEFT | wxRIGHT | wxTOP, 4);
+    s->Add(t, 0, wxLEFT | wxRIGHT | wxTOP, parent->FromDIP(4));
     p->SetSizer(s);
     return p;
 }
@@ -244,9 +244,9 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
         row->Add(cb, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
     }
     man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                         wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
+                         wxSize(FromDIP(56), -1), kMantissas, wxCB_DROPDOWN);
     ex = new wxComboBox(card, wxID_ANY, exp_display(exp), wxDefaultPosition,
-                        wxSize(58, -1), kExponents, wxCB_DROPDOWN);
+                        wxSize(FromDIP(64), -1), kExponents, wxCB_DROPDOWN);
     if (cb) {
         man->Enable(cb->GetValue());
         ex->Enable(cb->GetValue());
@@ -258,12 +258,12 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
             if (on_edited) on_edited();
         });
     }
-    row->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+    row->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     row->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
+             wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(1));
     row->Add(ex, 0, wxALIGN_CENTER_VERTICAL);
-    card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
-    host->Add(card, 0, wxALL, 3);
+    card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
+    host->Add(card, 0, wxALL, FromDIP(4));
 
     auto commit = [this, comp, name, man, ex] {
         double m = 0.0;
@@ -307,13 +307,13 @@ void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
     auto* card = new_card(this, label);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
     auto* tc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(*target),
-                              wxDefaultPosition, wxSize(80, -1));
-    sub->Add(tc, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
+                              wxDefaultPosition, wxSize(FromDIP(90), -1));
+    sub->Add(tc, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(3));
     sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
              wxALIGN_CENTER_VERTICAL);
-    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
     card->Fit();
-    host->Add(card, 0, wxALL, 3);
+    host->Add(card, 0, wxALL, FromDIP(4));
 
     tc->Bind(wxEVT_TEXT, [this, target, tc](wxCommandEvent&) {
         if (rebuilding_) return;
@@ -357,10 +357,11 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     }
 
     auto* man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                               wxSize(56, -1), kMantissas, wxCB_DROPDOWN);
+                               wxSize(FromDIP(56), -1), kMantissas,
+                               wxCB_DROPDOWN);
     auto* ex = new wxComboBox(card, wxID_ANY, exp_display(exp),
-                              wxDefaultPosition, wxSize(58, -1), kExponents,
-                              wxCB_DROPDOWN);
+                              wxDefaultPosition, wxSize(FromDIP(64), -1),
+                              kExponents, wxCB_DROPDOWN);
     sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
     sub->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
              wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
@@ -372,9 +373,9 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
         sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
                  wxALIGN_CENTER_VERTICAL);
     }
-    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
     card->Fit();
-    host->Add(card, 0, wxALL, 3);
+    host->Add(card, 0, wxALL, FromDIP(4));
 
     auto commit = [this, comp, man, ex, pol] {
         double m = 1.0;
@@ -518,7 +519,7 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                         "Auto-assigned node name. Place a net label (N) on the "
                         "wire to override it.");
                     hint->SetForegroundColour(wxColour(115, 115, 120));
-                    hint->Wrap(220);
+                    hint->Wrap(FromDIP(240));
                     sizer->Add(hint, 0, wxALL, 4);
                     auto* info = new wxStaticText(
                         this, wxID_ANY,
@@ -655,7 +656,7 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                         "Parameters are inherited from the unit device, scaled "
                         "by m.");
                     note->SetForegroundColour(wxColour(115, 115, 120));
-                    note->Wrap(220);
+                    note->Wrap(FromDIP(240));
                     sizer2->Add(note, 0, wxALL, 4);
                     sizer->AddSpacer(6);
                     // Fall through: still show the inherited parameter cards

@@ -44,8 +44,8 @@ AnalysisKind analysis_kind_from_name(const std::string& n) {
 
 AnalysisPanel::AnalysisPanel(wxWindow* parent)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                       wxVSCROLL) {
-    SetScrollRate(0, 10);
+                       wxVSCROLL | wxHSCROLL) {
+    SetScrollRate(FromDIP(10), FromDIP(10));
     SetBackgroundColour(theme::chrome_bg);
 }
 

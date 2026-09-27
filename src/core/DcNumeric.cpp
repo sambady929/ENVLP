@@ -73,6 +73,10 @@ MosEval eval_mos(const MosModel& m, double w, double l, double vgs, double vds) 
         return e;
     }
     const double k = m.kp * W / L;
+    // Output-conductance factor. lambda describes channel-length modulation in
+    // saturation (Vds > 0); for Vds < 0 it must NOT apply or (1+lambda*Vds)
+    // turns negative and flips the triode current, manufacturing spurious roots.
+    const double lam = 1.0 + m.lambda * std::max(Vds, 0.0);
     if (m.level >= 3) {
         // Simplified level 3: mobility degradation + DIBL + lambda.
         double Vth_eff = Vth - m.eta * Vds;         // DIBL pulls Vth down
@@ -83,15 +87,14 @@ MosEval eval_mos(const MosModel& m, double w, double l, double vgs, double vds) 
         if (Vds >= vdsat) {
             e.saturated = true;
             double id0 = 0.5 * k * Vov3 * Vov3 / denom;
-            e.id = id0 * (1.0 + m.lambda * Vds);
-            e.gm = k * Vov3 / (denom * denom) * (1.0 + m.lambda * Vds);
+            e.id = id0 * lam;
+            e.gm = k * Vov3 / (denom * denom) * lam;
             e.gds = id0 * m.lambda;
         } else {
             e.saturated = false;
             // Gradual channel: a smooth quadratic between 0 and vdsat.
             double f = Vds / vdsat;
-            e.id = 0.5 * k * Vov3 * Vov3 / denom * (2.0 * f - f * f) *
-                   (1.0 + m.lambda * Vds);
+            e.id = 0.5 * k * Vov3 * Vov3 / denom * (2.0 * f - f * f) * lam;
             e.gm = 0.9 * e.id / std::max(Vov3, 1e-6);
             e.gds = e.id / std::max(Vds, 1e-9);
         }
@@ -100,14 +103,14 @@ MosEval eval_mos(const MosModel& m, double w, double l, double vgs, double vds) 
         double vdsat = Vov;
         if (Vds >= vdsat) {
             e.saturated = true;
-            e.id = 0.5 * k * Vov * Vov * (1.0 + m.lambda * Vds);
-            e.gm = k * Vov * (1.0 + m.lambda * Vds);
+            e.id = 0.5 * k * Vov * Vov * lam;
+            e.gm = k * Vov * lam;
             e.gds = 0.5 * k * Vov * Vov * m.lambda;
         } else {
             e.saturated = false;
-            e.id = k * (Vov - 0.5 * Vds) * Vds * (1.0 + m.lambda * Vds);
-            e.gm = k * Vds * (1.0 + m.lambda * Vds);
-            e.gds = k * (Vov - Vds) * (1.0 + m.lambda * Vds) +
+            e.id = k * (Vov - 0.5 * Vds) * Vds * lam;
+            e.gm = k * Vds * lam;
+            e.gds = k * (Vov - Vds) * lam +
                     k * (Vov - 0.5 * Vds) * Vds * m.lambda;
         }
     }
@@ -180,95 +183,136 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
         mos_model.push_back(cc.kind == Kind::NMOS ? &nmos_model : &pmos_model);
     }
 
-    // Guess: node voltages start at 0, branch currents at 0.
+    // Initial guess: all node voltages 0 (the standard SPICE start). A device
+    // then starts off, but the gmin stepping below conditions every node, and
+    // the Newton follows the physical branch up rather than a spurious one.
     std::vector<double> x(nvars, 0.0);
     const int kMaxIter = 200;
-    const double kTol = 1e-10;
-    bool converged = false;
+    const double kTol = 1e-12;
 
-    for (int iter = 0; iter < kMaxIter; ++iter) {
-        // Convention: F[node] = sum of currents LEAVING the node (KCL), and the
-        // Jacobian J = dF/dx. Newton then solves J*dx = -F, x += dx.
-        std::vector<std::vector<double>> J(nvars, std::vector<double>(nvars, 0.0));
-        std::vector<double> F(nvars, 0.0);
+    // Newton for one gmin. Operates on a copy so a failed step cannot corrupt
+    // the last good solution; commits through `xout` on success.
+    auto newton = [&](double gg_min, std::vector<double> xx,
+                      std::vector<double>& xout) -> bool {
+        for (int iter = 0; iter < kMaxIter; ++iter) {
+            // Convention: F[node] = sum of currents LEAVING the node (KCL), and
+            // the Jacobian J = dF/dx. Newton then solves J*dx = -F, x += dx.
+            std::vector<std::vector<double>> J(nvars,
+                                               std::vector<double>(nvars, 0.0));
+            std::vector<double> F(nvars, 0.0);
 
-        auto stamp_conductance = [&](int a, int b, double gg) {
-            if (a >= 0) J[a][a] += gg;
-            if (b >= 0) J[b][b] += gg;
-            if (a >= 0 && b >= 0) { J[a][b] -= gg; J[b][a] -= gg; }
-        };
-
-        // Resistors: current leaving a = (v_a - v_b)/R.
-        for (const auto& cc : c.comps) {
-            if (cc.kind != Kind::R) continue;
-            double r = cc.estimate();
-            if (r <= 0.0) continue;
-            int a = N(cc.nodes[0]), b = N(cc.nodes[1]);
-            double gg = 1.0 / r;
-            stamp_conductance(a, b, gg);
-            if (a >= 0) F[a] += (x[a] - (b >= 0 ? x[b] : 0.0)) * gg;
-            if (b >= 0) F[b] += (x[b] - (a >= 0 ? x[a] : 0.0)) * gg;
-        }
-        // Independent current sources: value flows n+ -> n- through the source,
-        // i.e. current LEAVES n+ and ENTERS n-.
-        for (const auto& sq : isrcs) {
-            if (sq.a >= 0) F[sq.a] += sq.value;
-            if (sq.b >= 0) F[sq.b] -= sq.value;
-        }
-        // Voltage-source / inductor branches (current unknown at row).
-        for (int k = 0; k < nb; ++k) {
-            const Branch& br = branches[k];
-            int row = int(nodes.size()) + k;
-            if (br.a >= 0) { J[br.a][row] += 1; J[row][br.a] += 1; }
-            if (br.b >= 0) { J[br.b][row] -= 1; J[row][br.b] -= 1; }
-            if (br.a >= 0) F[br.a] += x[row];
-            if (br.b >= 0) F[br.b] -= x[row];
-            double vl = (br.a >= 0 ? x[br.a] : 0.0) - (br.b >= 0 ? x[br.b] : 0.0);
-            F[row] += vl - br.value;
-        }
-        // MOSFETs: current leaves D by Ids, enters S.
-        int mi = 0;
-        for (const auto& cc : c.comps) {
-            if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
-            int D = N(cc.nodes[0]), G = N(cc.nodes[1]), S = N(cc.nodes[2]);
-            double vgs = (G >= 0 ? x[G] : 0.0) - (S >= 0 ? x[S] : 0.0);
-            double vds = (D >= 0 ? x[D] : 0.0) - (S >= 0 ? x[S] : 0.0);
-            MosEval e = eval_mos(*mos_model[mi], mos_wl[mi].first,
-                                 mos_wl[mi].second, vgs, vds);
-            ++mi;
-            if (D >= 0) F[D] += e.id;
-            if (S >= 0) F[S] -= e.id;
-            // dIds/dvgs over (G,S); dIds/dvds over (D,S).
-            auto stamp_pair = [&](int p, int q, double gg) {
-                if (p >= 0) J[p][p] += gg;
-                if (q >= 0) J[q][q] += gg;
-                if (p >= 0 && q >= 0) { J[p][q] -= gg; J[q][p] -= gg; }
+            auto stamp_conductance = [&](int a, int b, double gg) {
+                if (a >= 0) J[a][a] += gg;
+                if (b >= 0) J[b][b] += gg;
+                if (a >= 0 && b >= 0) { J[a][b] -= gg; J[b][a] -= gg; }
             };
-            stamp_pair(G, S, e.gm);
-            stamp_pair(D, S, e.gds);
-        }
 
-        // Solve J*dx = -F, update x += dx.
-        std::vector<double> rhs(nvars, 0.0);
-        for (int i = 0; i < nvars; ++i) rhs[i] = -F[i];
-        std::vector<double> dx;
-        if (nvars == 0) { converged = true; break; }
-        if (!solve_linear(J, rhs, dx)) {
-            out.error = "DC (numeric): singular Jacobian -- check for floating "
-                        "nodes, missing ground, or a device with no DC path";
-            return out;
+            // gmin: a conductance from every node to ground. It keeps a node
+            // reached only through the drain of an off device well posed, and
+            // (stepped from coarse to fine below) removes the spurious
+            // all-devices-off root that a plain Newton can fall into.
+            for (size_t i = 0; i < nodes.size(); ++i) {
+                J[i][i] += gg_min;
+                F[i] += xx[i] * gg_min;
+            }
+
+            // Resistors: current leaving a = (v_a - v_b)/R.
+            for (const auto& cc : c.comps) {
+                if (cc.kind != Kind::R) continue;
+                double r = cc.estimate();
+                if (r <= 0.0) continue;
+                int a = N(cc.nodes[0]), b = N(cc.nodes[1]);
+                double gg = 1.0 / r;
+                stamp_conductance(a, b, gg);
+                if (a >= 0) F[a] += (xx[a] - (b >= 0 ? xx[b] : 0.0)) * gg;
+                if (b >= 0) F[b] += (xx[b] - (a >= 0 ? xx[a] : 0.0)) * gg;
+            }
+            // Independent current sources: value flows n+ -> n- through the
+            // source, i.e. current LEAVES n+ and ENTERS n-.
+            for (const auto& sq : isrcs) {
+                if (sq.a >= 0) F[sq.a] += sq.value;
+                if (sq.b >= 0) F[sq.b] -= sq.value;
+            }
+            // Voltage-source / inductor branches (current unknown at row).
+            for (int k = 0; k < nb; ++k) {
+                const Branch& br = branches[k];
+                int row = int(nodes.size()) + k;
+                if (br.a >= 0) { J[br.a][row] += 1; J[row][br.a] += 1; }
+                if (br.b >= 0) { J[br.b][row] -= 1; J[row][br.b] -= 1; }
+                if (br.a >= 0) F[br.a] += xx[row];
+                if (br.b >= 0) F[br.b] -= xx[row];
+                double vl = (br.a >= 0 ? xx[br.a] : 0.0) -
+                            (br.b >= 0 ? xx[br.b] : 0.0);
+                F[row] += vl - br.value;
+            }
+            // MOSFETs: current leaves D by Ids, enters S.
+            int mi = 0;
+            for (const auto& cc : c.comps) {
+                if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
+                int D = N(cc.nodes[0]), G = N(cc.nodes[1]), S = N(cc.nodes[2]);
+                double vgs = (G >= 0 ? xx[G] : 0.0) - (S >= 0 ? xx[S] : 0.0);
+                double vds = (D >= 0 ? xx[D] : 0.0) - (S >= 0 ? xx[S] : 0.0);
+                MosEval e = eval_mos(*mos_model[mi], mos_wl[mi].first,
+                                     mos_wl[mi].second, vgs, vds);
+                ++mi;
+                if (D >= 0) F[D] += e.id;
+                if (S >= 0) F[S] -= e.id;
+                auto stamp_pair = [&](int p, int q, double gg) {
+                    if (p >= 0) J[p][p] += gg;
+                    if (q >= 0) J[q][q] += gg;
+                    if (p >= 0 && q >= 0) { J[p][q] -= gg; J[q][p] -= gg; }
+                };
+                stamp_pair(G, S, e.gm);
+                stamp_pair(D, S, e.gds);
+            }
+
+            std::vector<double> rhs(nvars, 0.0);
+            for (int i = 0; i < nvars; ++i) rhs[i] = -F[i];
+            std::vector<double> dx;
+            if (nvars == 0) { xout = xx; return true; }
+            if (!solve_linear(J, rhs, dx)) return false;
+            // Voltage limiting: clamp the largest node-voltage step. A full
+            // Newton step can overshoot past a device threshold and oscillate
+            // between the off and saturated regions; limiting the step makes it
+            // creep up to the physical bias instead. Near convergence the step
+            // is tiny, so limiting does not slow the final iterations.
+            double scale = 1.0;
+            const double kStepLim = 0.5;
+            for (int i = 0; i < nvars; ++i)
+                if (std::fabs(dx[i]) > kStepLim)
+                    scale = std::min(scale, kStepLim / std::fabs(dx[i]));
+            double maxd = 0.0;
+            for (int i = 0; i < nvars; ++i) {
+                xx[i] += scale * dx[i];
+                maxd = std::max(maxd, std::fabs(scale * dx[i]));
+            }
+            if (maxd < kTol) { xout = xx; return true; }
         }
-        double maxd = 0.0;
-        for (int i = 0; i < nvars; ++i) {
-            x[i] += dx[i];
-            maxd = std::max(maxd, std::fabs(dx[i]));
+        return false;
+    };
+
+    // gmin stepping: solve with an artificially large node-to-ground leak, then
+    // shrink it by decades, each time resuming from the previous solution. The
+    // leak keeps every node conditioned while the bias establishes, so Newton
+    // cannot land on the degenerate all-off root.
+    bool converged = false;
+    std::vector<double> best = x;
+    for (double gg = 1e-3; gg >= 1e-12; gg *= 0.1) {
+        std::vector<double> xo;
+        if (newton(gg, x, xo)) {
+            x = xo;
+            best = xo;
+            converged = true;
+        } else {
+            break; // keep the last converged (coarser) solution
         }
-        if (maxd < kTol) { converged = true; break; }
     }
     if (!converged) {
-        out.error = "DC (numeric): Newton iteration did not converge";
+        out.error = "DC (numeric): Newton iteration did not converge -- check "
+                    "for floating nodes or a device with no DC path";
         return out;
     }
+    x = best;
 
     for (size_t i = 0; i < nodes.size(); ++i) out.node_v[nodes[i]] = x[i];
     // Operating points.

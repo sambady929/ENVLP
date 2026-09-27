@@ -44,12 +44,19 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                        wxVSCROLL),
       doc_(doc) {
+    // Scale the tile metrics for the display DPI so the palette has the same
+    // visual size on a 200% display as on a 100% one.
+    kTileW = FromDIP(60);
+    kTileH = FromDIP(58);
+    kPad = FromDIP(3);
+    kSwatchW = FromDIP(40);
+    kSwatchH = FromDIP(30);
     for (const auto& e : kComps) tiles_.push_back({e.label, e.kind});
     // Render each tile's artwork ONCE; the paint handler then just blits them.
     // (Redrawing every symbol on each repaint -- including on every hover
     // motion -- was needless work.)
     for (const auto& t : tiles_)
-        swatches_.push_back(symbol_swatch(t.kind, 40, 30));
+        swatches_.push_back(symbol_swatch(t.kind, kSwatchW, kSwatchH));
     SetBackgroundColour(theme::surface);
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     SetScrollRate(0, 8);
@@ -61,10 +68,11 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
 }
 
 // Height needed for all tiles at the current width (drives the scroll range).
-static int palette_content_height(int tile_count, int wrap_w) {
-    int per_row = std::max(1, (wrap_w - 2 * 3) / (60 + 3));
+static int palette_content_height(int tile_count, int wrap_w, int tile_w,
+                                  int tile_h, int pad) {
+    int per_row = std::max(1, (wrap_w - 2 * pad) / (tile_w + pad));
     int rows = (tile_count + per_row - 1) / per_row;
-    return 3 + rows * (58 + 3);
+    return pad + rows * (tile_h + pad);
 }
 
 int PalettePanel::wrap_width() const {
@@ -113,7 +121,8 @@ void PalettePanel::set_active(Tool t, Kind k) {
 void PalettePanel::on_size(wxSizeEvent& e) {
     // A resize can change the wrap, so the virtual height changes too.
     SetVirtualSize(wrap_width(),
-                   palette_content_height(int(tiles_.size()), wrap_width()));
+                   palette_content_height(int(tiles_.size()), wrap_width(),
+                                          kTileW, kTileH, kPad));
     Refresh(false);
     e.Skip();
 }
@@ -143,7 +152,8 @@ void PalettePanel::on_paint(wxPaintEvent&) {
         dc.DrawRoundedRectangle(r, 4);
 
         // Artwork: blit the cached swatch centred in the upper part.
-        dc.DrawBitmap(swatches_[i], r.x + (r.width - 40) / 2, r.y + 4, true);
+        dc.DrawBitmap(swatches_[i], r.x + (r.width - kSwatchW) / 2, r.y + kPad,
+                      true);
 
         // Label under the artwork.
         dc.SetFont(label_font);

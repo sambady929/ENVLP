@@ -1,0 +1,39 @@
+symcirc 1
+req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+tech 2 0.6 0 0.0002 0.0001 "examples/models.lib" "nmos_1p8" "pmos_1p8" 0
+comp "M1" "NMOS" 480 410 0 1 0 0 ""
+param "M1" "Cds" 0 "" 0
+param "M1" "Cgd" 0 "" 0
+param "M1" "Cgs" 0 "" 0
+param "M1" "ro" 1 "100k" 0
+comp "M2" "NMOS" 670 410 0 0 0 0 "" mirror=M1 mult=1
+param "M2" "ro" 1 "100k" 0
+comp "GND1" "GND" 480 490 0 0 0 0 ""
+comp "GND2" "GND" 670 480 0 0 0 0 ""
+comp "M3" "NMOS" 480 300 0 1 0 0 "" mirror=M1 mult=4
+param "M3" "ro" 1 "100k" 0
+comp "M4" "NMOS" 670 300 0 0 0 0 "" mirror=M1 mult=4
+param "M4" "ro" 1 "100k" 0
+comp "I1" "I" 480 150 0 0 0 0 "" dc=10u
+comp "R1" "R" 480 220 90 0 0 0 "10k"
+comp "R2" "R" 670 220 90 0 0 0 "10k"
+comp "VDD" "VDD" 580 110 0 0 0 0 "3.3" dc=3.3
+wire 480,490 480,450 pin:GND1:0 pin:M1:2
+wire 670,480 670,450 pin:GND2:0 pin:M2:2
+wire 520,410 630,410 pin:M1:1 pin:M2:1
+wire 480,370 480,340 pin:M1:0 pin:M3:2
+wire 480,260 480,250 pin:M3:0 pin:R1:0
+wire 480,190 480,180 pin:R1:1 pin:I1:1
+wire 670,260 670,250 pin:M4:0 pin:R2:0
+wire 670,340 670,370 pin:M4:2 pin:M2:0
+wire 480,260 560,260 560,410 pin:M3:0 free wp=560,260
+wire 520,300 630,300 pin:M3:1 pin:M4:1
+wire 580,300 580,190 480,190 free pin:R1:1 wp=580,190
+wire 480,120 670,120 670,190 pin:I1:0 pin:R2:1 wp=630,120 wp=670,120
+wire 580,110 580,120 pin:VDD:0 free
+netlabel 670,260 710,260 "out" 9 0 bind=6:0
+card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Output impedance" 0
+card "Transfer function (H(s))" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0
+card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1
+card "Noise" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Noise" 0
+card "DC operating point" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "DC operating point" 1

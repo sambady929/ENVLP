@@ -188,8 +188,10 @@ private:
     Pt to_doc(const wxPoint& p) const;
     Pt to_view(Pt p) const; // document -> client (for hit testing)
     wxPoint to_screen(Pt p) const; // document -> integer screen (for labels)
-    // Electrical hit tolerance in document units (constant on screen: 6 px).
-    double snap_r() const { return 6.0 / zoom_; }
+    // Electrical hit tolerance in document units. Constant on screen at the
+    // reference's 6 DIP, scaled by the display DPI so it stays a 6-DIP target
+    // (raw 6 physical px would be only 3 DIP at 200%).
+    double snap_r() const { return double(FromDIP(6)) / zoom_; }
     std::string hit_component(Pt p) const;
     int hit_pin(const std::string& ref, Pt p) const; // -1 if none
     int hit_any_pin(Pt p, std::string& ref) const;

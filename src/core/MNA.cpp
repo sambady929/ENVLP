@@ -231,6 +231,21 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     Circuit circ = cin;
     resolve_mirrors(circ);
 
+    // VDD is a single anonymous supply net: two VDD symbols are electrically
+    // one ideal source on the same rail. Collapse extra VDD components so they
+    // do not each allocate the same branch unknown (which left a zero MNA row
+    // and a spurious "floating / singular" error).
+    {
+        bool seen_vdd = false;
+        for (auto it = circ.comps.begin(); it != circ.comps.end();) {
+            if (it->kind == Kind::VDD) {
+                if (seen_vdd) { it = circ.comps.erase(it); continue; }
+                seen_vdd = true;
+            }
+            ++it;
+        }
+    }
+
     std::string err;
     if (!circ.validate(err)) throw std::runtime_error(err);
 

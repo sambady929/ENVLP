@@ -607,16 +607,17 @@ Selection SchematicCanvas::selection_info() const {
 // hit testing
 // ---------------------------------------------------------------------------
 std::string SchematicCanvas::hit_component(Pt p) const {
-    // Hit on the symbol's *artwork* (drawn body), not its bounding box: a
-    // device's bbox spans its pin lines, which made its grab area many times a
-    // wire's and made selection feel arbitrary. The body box plus the pin
-    // circles (hit_any_pin) is what the reference uses.
+    // Hit on the symbol's drawn *perimeter* -- the union of its body artwork and
+    // its pin leads -- so clicking anywhere on the drawn symbol selects it (the
+    // tight body-only box was too small; the full pin-spanning box felt
+    // arbitrary against a wire's thin strip). A small pad keeps the edges
+    // forgiving without swallowing neighbouring parts.
     for (auto it = doc_->circuit.comps.rbegin();
          it != doc_->circuit.comps.rend(); ++it) {
         auto pl = doc_->placements.find(it->ref);
         if (pl == doc_->placements.end()) continue;
         double x0, y0, x1, y1;
-        symbol_body_bbox(*it, pl->second, x0, y0, x1, y1, 3.0);
+        symbol_bbox(*it, pl->second, x0, y0, x1, y1, 2.0);
         if (p.first >= x0 && p.first <= x1 && p.second >= y0 && p.second <= y1)
             return it->ref;
     }
@@ -887,7 +888,19 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         auto pl = doc_->placements.find(c.ref);
         if (pl == doc_->placements.end()) continue;
         if (!on_screen(pl->second.x, pl->second.y, 160)) continue;
-        draw_symbol(dc, c, pl->second, sel_set_.count(c.ref) > 0);
+        bool selected = sel_set_.count(c.ref) > 0;
+        // Selection halo: a rectangle around the symbol's drawn perimeter (body
+        // + pin leads), so it is obvious what is selected. Drawn under the
+        // symbol so it never hides the artwork.
+        if (selected) {
+            double x0, y0, x1, y1;
+            symbol_bbox(c, pl->second, x0, y0, x1, y1, 6.0);
+            dc.SetPen(wxPen(theme::accent, theme::kStrokeEmphasis));
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.DrawRoundedRectangle(int(x0), int(y0), int(x1 - x0),
+                                    int(y1 - y0), 6);
+        }
+        draw_symbol(dc, c, pl->second, selected);
     }
 
     // box selection rubber band: left-to-right = window (accent), right-to-
@@ -954,47 +967,36 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         draw_symbol(dc, tmp, pl, false);
     }
 
-    // Net-name tooltip near the cursor. The hover net is the net whose
-    // pin or wire vertex is at the world coordinate under the cursor -- so
-    // during a pan or zoom, the world point under the cursor changes, and
-    // pinning the tooltip to the cursor's screen position leaves a stale
-    // tooltip floating while the canvas scrolls. We pin the tooltip to
-    // the *world* point instead: compute the world coordinate of the
-    // hovered net and place the tooltip there in document space. That way
-    // pan/zoom carries the tooltip along naturally. Also skip it during
-    // panning -- mid-pan the user's intent isn't "hover", it's "pan", so
-    // showing a tooltip during the drag is visual noise.
+    // Net-name tooltip: always right beside the cursor. Earlier this anchored
+    // to the hovered net's *world* point (to survive pan/zoom), but that put it
+    // at an arbitrary vertex -- often far from the cursor or off screen. The
+    // cursor is the one thing the user is looking at, so pin the tooltip there.
     if (!hover_net_.empty() && has_mouse_ && !panning_) {
-        // The hovered net was just resolved -- the caller (on_motion /
-        // set_zoom / clamp_view) passes the matching world point in
-        // hover_world_ so we can anchor the tooltip there.
-        Pt wp = hover_world_;
-        if (std::isfinite(wp.first) && std::isfinite(wp.second)) {
-            wxPoint screen = to_screen(wp);
-            // Remember the DC font so we can restore it; the canvas's
-            // default font is shared with the components' value/ref labels
-            // (the text on each symbol), so an unrestored font would make
-            // them reflow between paints.
-            wxFont old = dc.GetFont();
-            wxFont f(12, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL,
-                     wxFONTWEIGHT_BOLD);
-            dc.SetFont(f);
-            wxString txt = wxString::FromUTF8(hover_net_);
-            wxSize ts = dc.GetTextExtent(txt);
-            // Anchor up-and-to-the-left of the wire's hit point.
-            int tx = screen.x - ts.x - 12;
-            int ty = screen.y - ts.y - 12;
-            if (tx < 0) tx = screen.x + 14;
-            if (ty < 0) ty = screen.y + 14;
-            dc.SetPen(wxPen(wxColour(80, 80, 90)));
-            dc.SetBrush(wxBrush(wxColour(255, 252, 220)));
-            dc.DrawRectangle(wxRect(tx - 4, ty - 2, ts.x + 8, ts.y + 4));
-            dc.SetTextForeground(wxColour(40, 40, 40));
-            dc.DrawText(txt, wxPoint(tx, ty));
-            dc.SetTextForeground(*wxBLACK);
-            dc.SetBrush(*wxTRANSPARENT_BRUSH);
-            dc.SetFont(old);
-        }
+        // Draw in device (screen) coordinates so the offset is exact.
+        dc.SetUserScale(1.0, 1.0);
+        dc.SetDeviceOrigin(0, 0);
+        wxFont old = dc.GetFont();
+        wxFont f(11, wxFONTFAMILY_SWISS, wxFONTSTYLE_NORMAL,
+                 wxFONTWEIGHT_BOLD);
+        dc.SetFont(f);
+        wxString txt = wxString::FromUTF8(hover_net_);
+        wxSize ts = dc.GetTextExtent(txt);
+        int tx = mouse_.x + 14;
+        int ty = mouse_.y + 14;
+        // Flip to the other side near an edge so it stays on screen.
+        if (tx + ts.x + 8 > cs.x) tx = mouse_.x - ts.x - 14;
+        if (ty + ts.y + 6 > cs.y) ty = mouse_.y - ts.y - 14;
+        dc.SetPen(wxPen(theme::border_strong));
+        dc.SetBrush(wxBrush(theme::surface));
+        dc.DrawRectangle(wxRect(tx - 4, ty - 2, ts.x + 8, ts.y + 4));
+        dc.SetTextForeground(theme::text);
+        dc.DrawText(txt, wxPoint(tx, ty));
+        dc.SetTextForeground(*wxBLACK);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.SetFont(old);
+        dc.SetUserScale(zoom_, zoom_);
+        dc.SetDeviceOrigin(int(std::lround(-view_x_ * zoom_)),
+                           int(std::lround(-view_y_ * zoom_)));
     }
 }
 

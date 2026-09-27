@@ -39,10 +39,14 @@ private:
     int active_idx_ = -1;
     int hover_idx_ = -1;
 
-    // tile metrics (documented so the hit-test and the paint agree)
-    static constexpr int kTileW = 60;
-    static constexpr int kTileH = 58;
-    static constexpr int kPad = 3;
+    // tile metrics, scaled for the display DPI (see the constructor). Kept as
+    // members rather than constants because on a high-DPI (e.g. 200%) display
+    // raw pixels would draw everything at half the intended visual size.
+    int kTileW = 60;
+    int kTileH = 58;
+    int kPad = 3;
+    int kSwatchW = 40;
+    int kSwatchH = 30;
 
     int index_at(const wxPoint& p) const;
     wxRect tile_rect(int i) const;

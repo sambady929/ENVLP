@@ -8,6 +8,7 @@
 #include "Theme.h"
 #include "core/Analysis.h"
 #include "core/Eng.h"
+#include "core/SpiceModel.h"
 
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
@@ -64,7 +65,11 @@ wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame()
     : wxFrame(nullptr, wxID_ANY, "SymCirc", wxDefaultPosition,
-              wxSize(1360, 900)) {
+              wxDefaultSize) {
+    // Size in DIP so the window has the intended visual size at any display
+    // scaling (a raw pixel size is applied as physical pixels and comes out
+    // half-size on a 200% display).
+    SetSize(FromDIP(wxSize(1400, 900)));
     // sensible default analysis request (before panels read it)
     doc_.req.input_ref = "V1";
     doc_.req.output = "V(out)";
@@ -267,15 +272,59 @@ void MainFrame::on_dc_settings(wxCommandEvent&) {
                                  wxString::FromDouble(doc_.tech.upcox, 8));
     add_row("uP*Cox (A/V^2)", upcox);
 
+    // Model file: a text field plus a Browse button. After a file is chosen the
+    // NMOS/PMOS dropdowns are repopulated with every .model name the file
+    // contains (so it is obvious that, e.g., "N_1u" is a model).
     auto* mfile = new wxTextCtrl(&dlg, wxID_ANY,
                                  wxString::FromUTF8(doc_.tech.model_file));
     add_row("Model file (.lib)", mfile);
-    auto* nmname = new wxTextCtrl(&dlg, wxID_ANY,
-                                  wxString::FromUTF8(doc_.tech.nmos_model));
-    add_row("NMOS model name", nmname);
-    auto* pmname = new wxTextCtrl(&dlg, wxID_ANY,
-                                  wxString::FromUTF8(doc_.tech.pmos_model));
-    add_row("PMOS model name", pmname);
+    auto* nmname = new wxComboBox(&dlg, wxID_ANY,
+                                  wxString::FromUTF8(doc_.tech.nmos_model),
+                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
+                                  wxCB_DROPDOWN);
+    add_row("NMOS model", nmname);
+    auto* pmname = new wxComboBox(&dlg, wxID_ANY,
+                                  wxString::FromUTF8(doc_.tech.pmos_model),
+                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
+                                  wxCB_DROPDOWN);
+    add_row("PMOS model", pmname);
+    auto* browse = new wxButton(&dlg, wxID_ANY, "Browse... / reload models");
+    grid->AddSpacer(1);
+    grid->Add(browse, 1, wxEXPAND);
+
+    // Split the file's models by polarity into the two dropdowns.
+    std::vector<std::string> nm_names, pm_names;
+    auto load_models = [&]() {
+        nm_names.clear();
+        pm_names.clear();
+        std::string err;
+        std::vector<syms::MosModel> ms =
+            syms::parse_spice_models(mfile->GetValue().ToStdString(), err);
+        for (const auto& m : ms)
+            (m.pmos ? pm_names : nm_names).push_back(m.name);
+        nmname->Clear();
+        pmname->Clear();
+        for (const auto& n : nm_names) nmname->Append(wxString::FromUTF8(n));
+        for (const auto& n : pm_names) pmname->Append(wxString::FromUTF8(n));
+        if (!ms.empty())
+            SetStatusText(
+                wxString::Format("Loaded %zu models (%zu NMOS, %zu PMOS).",
+                                 ms.size(), nm_names.size(), pm_names.size()),
+                0);
+        else if (!err.empty())
+            SetStatusText(wxString::FromUTF8(err), 0);
+    };
+    load_models();
+    mfile->Bind(wxEVT_TEXT, [&](wxCommandEvent&) { load_models(); });
+    browse->Bind(wxEVT_BUTTON, [&](wxCommandEvent&) {
+        wxFileDialog fd(&dlg, "Choose a SPICE model file", "", "",
+                        "SPICE models (*.lib;*.mod;*.sp;*.cir)|*.lib;*.mod;*.sp;*.cir|All files (*.*)|*.*",
+                        wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+        if (fd.ShowModal() == wxID_OK) {
+            mfile->ChangeValue(fd.GetPath());
+            load_models();
+        }
+    });
 
     auto* ovr = new wxCheckBox(&dlg, wxID_ANY,
                                "Override small-signal params from numeric DC");
@@ -329,7 +378,7 @@ void MainFrame::build_layout() {
     sp_main_ = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition,
                                     wxDefaultSize,
                                     wxSP_3D | wxSP_LIVE_UPDATE);
-    sp_main_->SetMinimumPaneSize(60);
+    sp_main_->SetMinimumPaneSize(FromDIP(60));
     // gravity 0.0: the sash stays put, so the RIGHT pane (everything but the
     // fixed-width palette) absorbs the frame resize.
     sp_main_->SetSashGravity(0.0);
@@ -339,7 +388,7 @@ void MainFrame::build_layout() {
     sp_right_ = new wxSplitterWindow(sp_main_, wxID_ANY, wxDefaultPosition,
                                      wxDefaultSize,
                                      wxSP_3D | wxSP_LIVE_UPDATE);
-    sp_right_->SetMinimumPaneSize(120);
+    sp_right_->SetMinimumPaneSize(FromDIP(120));
     // gravity 1.0: the sash moves with the edge, so the LEFT pane (the canvas
     // centre) absorbs the resize while the analysis column keeps its width.
     sp_right_->SetSashGravity(1.0);
@@ -347,7 +396,7 @@ void MainFrame::build_layout() {
     sp_bottom_ = new wxSplitterWindow(sp_right_, wxID_ANY, wxDefaultPosition,
                                       wxDefaultSize,
                                       wxSP_3D | wxSP_LIVE_UPDATE);
-    sp_bottom_->SetMinimumPaneSize(80);
+    sp_bottom_->SetMinimumPaneSize(FromDIP(80));
     // gravity 1.0: the TOP pane (canvas) absorbs the resize; the props strip
     // keeps its height.
     sp_bottom_->SetSashGravity(1.0);
@@ -361,13 +410,24 @@ void MainFrame::build_layout() {
 
     sp_main_->SplitVertically(palette_, sp_right_);
 
-    // Park the sashes once the frame has a real client size (before Show the
-    // splitter panes are 0-sized and SetSashPosition would clamp to nothing).
+    // Put the outer splitter in a sizer so it always fills the frame and
+    // resizes with it (otherwise a resize can leave the panes mis-laid-out).
+    auto* frame_sizer = new wxBoxSizer(wxVERTICAL);
+    frame_sizer->Add(sp_main_, 1, wxEXPAND);
+    SetSizer(frame_sizer);
+
+    // A minimum frame size keeps all three panes usable: below it the analysis
+    // column and the value strip would be squeezed to nothing.
+    SetMinSize(FromDIP(wxSize(900, 600)));
     CallAfter([this] {
         wxSize cs = GetClientSize();
-        sp_main_->SetSashPosition(200);
-        sp_right_->SetSashPosition(std::max(120, cs.x - 200 - 380));
-        sp_bottom_->SetSashPosition(std::max(80, cs.y - 190));
+        Layout();
+        sp_main_->SetSashPosition(FromDIP(200));
+        sp_right_->SetSashPosition(
+            std::max(FromDIP(160), cs.x - FromDIP(200) - FromDIP(360)));
+        sp_bottom_->SetSashPosition(std::max(FromDIP(120), cs.y - FromDIP(210)));
+        Layout();
+        Refresh();
     });
 
     // ---- plumbing ----

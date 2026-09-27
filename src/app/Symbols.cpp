@@ -542,10 +542,14 @@ wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     wxMemoryDC dc(bmp);
     dc.SetBackground(*wxWHITE_BRUSH);
     dc.Clear();
-    dc.SetPen(wxPen(kInk, int(kWire)));
+    // Scale the artwork with the bitmap so a high-DPI (larger) swatch draws a
+    // proportionally larger symbol rather than the same glyph in more padding.
+    double sc = 0.36 * double(w) / 40.0;
+    int pen = std::max(1, int(std::lround(kWire * double(w) / 40.0)));
+    dc.SetPen(wxPen(kInk, pen));
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
-    dc.SetUserScale(0.36, 0.36);
-    Ctx t{dc, w / (2 * 0.36), h / (2 * 0.36), 0, false, false, kInk};
+    dc.SetUserScale(sc, sc);
+    Ctx t{dc, w / (2 * sc), h / (2 * sc), 0, false, false, kInk};
     draw_body(t, k);
     dc.SelectObject(wxNullBitmap);
     return bmp;
