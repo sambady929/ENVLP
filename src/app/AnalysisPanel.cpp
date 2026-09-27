@@ -163,8 +163,14 @@ void AnalysisPanel::refresh(Document* doc) {
                 if (on_changed) on_changed();
             });
         };
-        add_field("in", wxString::FromUTF8(c.input_ref),
-                  [&c](const wxString& v) { c.input_ref = v.ToStdString(); });
+        // AC drives every independent source (the output is the superposition),
+        // and output impedance turns all sources off -- neither uses a single
+        // "in" source, so that field is omitted for them.
+        bool needs_input = c.kind != AnalysisKind::AC &&
+                           c.kind != AnalysisKind::OutputImpedance;
+        if (needs_input)
+            add_field("in", wxString::FromUTF8(c.input_ref),
+                      [&c](const wxString& v) { c.input_ref = v.ToStdString(); });
         add_field("out", wxString::FromUTF8(c.output),
                   [&c](const wxString& v) { c.output = v.ToStdString(); });
         if (c.kind == AnalysisKind::LoopGain)

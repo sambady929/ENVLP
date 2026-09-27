@@ -1861,6 +1861,45 @@ static void test_dc_common_source_vdd_minus_rid() {
 // Mode 2: symbolic square law. Id = 1/2*uCox*(W/L)*Vov^2, with Vov, W, L kept
 // as symbols (W/L named W_M1/L_M1), and the defining relation Vov = Vgs - Vth
 // reported. Saturation is assumed (no triode abort).
+// Mode 2 with a current-mirror copy: the copy's geometry is the unit's
+// (W_M2 = mult*W_M1) and, since Id is fixed by KCL, I(M2) = I(M1) = I1 -- the
+// copy count and geometry cancel out of the drain currents.
+static void test_dc_square_law_mirror() {
+    Circuit c;
+    Component i1 = comp(Kind::I, "I1", {"vdd", "n1"}, "0");
+    i1.dc_text = "10u";
+    c.comps.push_back(i1);
+    Component m1 = comp(Kind::NMOS, "M1", {"n1", "n1", "0"}, "");
+    m1.param_text["W"] = "10u";
+    m1.param_text["L"] = "1u";
+    c.comps.push_back(m1);
+    Component m2 = comp(Kind::NMOS, "M2", {"out", "n1", "0"}, "");
+    m2.mirror_ref = "M1";
+    m2.mirror_mult = 4;
+    c.comps.push_back(m2);
+    c.comps.push_back(comp(Kind::R, "R2", {"vdd", "out"}, "10k"));
+    Component vdd = comp(Kind::V, "VDD", {"vdd", "0"}, "0");
+    vdd.dc_text = "3.3";
+    vdd.value_text = "3.3";
+    c.comps.push_back(vdd);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.tech.dc_mode = DcMode::SquareLaw;
+    sp.tech.vth = 0.5;
+    sp.tech.uncox = 200e-6;
+    CardResult cr = run_analysis(c, sp);
+    // The drain current of a mirror leg is a plain multiple of the reference
+    // current (KCL): M1 carries I1, and the 4x copy carries 4*I1 -- no
+    // per-copy geometry or square-law term survives.
+    CHECK(cr.report.find("I(M1) = I1") != std::string::npos);
+    CHECK(cr.report.find("I(M2) = 4*I1") != std::string::npos);
+    CHECK(cr.report.find("W_M2") == std::string::npos);
+    CHECK(cr.report.find("L_M2") == std::string::npos);
+}
+
 static void test_dc_square_law_symbolic() {
     Circuit c;
     Component vdd = comp(Kind::V, "VDD1", {"vdd", "0"}, "0");
@@ -1887,7 +1926,9 @@ static void test_dc_square_law_symbolic() {
     CHECK(cr.report.find("W_M1") != std::string::npos);
     CHECK(cr.report.find("L_M1") != std::string::npos);
     CHECK(cr.report.find("unCox") != std::string::npos);
-    CHECK(cr.report.find("Vov_M1 = VG - Vth") != std::string::npos);
+    // The overdrive is reported in its definitional and solved forms.
+    CHECK(cr.report.find("Vov_M1 = Vgs - Vth") != std::string::npos);
+    CHECK(cr.report.find("sqrt(2*Id*L/(uCox*W))") != std::string::npos);
     // Never aborts on triode (saturation is assumed in this mode).
     CHECK(cr.report.find("ABORTED") == std::string::npos);
 }
@@ -2072,6 +2113,7 @@ int main(int argc, char** argv) {
         {"amp_signed_gain", test_amp_signed_gain},
         {"loop_gain_sections", test_loop_gain_report_sections},
         {"mirror_multiplicity", test_mirror_multiplicity},
+        {"dc_square_law_mirror", test_dc_square_law_mirror},
         {"noise_bad_input", test_noise_survives_bad_input},
         {"noise_current_amp", test_noise_current_input_and_amp},
         {"tf_low_entropy_parallel", test_tf_low_entropy_parallel},

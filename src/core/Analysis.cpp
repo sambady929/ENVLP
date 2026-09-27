@@ -496,8 +496,8 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     std::string rep = "DC analysis -- large-signal operating point\n";
     if (s.tech.dc_mode == DcMode::SquareLaw) {
         rep += "square-law mode: Id = 1/2*uCox*(W/L)*Vov^2, saturation assumed\n";
-        rep += "Vov is a symbolic design variable; Vov = Vgs - Vth closes the "
-               "loop\n";
+        rep += "Vov = Vgs - Vth is the device overdrive; W/L are symbolic "
+               "(mirror-aware)\n";
     } else {
         rep += "gm/Id mode: Vgs = 2*Id/gm + Vth, saturation assumed\n";
     }
@@ -513,9 +513,8 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
                    ", Vdsat = " + pretty(dc_value(dc.vov[ref])) +
                    ", Id = " + pretty(dc_value(dc.id[ref])) + "\n";
             if (s.tech.dc_mode == DcMode::SquareLaw)
-                rep += "      relation: " + pretty(dc.vov[ref]) + " = " +
-                       pretty(dc_value(dc.vgs[ref])) + " - " +
-                       pretty(pt.get("Vth")) + "  (= Vgs - Vth)\n";
+                rep += "      relation: Vov_" + ref + " = Vgs - Vth, Vov_" +
+                       ref + " = sqrt(2*Id*L/(uCox*W))\n";
         }
     }
     cr.report = rep;
@@ -1105,12 +1104,14 @@ CardResult analyze_zout(const Circuit& c, const AnalysisSpec& s) {
     if (node.size() > 3 && node.front() == 'V' && node.back() == ')')
         node = node.substr(2, node.size() - 3);
 
-    // zero the input source, add a 1 A test current *into* the node. With the
-    // SPICE convention ({n+,n-}: current flows n+ -> n- through the source),
-    // a source pushing 1 A into `node` has its n- terminal there: {0, node}.
+    // Turn off *every* independent source (the output impedance is a property
+    // of the network alone -- the driven input is irrelevant), then add a 1 A
+    // test current *into* the node. With the SPICE convention ({n+,n-}: current
+    // flows n+ -> n- through the source), a source pushing 1 A into `node` has
+    // its n- terminal there: {0, node}.
     Circuit cs = c;
     for (auto& cc : cs.comps)
-        if (cc.ref == s.input_ref) cc.value_text = "0";
+        if (is_independent_source(cc.kind)) cc.value_text = "0";
     Component it;
     it.kind = Kind::I;
     it.ref = "__ITEST__";

@@ -360,12 +360,15 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 ++sys.n;
             }
         }
-        // Large-signal DC (Mode 1): each MOSFET gets an extra unknown -- its
-        // drain current Id -- plus the row that ties Vgs to that current. In
-        // the square-law mode Id is an explicit symbolic current, so no unknown
-        // is needed.
-        if (dc_mode && !dc_supply->square_law &&
-            (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
+        // Large-signal DC: each MOSFET gets an extra unknown -- its drain
+        // current Id -- and the row that ties Vgs to it:
+        //   Mode 1 (gm/Id):  (v(G)-v(S)) - 2*Id/gm = sgn*Vth.
+        //   Mode 2 (square): (v(G)-v(S)) - sgn*Vov   = sgn*Vth, with the
+        //     overdrive Vov a symbol that is pinned after the solve from
+        //     Vov = sqrt(2*Id*L/(uCox*W)). Making Id an unknown lets KCL fix it
+        //     directly, so a mirror leg reports I(M1) = I1 rather than the
+        //     square-law expression.
+        if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
             sys.branch_idx["Id:" + c.ref] = sys.n;
             sys.var_names.push_back("Id(" + c.ref + ")");
             ++sys.n;
@@ -641,26 +644,50 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // kept symbolic. The gate bias is whatever the circuit drives;
                 // saturation is assumed (the caller reports consistency).
                 const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
-                std::string vov_name = "Vov_" + c.ref;
-                std::string w_name = "W_" + c.ref;
-                std::string l_name = "L_" + c.ref;
-                sys.params.set(vov_name, 0.2, UnitClass::Volt);
-                sys.params.set(w_name, c.param_estimate("W"), UnitClass::Plain);
-                sys.params.set(l_name, c.param_estimate("L"), UnitClass::Plain);
+                // Geometry is symbolic and mirror-aware. A copied device's width
+                // is the unit width times the copy count (W_M4 = 4*W_M1); its
+                // length is the unit length (M4 is M1 in parallel). Expressed
+                // via the unit so the redundant geometry symbols never appear.
+                const Component* unit =
+                    c.mirror_ref.empty() ? &c : circ.find(c.mirror_ref);
+                int mult = c.multiplicity();
+                std::string wbase = unit ? unit->ref : c.ref;
+                ex w_unit = sys.params.get("W_" + wbase);
+                sys.params.set("W_" + wbase,
+                               unit ? unit->param_estimate("W")
+                                    : c.param_estimate("W"),
+                               UnitClass::Plain);
+                ex l_unit = sys.params.get("L_" + wbase);
+                sys.params.set("L_" + wbase,
+                               unit ? unit->param_estimate("L")
+                                    : c.param_estimate("L"),
+                               UnitClass::Plain);
+                ex wsym = c.mirror_ref.empty() ? w_unit : ex(mult) * w_unit;
+                ex lsym = l_unit;
                 std::string ucox_name = (c.kind == Kind::NMOS) ? "unCox" : "upCox";
                 sys.params.set(ucox_name,
                                (c.kind == Kind::NMOS) ? dc_supply->uncox
                                                       : dc_supply->upcox,
                                UnitClass::Plain);
-                ex vov = sys.params.get(vov_name);
-                ex wsym = sys.params.get(w_name);
-                ex lsym = sys.params.get(l_name);
-                ex ucox = sys.params.get(ucox_name);
-                ex id = (ucox * wsym * vov * vov / (2 * lsym)).normal();
-                // Inject Id from D to S (sign flipped for PMOS).
-                if (D >= 0) sys.b(D, 0) += sgn * id;
-                if (S >= 0) sys.b(S, 0) -= sgn * id;
-                if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
+                // Register gm as the square-law transconductance symbol. The
+                // MNA stamps the *same* linear gate row as Mode 1
+                //     (v(G) - v(S)) - 2*Id/gm = sgn*Vth,
+                // so KCL fixes Id directly and a mirror leg reports I(M1) = I1.
+                // After the solve the caller substitutes gm = sqrt(2*uCox*(W/L)*Id)
+                // (so Vov = 2*Id/gm = sqrt(2*Id*L/(uCox*W))) and the copy count
+                // cancels through W = mult*W_unit.
+                ex gms = reg_param(sys.params, c, "gm");
+                int k = sys.branch_idx.at("Id:" + c.ref);
+                if (D >= 0) sys.Y(D, k) += 1;
+                if (S >= 0) sys.Y(S, k) -= 1;
+                if (G >= 0) sys.Y(k, G) += 1;
+                if (S >= 0) sys.Y(k, S) -= 1;
+                sys.Y(k, k) -= 2 / gms;
+                sys.b(k, 0) = sgn * vth;
+                (void)wsym; (void)lsym;
+                // No ro in the large-signal solve: ro is a *small-signal* output
+                // conductance, so the DC operating currents are the pure KCL
+                // values (a mirror leg is exactly the reference current).
             } else if (dc_mode) {
                 // Mode 1: Id is the unknown drain-to-source current (positive
                 // into D, out of S; negative for a PMOS in normal operation).
@@ -677,7 +704,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 if (S >= 0) sys.Y(k, S) -= 1;
                 sys.Y(k, k) -= 2 / gm;
                 sys.b(k, 0) = sgn * vth;
-                if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
+                // No ro in the large-signal solve (small-signal parameter).
             } else {
                 // no body terminal: the body is tied to the source
                 stamp_vccs(D, S, G, S, gm);
