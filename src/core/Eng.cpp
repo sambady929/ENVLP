@@ -234,7 +234,10 @@ std::string format_hz(double hz, int sig) {
     if (hz == 0.0) return "0 Hz";
     std::string s = format_eng(hz, sig);
     std::string prefix;
-    if (!s.empty() && std::isalpha(static_cast<unsigned char>(s.back()))) {
+    if (!s.empty() && (unsigned char)s.back() >= 0x80) {
+        prefix = s.substr(s.size() - 2); // two-byte UTF-8 µ
+        s = s.substr(0, s.size() - 2);
+    } else if (!s.empty() && std::isalpha(static_cast<unsigned char>(s.back()))) {
         prefix = s.substr(s.size() - 1);
         s = s.substr(0, s.size() - 1);
     }
@@ -245,6 +248,24 @@ std::string format_hz(double hz, int sig) {
 std::string format_rads(double w, int sig) {
     if (w == 0.0) return "0 rad/s";
     return format_eng(w, sig) + "rad/s";
+}
+
+// Make a plain-text engineering string safe to embed in LaTeX: the SI micro
+// prefix is emitted as a raw UTF-8 "\xC2\xB5" (µ) so it reads correctly in the
+// text panel, but inside math mode it must be the control word `\mu`.
+std::string latex_safe(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0xC2 && i + 1 < s.size() && (unsigned char)s[i + 1] == 0xB5) {
+            out += "\\mu ";
+            ++i;
+        } else {
+            out += char(c);
+        }
+    }
+    return out;
 }
 
 std::string format_percent(double pct, int sig) {

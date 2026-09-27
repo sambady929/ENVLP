@@ -29,6 +29,11 @@ std::string format_hz(double hz, int sig = 3);
 // A frequency in rad/s: 1.59e8 -> "159 Mrad/s".
 std::string format_rads(double w, int sig = 3);
 
+// Convert a plain-text engineering string to LaTeX-safe text: the SI micro
+// prefix (raw UTF-8 µ) becomes `\mu` so a value like "1 µHz" typesets in math
+// mode instead of breaking.
+std::string latex_safe(const std::string& s);
+
 std::string format_db(double db, int decimals = 1);
 
 // A percentage as a plain decimal (no scientific notation):

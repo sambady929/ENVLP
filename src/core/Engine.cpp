@@ -103,7 +103,11 @@ std::string fmt_hz(double hz) {
     // Engineering number + prefix ("159M"), then reattach as "159 MHz".
     std::string s = eng::format_eng(hz, 3);
     std::string prefix;
-    if (!s.empty() && std::isalpha((unsigned char)s.back())) {
+    if (!s.empty() && (unsigned char)s.back() >= 0x80) {
+        // The micro prefix is a two-byte UTF-8 sequence.
+        prefix = s.substr(s.size() - 2);
+        s = s.substr(0, s.size() - 2);
+    } else if (!s.empty() && std::isalpha((unsigned char)s.back())) {
         prefix = s.substr(s.size() - 1);
         s = s.substr(0, s.size() - 1);
     }
@@ -196,7 +200,8 @@ void pole_wp_lines(const AnalysisResult& r, std::vector<std::string>& text,
             latex.push_back(ltag + " = 0");
         } else if (p.omega_expr.is_zero()) {
             text.push_back(tag + " = " + fmt_hz(hz));
-            latex.push_back(ltag + " = \\mathrm{" + fmt_hz(hz) + "}");
+            latex.push_back(ltag + " = \\mathrm{" + eng::latex_safe(fmt_hz(hz)) +
+                            "}");
         } else {
             text.push_back(tag + " = " + pretty(p.omega_expr));
             latex.push_back(ltag + " = " + to_latex(p.omega_expr));
@@ -414,8 +419,8 @@ std::string pole_zero_latex(const RootInfo& r, int i) {
     } else {
         double hz = std::fabs(r.omega) / (2.0 * M_PI);
         // Hz first (engineering notation), rad/s in parentheses (exponent).
-        line += "\\mathrm{" + fmt_hz(hz) + "}";
-        line += "\\ \\mathrm{(" + fmt_rads(r.omega) + ")}";
+        line += "\\mathrm{" + eng::latex_safe(fmt_hz(hz)) + "}";
+        line += "\\ \\mathrm{(" + eng::latex_safe(fmt_rads(r.omega)) + ")}";
         if (!r.latex_label.empty())
             line += ",\\quad \\tau = " + r.latex_label;
     }

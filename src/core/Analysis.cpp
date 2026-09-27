@@ -1514,8 +1514,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         std::string hdr = "Noise Analysis   " + eng::format_hz(f0) + " .. " +
                           eng::format_hz(f1);
         t << hdr << "\n========================================\n";
-        x << "Noise:\\quad \\mathrm{" << eng::format_hz(f0) << "} .. \\mathrm{"
-          << eng::format_hz(f1) << "}\n";
+        x << "Noise:\\quad \\mathrm{" << eng::latex_safe(eng::format_hz(f0))
+          << "} .. \\mathrm{" << eng::latex_safe(eng::format_hz(f1)) << "}\n";
 
         // ============================ OUTPUT =============================
         t << "\nOutput Noise\n------------\n";

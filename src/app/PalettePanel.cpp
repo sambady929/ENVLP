@@ -45,6 +45,11 @@ PalettePanel::PalettePanel(wxWindow* parent, Document* doc)
                        wxVSCROLL),
       doc_(doc) {
     for (const auto& e : kComps) tiles_.push_back({e.label, e.kind});
+    // Render each tile's artwork ONCE; the paint handler then just blits them.
+    // (Redrawing every symbol on each repaint -- including on every hover
+    // motion -- was needless work.)
+    for (const auto& t : tiles_)
+        swatches_.push_back(symbol_swatch(t.kind, 40, 30));
     SetBackgroundColour(theme::surface);
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     SetScrollRate(0, 8);
@@ -135,9 +140,8 @@ void PalettePanel::on_paint(wxPaintEvent&) {
                             : hov ? theme::border_strong : theme::border));
         dc.DrawRoundedRectangle(r, 4);
 
-        // Artwork: draw the symbol swatch centred in the upper part.
-        wxBitmap art = symbol_swatch(tiles_[i].kind, 40, 30);
-        dc.DrawBitmap(art, r.x + (r.width - 40) / 2, r.y + 4, true);
+        // Artwork: blit the cached swatch centred in the upper part.
+        dc.DrawBitmap(swatches_[i], r.x + (r.width - 40) / 2, r.y + 4, true);
 
         // Label under the artwork.
         dc.SetFont(label_font);

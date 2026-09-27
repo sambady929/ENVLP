@@ -449,6 +449,9 @@ bool PropertiesPanel::rename_component(const std::string& old_ref,
 void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
     rebuilding_ = true;
     doc_ = doc;
+    // Freeze so the many Add()/layout calls below do not repaint one-by-one --
+    // this is the bulk of the "panel is slow and clunky" cost.
+    Freeze();
     sel_ = selection;
 
     // Wipe previous rows (Clear(true) destroys the child windows too) and
@@ -721,6 +724,11 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
 
     sizer->AddSpacer(6);
     FitInside(); // size the virtual area to the content so it scrolls (#5)
+    // Scroll back to the top so the selected part's name/header is always the
+    // first thing visible in the panel.
+    Scroll(0, 0);
+    Thaw();
+    Refresh(false);
     rebuilding_ = false;
 }
 

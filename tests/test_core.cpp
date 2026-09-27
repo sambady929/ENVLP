@@ -92,6 +92,13 @@ static void test_eng_parse() {
     CHECK(!eng::parse_value("", v));
     CHECK(eng::format_eng(4700.0).substr(0, 3) == "4.7");
     CHECK(eng::format_eng(1e-7).find("n") != std::string::npos);
+    // The micro prefix is a raw UTF-8 µ in text, but must become `\mu` in
+    // LaTeX (a raw µ inside math mode renders as a broken glyph).
+    std::string hz = eng::format_hz(1e-6);
+    CHECK(hz.find("\xC2\xB5") != std::string::npos);         // text keeps µ
+    std::string lx = eng::latex_safe(hz);
+    CHECK(lx.find("\\mu") != std::string::npos);             // LaTeX gets \mu
+    CHECK(lx.find("\xC2\xB5") == std::string::npos);         // no raw µ left
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ private:
 
     Document* doc_;
     std::vector<Tile> tiles_;
+    std::vector<wxBitmap> swatches_; // cached artwork per tile (drawn once)
     int active_idx_ = -1;
     int hover_idx_ = -1;
 

@@ -854,6 +854,8 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
 
     // box selection rubber band: left-to-right = window (accent), right-to-
     // left = crossing (green), matching the reference's marquee semantics.
+    // The rectangle is an outline only (transparent fill) so it never hides the
+    // components underneath.
     if (box_selecting_) {
         wxRect r(int(std::min(box_a_.first, box_b_.first)),
                  int(std::min(box_a_.second, box_b_.second)),
@@ -863,10 +865,8 @@ void SchematicCanvas::on_paint(wxPaintEvent&) {
         wxColour col = crossing ? theme::marquee_crossing : theme::accent;
         dc.SetPen(wxPen(col, 1, crossing ? wxPENSTYLE_SHORT_DASH
                                          : wxPENSTYLE_SOLID));
-        dc.SetBrush(wxBrush(crossing ? theme::marquee_crossing_soft
-                                     : theme::accent_soft));
-        dc.DrawRectangle(r);
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.DrawRectangle(r);
     }
 
     // pending net-label placement: show the next name and its anchor point
