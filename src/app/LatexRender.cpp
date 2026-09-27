@@ -61,6 +61,12 @@ bool symbol_for(const std::string& name, std::string& out) {
         {"ldots", "&#8230;"},
         {"circ", "&deg;"},      {"degree", "&deg;"},
         {"infty", "&infin;"},   {"partial", "&part;"},  {"angle", "&ang;"},
+        // math operators: typeset upright, with a normal font
+        {"atan", "atan"},       {"arctan", "arctan"},   {"tan", "tan"},
+        {"sin", "sin"},         {"cos", "cos"},         {"tanh", "tanh"},
+        {"sinh", "sinh"},       {"cosh", "cosh"},       {"log", "log"},
+        {"ln", "ln"},           {"exp", "exp"},         {"abs", "abs"},
+        {"deg", "&deg;"},
         {",", "&thinsp;"},      {";", "&thinsp;"},     {" ", "&nbsp;"},
         {"quad", "&emsp;"},     {"qquad", "&emsp;&emsp;"},
         {"!", ""},
@@ -219,12 +225,14 @@ private:
         std::string sym;
         if (symbol_for(w, sym)) return sym;
 
-        // Unknown control word: show its name (never lose information).
+        // Unknown control word: show its name (never lose information). Stop
+        // at a following control word too (a `\`), so `\foo\left(` does not
+        // gobble the `\left`.
         i_ = save;
         ++i_; // skip backslash
         std::string raw;
         while (!eof() && s_[i_] != ' ' && s_[i_] != '{' && s_[i_] != '}' &&
-               s_[i_] != '_' && s_[i_] != '^')
+               s_[i_] != '_' && s_[i_] != '^' && s_[i_] != '\\')
             raw += s_[i_++];
         return html_escape(raw);
     }

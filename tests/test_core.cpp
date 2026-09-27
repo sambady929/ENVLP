@@ -828,11 +828,20 @@ static void test_noise_analysis_input_referred() {
     // "Results" tab is blank.
     CHECK(!cr.latex.empty());
     CHECK(!cr.latex_report.empty());
-    CHECK(cr.latex.find("V_{n,out}") != std::string::npos);
+    // The headline is the symbolic output noise density.
+    CHECK(cr.latex.find("S_{v}(f)") != std::string::npos);
     // a spectrum is published for the plot tab
     CHECK(cr.transfer.has_noise);
     CHECK(cr.transfer.noise_f_hz.size() > 10);
     CHECK(cr.transfer.noise_vout.size() == cr.transfer.noise_f_hz.size());
+    // density comes before integrated noise in the report, and the symbolic
+    // density (4kT/R1) is present
+    size_t pd = cr.report.find("Output Noise Density");
+    size_t pi = cr.report.find("Integrated Output Noise");
+    CHECK(pd != std::string::npos && pi != std::string::npos && pd < pi);
+    CHECK(cr.report.find("S_v(f)") != std::string::npos);
+    CHECK(cr.transfer.noise_sym_text.find("kT") != std::string::npos);
+    CHECK(cr.transfer.noise_sym_latex.find("S_{v}") != std::string::npos);
 }
 
 // Noise with a current-source excitation reports input-referred *current*

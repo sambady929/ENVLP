@@ -287,6 +287,18 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
         dc.DrawText("Run an analysis (F5) to see the plot.", 12, 12);
         return;
     }
+    // Noise and transfer-function families are exclusive: a noise result only
+    // has a spectrum to show, everything else only has Bode/Nyquist/Nichols.
+    if (res_->has_noise && mode_ != PlotMode::Noise) {
+        dc.SetTextForeground(wxColour(150, 150, 155));
+        dc.DrawText("This is a noise result -- see the Noise plot.", 12, 12);
+        return;
+    }
+    if (!res_->has_noise && mode_ == PlotMode::Noise) {
+        dc.SetTextForeground(wxColour(150, 150, 155));
+        dc.DrawText("No noise data for this result.", 12, 12);
+        return;
+    }
     switch (mode_) {
         case PlotMode::Bode: paint_bode(dc, sz); break;
         case PlotMode::Nyquist: paint_nyquist(dc, sz); break;
@@ -794,10 +806,7 @@ void BodeCanvas::paint_noise(wxDC& dc, const wxSize& sz) const {
         dc.SetFont(wxNullFont);
     }
     dc.SetTextForeground(wxColour(200, 40, 40));
-    dc.DrawText(res_->noise_input_is_current
-                    ? "Input-Referred Current Noise (A/sqrt(Hz))"
-                    : "Output Noise Density (V/sqrt(Hz))",
-                mL, mT - 16);
+    dc.DrawText("Output Noise Voltage Density (V/sqrt(Hz))", mL, mT - 16);
 
     // decade gridlines
     int e0 = int(std::floor(std::log10(f_lo)));
@@ -971,12 +980,27 @@ void BodePanel::apply_axis() {
 }
 
 void BodePanel::set_result(const syms::AnalysisResult* r) {
-    // A noise result carries a spectrum, not a transfer function: switch the
-    // plot to the noise view so the tab shows something useful.
-    if (r && r->has_noise) {
-        plot_->set_mode(PlotMode::Noise);
-        if (mode_) mode_->SetSelection(3);
+    // Noise carries a spectrum, not a transfer function, so it gets its own
+    // plot family. Every other analysis gets the usual Bode/Nyquist/Nichols.
+    // The mode selector only offers the applicable family.
+    bool noise = r && r->has_noise;
+    if (mode_) {
+        mode_->Clear();
+        mode_->Append("Bode");
+        mode_->Append("Nyquist");
+        mode_->Append("Nichols");
+        mode_->Append("Noise");
+        if (noise) {
+            // only the noise family is meaningful
+            mode_->SetSelection(3);
+            mode_->Enable(false);
+        } else {
+            mode_->Enable(true);
+            mode_->SetSelection(0);
+        }
     }
+    if (noise) plot_->set_mode(PlotMode::Noise);
+    else if (plot_->mode() == PlotMode::Noise) plot_->set_mode(PlotMode::Bode);
     plot_->set_result(r);
     Refresh();
 }

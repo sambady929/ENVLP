@@ -41,6 +41,11 @@ struct AnalysisResult {
     double noise_vout_total = 0.0;    // integrated over the band (V rms)
     bool noise_input_is_current = false;
     double noise_iin_total = 0.0;     // input-referred current noise (A rms)
+    // Symbolic (low-entropy) forms. `noise_sym_text` holds the per-source and
+    // total PSD expressions (V^2/Hz), `noise_sym_latex` their LaTeX; the
+    // integrated forms are in `noise_int_text` / `noise_int_latex`.
+    std::string noise_sym_text, noise_sym_latex;
+    std::string noise_int_text, noise_int_latex;
 };
 
 // Throws std::runtime_error with a user-facing message.
