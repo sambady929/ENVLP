@@ -283,13 +283,14 @@ static void test_cs_amp_parasitics() {
         CHECK(str(H).find("ro_M1") == std::string::npos);
         CHECK(str(H).find("Cgd_M1") == std::string::npos);
     }
-    // (b) ro enabled: H = -gm * (Rd || ro)
+    // (b) ro enabled: H = -gm * (Rd || ro), and the parallel atom is HELD
+    //     (low entropy) rather than expanded to Rd*ro/(Rd+ro).
     {
         AnalysisResult r = analyze(make(true, false, false), req);
         gm = S(r, "gm_M1"); ro = S(r, "ro_M1");
         ex H = raw_H(r);
         CHECK(str(H).find("ro_M1") != std::string::npos);
-        ex expect = -gm * S(r, "Rd") * ro / (S(r, "Rd") + ro);
+        ex expect = -gm * par_ex(S(r, "Rd"), ro);
         CHECK((H - expect).normal().is_zero());
     }
     // (c) Cgd enabled with ideal drive: H = -(gm - s*Cgd)*Rd / (1 + s*Cgd*Rd)
@@ -573,16 +574,14 @@ static void test_magnitude_pruning() {
     req.f0_hz = 1e3;
     req.threshold_db = 40.0;
     AnalysisResult r = analyze(c, req);
-    // the Cgd time-constant term in the denominator is ~154 dB below the CL
-    // term and must be dropped, leaving a single dominant pole
-    bool dropped_cgd_den = false;
-    for (const auto& d : r.pruned.dropped)
-        if (d.location.find("denominator") == 0 &&
-            d.term.find("Cgd_M1") != std::string::npos)
-            dropped_cgd_den = true;
-    CHECK(dropped_cgd_den);
+    // The output pole is (CL + Cgd)*(Rd||ro). Cgd is ~154 dB below CL, so as a
+    // parallel capacitance it vanishes: the surviving factored denominator has
+    // a single pole with CL only, and Cgd appears only in the (unpruned)
+    // numerator feedforward term.
     CHECK(r.pruned.text.find("CL") != std::string::npos);
     CHECK(r.pruned.den_factors.size() == 1);
+    if (r.pruned.den_factors.size() == 1)
+        CHECK(r.pruned.den_factors[0].text.find("Cgd") == std::string::npos);
 
     // exact mode keeps every term
     req.prune = false;
@@ -911,6 +910,33 @@ static void test_tf_low_entropy_parallel() {
     CHECK(cr.transfer.pruned.gain.is_equal(ex(1)) == false);
     CHECK(cr.transfer.pruned.text.find("(R1||R2)") != std::string::npos ||
           cr.transfer.pruned.text.find("(R2||R1)") != std::string::npos);
+}
+
+// The MNA must combine resistances that sit between the same AC nodes into a
+// single held parallel atom BEFORE solving, so the result is in terms of
+// (R1||ro) and never has an expanded R1*ro/(R1+ro) to recover.
+static void test_mna_parallel_precombine() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    m.param_on["Cgs"] = false;
+    m.param_on["Cgd"] = false;
+    m.param_on["Cds"] = false;
+    c.comps.push_back(m);
+    // Rd from out to ground; Rg from out to ground: Rd||Rg||ro at the drain.
+    c.comps.push_back(comp(Kind::R, "Rd", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "Rg", {"out", "0"}, "10k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    AnalysisResult r = analyze(c, req);
+    // Every 1/R term at the drain is one held par() atom, never expanded.
+    CHECK(str(r.num_raw).find("Rd*ro_M1") == std::string::npos);
+    CHECK(str(r.den_raw).find("Rd*ro_M1") == std::string::npos);
 }
 
 // Output impedance must collapse R1 and ro into (R1||ro) -- the impedance
@@ -1463,6 +1489,7 @@ int main(int argc, char** argv) {
         {"noise_current_amp", test_noise_current_input_and_amp},
         {"tf_low_entropy_parallel", test_tf_low_entropy_parallel},
         {"zout_parallel_collapses", test_zout_parallel_collapses},
+        {"mna_parallel_precombine", test_mna_parallel_precombine},
         {"all_analyses_latex_report", test_all_analyses_have_latex_report},
         {"percent_no_exponent", test_percent_no_exponent},
     };

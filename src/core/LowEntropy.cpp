@@ -818,29 +818,48 @@ static bool has_negative_power(const ex& e) {
     return false;
 }
 
-// A sum whose every term is purely resistive (no Farad/Siemens symbol, and no
-// inverse power)? This is the structural signature of a series resistance:
-// R1 + R2. Capacitors add in parallel (C1 + C2 is *not* resistive) and a
-// conductance 1/R is not a resistance, so both are excluded.
-static bool is_resistor_sum(const ex& e, const ParamTable& pt) {
+// Classify a sum whose every term is a single passive element of the SAME
+// physical class: R1 + R2 (all Ohm), C1 + C2 (all Farad), L1 + L2 (all Henry).
+// Such a sum is either a series combination (R, L) or a parallel combination
+// (C), always with the "keep the largest term" semantics. A mixed sum, or one
+// containing a conductance 1/R, is not uniform. Returns false when not uniform.
+static bool uniform_passive_sum(const ex& e, const ParamTable& pt,
+                                UnitClass& cls) {
     if (!is_a<GiNaC::add>(e)) return false;
+    cls = UnitClass::Plain;
     for (size_t i = 0; i < e.nops(); ++i) {
         const ex& t = e.op(i);
         if (has_negative_power(t)) return false;
+        // the term's class: which unit-class symbol does it contain?
+        UnitClass tc = UnitClass::Plain;
+        int seen = 0;
         for (const auto& kv : pt.cls) {
-            if (kv.second == UnitClass::Ohm) continue;
             auto sit = pt.syms.find(kv.first);
             if (sit == pt.syms.end()) continue;
-            if (t.has(sit->second)) return false; // a non-resistor symbol
+            if (!t.has(sit->second)) continue;
+            if (kv.second != UnitClass::Ohm && kv.second != UnitClass::Farad &&
+                kv.second != UnitClass::Henry)
+                return false; // a gm / dimensionless symbol: not a passive sum
+            tc = kv.second;
+            ++seen;
         }
+        // Exactly one passive symbol: a bare element (R1, C3, L2). A product
+        // like C1*C2 has units F^2 and is NOT a capacitor, so it must not be
+        // treated as one here (that magnitude pruning handles it, and records
+        // it in `dropped`).
+        if (seen != 1) return false;
+        if (i == 0) cls = tc;
+        else if (tc != cls) return false; // mixed classes
     }
-    return true;
+    return cls != UnitClass::Plain;
 }
 
-// Keep only the dominant resistor(s) of a resistive sum (drop those more than
-// threshold_db below the largest). 10 + 1 -> 10, R1 + R2 -> R1 (R2 << R1).
-static ex drop_small_resistors(const ex& sum, const ParamTable& pt,
-                               double threshold_db) {
+// The series/parallel "keep the largest" rule, for a uniform passive sum.
+// R1 + R2 -> R1 (series R), C1 + C2 -> C1 (parallel C), L1 + L2 -> L1 (series
+// L): in all three the larger term dominates and a term more than threshold_db
+// below it falls away.
+static ex drop_small_terms(const ex& sum, const ParamTable& pt,
+                           double threshold_db) {
     double lim = std::pow(10.0, threshold_db / 20.0);
     double best = -1e300;
     for (size_t i = 0; i < sum.nops(); ++i)
@@ -863,8 +882,9 @@ ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
             ops.push_back(prune_series(e.op(i), pt, threshold_db));
         ex sum = GiNaC::add(ops);
         if (!is_a<GiNaC::add>(sum)) return sum;
-        if (is_resistor_sum(sum, pt))
-            return drop_small_resistors(sum, pt, threshold_db);
+        UnitClass cls;
+        if (uniform_passive_sum(sum, pt, cls))
+            return drop_small_terms(sum, pt, threshold_db);
         // R1*C + R2*C factors to C*(R1 + R2) (or (R1+R2)*C -- GiNaC's operand
         // order depends on symbol serial numbers, so scan for the residual add
         // rather than assuming it is the last factor). Reduce the residual sum.
@@ -875,8 +895,9 @@ ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
                 if (is_a<GiNaC::add>(fc.op(i))) inner = fc.op(i);
                 else common = common * fc.op(i);
             }
-            if (!inner.is_zero() && is_resistor_sum(inner, pt)) {
-                ex reduced = drop_small_resistors(inner, pt, threshold_db);
+            UnitClass icls;
+            if (!inner.is_zero() && uniform_passive_sum(inner, pt, icls)) {
+                ex reduced = drop_small_terms(inner, pt, threshold_db);
                 if (!reduced.is_equal(inner))
                     return common * reduced;
             }
@@ -923,10 +944,19 @@ ex simplify_gain(const ex& e, const ParamTable& pt, double threshold_db) {
         return ex(GiNaC::mul(ops));
     }
     if (is_a<GiNaC::power>(e)) {
+        // A negative power is a denominator: simplify the base, then try the
+        // ratio rule against a numerator that may sit outside this node.
         ex base = simplify_gain(e.op(0), pt, threshold_db);
         return GiNaC::pow(base, e.op(1));
     }
     return e;
+}
+
+// Reduce a coefficient all the way: recurse the structural rules, then let
+// GiNaC cancel the result. This is what turns A/(GBW*(1+A)) into 1/GBW when A
+// is large: the (1+A) inside the denominator reduces to A, so the A cancels.
+ex simplify_coeff(const ex& e, const ParamTable& pt, double threshold_db) {
+    return simplify_gain(e, pt, threshold_db).normal();
 }
 
 // Wrap a factor's text in parentheses when it is a sum or a ratio, so a
@@ -1282,6 +1312,21 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     //     the reduction's .expand() doesn't immediately undo it): the whole-
     //     polynomial factor (x*a + x*b -> x*(a+b)) plus a per-s-coefficient
     //     factor (s*R1*ro*Cds + s*C1*R1*ro -> s*R1*ro*(Cds + C1)).
+    //     Each s-coefficient also gets the structural gain reduction, so
+    //     A/(GBW*(1 + A)) collapses to 1/GBW when A >> 1 (the "A/(A+1)" rule).
+    auto simplify_coeffs = [&](const ex& poly) -> ex {
+        int deg = 0;
+        try { deg = poly.has(s) ? poly.degree(s) : 0; } catch (...) { return poly; }
+        if (deg < 0 || deg > 64) return poly;
+        ex acc = 0;
+        for (int k = 0; k <= deg; ++k) {
+            ex c = poly.coeff(s, k);
+            if (c.is_zero()) continue;
+            c = simplify_coeff(c, params, opts.threshold_db);
+            acc += c * GiNaC::pow(s, k);
+        }
+        return acc;
+    };
     if (opts.prune) {
         ex nf = factor_common_impl(n);
         ex df = factor_common_impl(d);
@@ -1289,6 +1334,8 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         if (!df.is_zero()) d = df;
         n = factor_coeffs(n, s);
         d = factor_coeffs(d, s);
+        n = simplify_coeffs(n);
+        d = simplify_coeffs(d);
     }
 
     R.num_poly = n;

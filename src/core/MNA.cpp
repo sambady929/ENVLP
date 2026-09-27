@@ -1,5 +1,6 @@
 #include "core/MNA.h"
 #include "core/Eng.h"
+#include "core/Par.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -172,8 +173,91 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
         return it == sys.node_idx.end() ? -1 : it->second;
     };
 
+    // ---- structural parallel-conductance combination (low-entropy) --------
+    // Every passive *conductance* between the same pair of nodes is deferred
+    // and combined into one held parallel atom before solving, so the MNA
+    // result is already in terms of (R1||ro) and never has to recover it from
+    // an expanded polynomial afterwards. A conductance 1/R is recognised by
+    // the `R` symbol's class, so this covers both standalone resistors and a
+    // device's output resistance (ro) / rpi / rd alike.
+    //
+    // Nodes are canonicalised so a rail held at AC ground by an ideal source
+    // (other than the driven input) counts as node "0": that is what makes a
+    // resistor to VDD and an output resistance to ground genuinely parallel.
+    std::set<std::string> acg;
+    acg.insert("0");
+    for (bool ch = true; ch;) {
+        ch = false;
+        auto add = [&](const std::string& n) {
+            std::string k = (n == "GND") ? "0" : n;
+            if (acg.insert(k).second) ch = true;
+        };
+        for (const auto& c : circ.comps) {
+            if (c.kind == Kind::V && c.ref != input_ref) {
+                bool a = acg.count(c.nodes[0] == "GND" ? "0" : c.nodes[0]) != 0;
+                bool b = acg.count(c.nodes[1] == "GND" ? "0" : c.nodes[1]) != 0;
+                if (a) add(c.nodes[1]);
+                if (b) add(c.nodes[0]);
+            } else if (c.kind == Kind::VDD && c.ref != input_ref) {
+                add(c.nodes[0]);
+            }
+        }
+    }
+    auto acg_rank = [&](int i) -> long long {
+        // rank an idx: ground (-1) is 0; nodes are 1..n
+        return i < 0 ? 0 : (long long)i + 1;
+    };
+    struct Deferred {
+        ex sum;                 // accumulated admittance (held, not expanded)
+        std::vector<ex> res_syms; // resistor symbols, if every term is 1/R
+        bool all_res = true;    // every contribution so far is a pure 1/R
+    };
+    std::map<std::pair<long long, long long>, Deferred> def;
+    // Try to read `y` as 1/R for an Ohm-class symbol; on success set `rsym`.
+    auto as_conductance_of = [&](const ex& y, ex& rsym) -> bool {
+        ex base = y;
+        if (GiNaC::is_a<GiNaC::power>(base)) {
+            const ex& e = base.op(1);
+            if (!(GiNaC::is_a<GiNaC::numeric>(e) &&
+                  GiNaC::ex_to<GiNaC::numeric>(e).is_equal(
+                      GiNaC::numeric(-1))))
+                return false;
+            base = base.op(0);
+        }
+        if (!GiNaC::is_a<GiNaC::symbol>(base)) return false;
+        for (const auto& kv : sys.params.syms)
+            if (base.is_equal(kv.second)) {
+                if (sys.params.cls.count(kv.first) &&
+                    sys.params.cls.at(kv.first) == UnitClass::Ohm) {
+                    rsym = base;
+                    return true;
+                }
+                return false;
+            }
+        return false;
+    };
+    auto defer_adm = [&](int a, int b2, const ex& y) {
+        long long ra = acg_rank(a), rb = acg_rank(b2);
+        if (ra == rb) return;              // shunt to the same node: ignore
+        auto key = ra < rb ? std::make_pair(ra, rb)
+                           : std::make_pair(rb, ra);
+        auto& d = def[key];
+        d.sum += y;
+        ex rsym;
+        if (d.all_res && as_conductance_of(y, rsym))
+            d.res_syms.push_back(rsym);
+        else
+            d.all_res = false;
+        (void)rsym;
+    };
+
     // --- generic stamps --------------------------------------------------
+    // A *pure* admittance (1/R: no explicit s) is deferred so that every
+    // resistance between the same node pair is combined into one low-entropy
+    // atom; anything with s (a capacitance) is stamped directly.
+    auto adm_has_s = [&](const ex& y) { return y.has(s); };
     auto stamp_adm = [&](int a, int bb, const ex& y) {
+        if (!adm_has_s(y)) { defer_adm(a, bb, y); return; }
         if (a >= 0) {
             sys.Y(a, a) += y;
             if (bb >= 0) sys.Y(a, bb) -= y;
@@ -566,6 +650,34 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
             }
             break;
         }
+        }
+    }
+
+    // Flush the deferred passive admittances. A group whose every contribution
+    // is a pure 1/R becomes a single held parallel atom: with one resistor it
+    // is just 1/R; with several it is 1/(R_i||R_j||...). Otherwise (a mix with
+    // non-resistor admittances) fall back to stamping the accumulated sum.
+    for (const auto& kv : def) {
+        long long ra = kv.first.first, rb = kv.first.second;
+        int a = ra == 0 ? -1 : int(ra - 1);
+        int b2 = rb == 0 ? -1 : int(rb - 1);
+        const Deferred& d = kv.second;
+        ex y;
+        if (d.all_res && d.res_syms.size() >= 2) {
+            ex rpar = d.res_syms[0];
+            for (size_t i = 1; i < d.res_syms.size(); ++i)
+                rpar = par_ex(rpar, d.res_syms[i]);
+            y = ex(1) / rpar;
+        } else {
+            y = d.sum;
+        }
+        if (a >= 0) {
+            sys.Y(a, a) += y;
+            if (b2 >= 0) sys.Y(a, b2) -= y;
+        }
+        if (b2 >= 0) {
+            sys.Y(b2, b2) += y;
+            if (a >= 0) sys.Y(b2, a) -= y;
         }
     }
     return sys;

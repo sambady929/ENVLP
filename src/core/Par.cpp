@@ -16,7 +16,10 @@ namespace {
 DECLARE_FUNCTION_2P(par)
 
 // par_eval: fold when both arguments are numeric (or equal), otherwise stay
-// symbolic so that R1||R2 survives into the output.
+// symbolic so that R1||R2 survives into the output. The arguments are
+// canonicalised (ordered) so that par(a,b) and par(b,a) are the *same* held
+// atom: this matters both for display consistency and for expression
+// comparison (e.g. grouping noise sources that share a transfer).
 ex par_eval(const ex& a, const ex& b) {
     if (a.is_equal(b)) return a / 2;
     if (is_a<numeric>(a) && is_a<numeric>(b)) {
@@ -24,6 +27,9 @@ ex par_eval(const ex& a, const ex& b) {
         if (na.is_zero() || nb.is_zero()) return ex(0);
         return (a * b) / (a + b);
     }
+    // Order the two arguments by GiNaC's canonical comparison so the atom is
+    // commutative. compare() is the ordering GiNaC itself uses for sums.
+    if (a.compare(b) > 0) return par(b, a).hold();
     return par(a, b).hold();
 }
 
