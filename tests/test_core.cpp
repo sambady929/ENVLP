@@ -805,8 +805,8 @@ static void test_noise_analysis_input_referred() {
     sp.sweep.f_start_hz = 1;
     sp.sweep.f_stop_hz = 1e6;
     CardResult cr = run_analysis(c, sp);
-    CHECK(cr.report.find("Output-Referred") != std::string::npos);
-    CHECK(cr.report.find("Input-Referred") != std::string::npos);
+    CHECK(cr.report.find("Output Noise") != std::string::npos);
+    CHECK(cr.report.find("Input Noise") != std::string::npos);
     CHECK(cr.values.size() == 2);
 
     // numeric: gain = 1/2, so vin = 2*vout
@@ -824,31 +824,25 @@ static void test_noise_analysis_input_referred() {
     double expect_vout = expect_density * std::sqrt(1e6 - 1.0);
     CHECK_CLOSE(vout, expect_vout, expect_vout * 0.03);
     CHECK_CLOSE(vin, 2.0 * expect_vout, expect_vout * 0.04);
-    // The typeset (LaTeX) result must be populated, otherwise the default
-    // "Results" tab is blank.
-    CHECK(!cr.latex.empty());
+    // The typeset (LaTeX) report must be populated, otherwise the Math tab is
+    // blank.
     CHECK(!cr.latex_report.empty());
-    // The headline is the symbolic output noise density.
-    CHECK(cr.latex.find("S_{v}(f)") != std::string::npos);
+    CHECK(cr.latex_report.find("S_{v}") != std::string::npos);
     // a spectrum is published for the plot tab
     CHECK(cr.transfer.has_noise);
     CHECK(cr.transfer.noise_f_hz.size() > 10);
     CHECK(cr.transfer.noise_vout.size() == cr.transfer.noise_f_hz.size());
-    // density comes before integrated noise in the report, and the symbolic
-    // density (4kT/R1) is present
-    size_t pd = cr.report.find("Output Noise Density");
-    size_t pi = cr.report.find("Integrated Output Noise");
-    CHECK(pd != std::string::npos && pi != std::string::npos && pd < pi);
-    CHECK(cr.report.find("S_v(f)") != std::string::npos);
-    CHECK(cr.transfer.noise_sym_text.find("kT") != std::string::npos);
-    CHECK(cr.transfer.noise_sym_latex.find("S_{v}") != std::string::npos);
-    // Whiteboard-style breakdown: thermal and flicker are named separately,
-    // the transfer H(s) is given a name, and the headline is a sum of
-    // |H|^2 * (density) terms.
-    CHECK(cr.report.find("(thermal)") != std::string::npos);
-    CHECK(cr.report.find("H(s)") != std::string::npos);
-    CHECK(cr.latex.find("H(s)^2") != std::string::npos ||
-          cr.latex.find("\\left|H\\right|^2") != std::string::npos);
+    // Output portion comes before Input portion; density precedes integrated.
+    size_t po = cr.report.find("Output Noise");
+    size_t pi = cr.report.find("Input Noise");
+    CHECK(po != std::string::npos && pi != std::string::npos && po < pi);
+    size_t pd = cr.report.find("Density S_v");
+    size_t pint = cr.report.find("Integrated: V_n,out");
+    CHECK(pd != std::string::npos && pint != std::string::npos && pd < pint);
+    // The output density and input density are separate expressions.
+    CHECK(cr.report.find("Density S_v(f)") != std::string::npos);
+    CHECK(cr.report.find("Density S_i(f)") != std::string::npos);
+    CHECK(cr.report.find("H(s) = ") != std::string::npos);
 }
 
 // Noise with a current-source excitation reports input-referred *current*
@@ -869,20 +863,19 @@ static void test_noise_current_input_and_amp() {
     sp.sweep.f_start_hz = 1;
     sp.sweep.f_stop_hz = 1e6;
     CardResult cr = run_analysis(c, sp);
-    CHECK(cr.report.find("Input-Referred Current Noise") != std::string::npos);
-    CHECK(cr.report.find("en (input voltage)") != std::string::npos);
+    CHECK(cr.report.find("Input Noise") != std::string::npos);
     CHECK(cr.transfer.has_noise);
     CHECK(cr.transfer.noise_input_is_current);
     CHECK(cr.transfer.noise_iin_total > 0.0);
-    // The amplifier's en sees the amp in unity gain, so its transfer is 1.
-    CHECK(cr.report.find("H1(s) = 1") != std::string::npos ||
-          cr.report.find("H(s) = 1") != std::string::npos);
-    // The LaTeX mirrors the text sections (density, integrated, transfers,
-    // per-source) and percentages are plain decimals (no exponents).
-    CHECK(cr.latex_report.find("V_{n,out}") != std::string::npos);
-    CHECK(cr.latex_report.find("H1(s)") != std::string::npos ||
-          cr.latex_report.find("H(s)") != std::string::npos);
-    // the percent line is a plain decimal (no "e" exponent)
+    // The amplifier's en is modelled as unity-gain at the output: its output
+    // contribution is en^2 alone (no H(s) multiplier), and at the input it is
+    // divided by H(s)^2. Also, it is a VOLTAGE density (e_n), not i_n.
+    CHECK(cr.report.find("(en_U1^2)") != std::string::npos);
+    CHECK(cr.report.find("(en_U1^2)/H(s)^2") != std::string::npos);
+    CHECK(cr.report.find("e_n^2 = en_U1^2 V^2/Hz") != std::string::npos);
+    // The LaTeX report mirrors the text, and percentages are plain decimals.
+    CHECK(cr.latex_report.find("S_{v}") != std::string::npos);
+    CHECK(cr.latex_report.find("S_{i}") != std::string::npos);
     size_t ppos = cr.latex_report.find("\\%");
     CHECK(ppos != std::string::npos);
     if (ppos != std::string::npos) {
@@ -939,8 +932,8 @@ static void test_noise_survives_bad_input() {
     sp.output = "V(a)";
     sp.f0_hz = 1e3;
     CardResult cr = run_analysis(c, sp);
-    CHECK(cr.report.find("Output-Referred") != std::string::npos);
-    CHECK(!cr.latex.empty());
+    CHECK(cr.report.find("Output Noise") != std::string::npos);
+    CHECK(!cr.latex_report.empty());
     CHECK(cr.values.size() == 2);
 }
 
