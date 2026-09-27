@@ -782,11 +782,12 @@ static void test_dc_analysis() {
     sp.kind = AnalysisKind::DC;
     sp.output = "V(out)";
     CardResult cr = run_analysis(c, sp);
-    // resistive divider: V(out) = 1/2
+    // resistive divider: V(out) = V1/2, with V1 kept as a symbol.
     CHECK(cr.report.find("V(out)") != std::string::npos);
-    CHECK(!cr.latex.empty());
-    CHECK(cr.latex.find("aligned") != std::string::npos);
-    // the LaTeX report mirrors the text report (one line per value)
+    CHECK(cr.report.find("V1") != std::string::npos);
+    // There is no single headline expression for a multi-value operating point,
+    // so only the per-value LaTeX report is emitted.
+    CHECK(cr.latex.empty());
     CHECK(!cr.latex_report.empty());
     CHECK(cr.latex_report.find("V(out)") != std::string::npos);
 }
@@ -1581,7 +1582,9 @@ static void test_current_source_spice_sign() {
     sp.kind = AnalysisKind::DC;
     sp.output = "V(out)";
     CardResult cr = run_analysis(c, sp);
-    CHECK(cr.report.find("V(out) = -R1") != std::string::npos);
+    // The source is symbolic: V(out) = -(I1 * R1).
+    CHECK(cr.report.find("V(out) = -I1*R1") != std::string::npos ||
+          cr.report.find("V(out) = -R1*I1") != std::string::npos);
 }
 
 // Series is "two elements share a node nothing else touches". Whether to fold
@@ -1783,6 +1786,65 @@ static void test_dc_common_source_vdd_minus_rid() {
     DcSolution dc = solve_dc(c, sp.tech);
     double vout = eval_complex(dc.node_v["out"], dc.params, 0.0).real();
     CHECK_CLOSE(vout, 4.8, 0.05);
+    // The report keeps the symbols and exact fractions, and reads as a KVL
+    // bias equation rather than a numeric dump.
+    CHECK(cr.report.find("1/2") != std::string::npos);
+    CHECK(cr.report.find("V1") == std::string::npos); // this circuit uses VDD/VG
+    CHECK(cr.report.find("Vth") != std::string::npos);
+    CHECK(cr.report.find("0.5") == std::string::npos); // fractions, not decimals
+}
+
+// The tia_lg operating point: the amp's inverting-node voltage appears through
+// the finite gain, and V(out) collapses to I1*(R1||(R2+R3))*A/(A+1) with the
+// parallel atom recovered (not an expanded resistor ratio).
+static void test_dc_tia_low_entropy_form() {
+    Circuit c;
+    Component i1 = comp(Kind::I, "I1", {"n1", "0"}, "0");
+    i1.dc_text = "1";
+    c.comps.push_back(i1);
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"n1", "m"}, "3.3k"));
+    c.comps.push_back(comp(Kind::R, "R3", {"m", "out"}, "3.3k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    // Parallel atom recovered, symbolic gain kept (A/(A+1)), I1 symbolic.
+    CHECK(cr.report.find("||") != std::string::npos);
+    CHECK(cr.report.find("A_U1") != std::string::npos);
+    CHECK(cr.report.find("I1") != std::string::npos);
+    // The exact KVL: V(out) - V(n1) = I1*(R1||(R2+R3))*(finite-gain factor).
+    // R1||(R2+R3) = 10k * 6.6k / 16.6k ~ 3.976k, so with I1 = 1 A the drop is
+    // ~ 3976 V (a 1 A bias drives large numbers; the point is the structure).
+    DcSolution dc = solve_dc(c);
+    ex diff = (dc.node_v["out"] - dc.node_v["n1"]).normal();
+    CHECK_CLOSE(eval_complex(diff, dc.params, 0.0).real(), 3975.9, 1.0);
+}
+
+// The pretty-printer must parenthesise an additive denominator factor, so
+// 1/((1+A)*(R1+R2+R3)) does not print as 1/(1+A*R1+R2+R3).
+static void test_pretty_denominator_parens() {
+    Circuit c;
+    Component i1 = comp(Kind::I, "I1", {"n1", "0"}, "0");
+    i1.dc_text = "1";
+    c.comps.push_back(i1);
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"n1", "m"}, "3.3k"));
+    c.comps.push_back(comp(Kind::R, "R3", {"m", "out"}, "3.3k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    // A factored two-factor denominator must appear as (…)*(…) or via a
+    // parallel atom -- never as a bare "A_U1*R1" run-together.
+    CHECK(cr.report.find("A_U1*R1") == std::string::npos ||
+          cr.report.find("(A_U1") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -1845,6 +1907,8 @@ int main(int argc, char** argv) {
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
         {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
         {"dc_common_source", test_dc_common_source_vdd_minus_rid},
+        {"dc_tia_low_entropy", test_dc_tia_low_entropy_form},
+        {"pretty_denominator", test_pretty_denominator_parens},
         {"dc_triode_aborts", test_dc_large_signal_triode_aborts},
         {"ac_source_superposition", test_ac_superposition_of_sources},
     };

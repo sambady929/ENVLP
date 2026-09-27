@@ -1056,8 +1056,6 @@ std::string wrap_compound(const std::string& t) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// LaTeX
-// ---------------------------------------------------------------------------
 std::string to_latex(const ex& e) {
     std::ostringstream os;
     e.print(GiNaC::print_latex(os));

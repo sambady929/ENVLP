@@ -281,31 +281,30 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     ParamTable& pt = dc.params;
 
-    // Prune one DC value: rank its terms by magnitude at DC and drop only
-    // terms far below the dominant one. DC uses the (looser) pole/zero
-    // threshold, not the 20 dB structural one: an operating point's bias terms
-    // (e.g. the R1*Id drop below VDD) are physically meaningful and must not be
-    // discarded just because they are an order of magnitude below the rail.
+    // Put one operating-point value into a design-readable form:
+    //   1. combine over a common denominator (exact rationals, so 1/2 stays
+    //      1/2, not 0.5);
+    //   2. recover parallel structure: R1*R2/(R1+R2) -> R1||R2 and
+    //      R1*(R2+R3)/(R1+R2+R3) -> R1||(R2+R3);
+    //   3. otherwise keep the denominator a clean factored block.
+    // We keep a finite amplifier gain's "+1": V(out) then reads as the exact
+    // KVL sum, not the ideal A -> infinity limit. (A "to_parallel" result is
+    // already tidy, so we return it without a normal() that would re-expand.)
     auto dc_value = [&](ex v) -> ex {
-        if (!s.prune) return v;
-        ex e = v.expand();
-        if (!is_a<GiNaC::add>(e)) return v;
-        double best = -1e300;
-        std::vector<ex> terms;
-        for (size_t i = 0; i < e.nops(); ++i) {
-            terms.push_back(e.op(i));
-            std::complex<double> z = eval_complex(e.op(i), pt, 0.0);
-            double d = 20.0 * std::log10(std::hypot(z.real(), z.imag()));
-            if (std::isfinite(d)) best = std::max(best, d);
-        }
-        ex acc = 0;
-        for (const ex& term : terms) {
-            std::complex<double> z = eval_complex(term, pt, 0.0);
-            double d = 20.0 * std::log10(std::hypot(z.real(), z.imag()));
-            if (std::isfinite(d) && d < best - s.pole_zero_threshold_db) continue;
-            acc += term;
-        }
-        return acc.is_zero() ? v : acc;
+        ex out = v.normal();
+        if (!s.prune) return out;
+        // Factor numerator AND denominator first so the additive factors are
+        // visible to the parallel recovery: a numerator R1*I1*(R2+R3)*A_U1 and
+        // a denominator (A_U1+1)*(R1+R2+R3) expose R1 + (R2+R3), giving
+        // V(out) = I1*(R1||(R2+R3))*A_U1/(A_U1+1).
+        ex num = out.numer().expand();
+        ex den = out.denom().expand();
+        if (!is_a<GiNaC::numeric>(num)) num = GiNaC::factor(num);
+        if (!is_a<GiNaC::numeric>(den)) den = GiNaC::factor(den);
+        ex ratio = (num / den).normal();
+        ex parred = to_parallel(ratio);
+        if (!parred.is_equal(ratio)) return parred;
+        return num / den;
     };
 
     // ---- saturation check: Vds must exceed Vdsat = 2*Id/gm for each device --
@@ -361,19 +360,11 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     }
     cr.summary = summary.empty() ? "(no nodes)" : summary;
 
-    // LaTeX headline: an aligned block of every DC value.
-    {
-        std::ostringstream lx;
-        lx << "\\begin{aligned}";
-        for (size_t i = 0; i < latex_vals.size(); ++i) {
-            lx << (i ? "\\\\" : "");
-            lx << "\\mathrm{" << latex_names[i].substr(0, 1) << "}"
-               << "(" << latex_names[i].substr(2, latex_names[i].size() - 3)
-               << ") &= " << to_latex(latex_vals[i]);
-        }
-        lx << "\\end{aligned}";
-        cr.latex = lx.str();
-    }
+    // The Math tab shows `latex_report` (one line per value, mirroring the
+    // text). There is no single "headline" expression for a multi-value
+    // operating point, so leave `latex` empty rather than emit an aligned
+    // block the renderer cannot lay out cleanly.
+    cr.latex.clear();
 
     std::string rep = "DC analysis -- large-signal operating point\n";
     rep += "every source uses its DC value; MOSFETs assumed in saturation\n";

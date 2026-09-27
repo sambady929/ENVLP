@@ -144,7 +144,11 @@ std::string p(const ex& e, int prec) {
 
         std::string den_str;
         for (const ex& f : dens) {
-            std::string fs = p(f, 0);
+            // A single additive denominator factor is already parenthesised by
+            // p(f, 2); a negative power like (R1+ro)^-1 arrives here as the
+            // base R1+ro, so p(f,2) wraps it. Join multiple factors (each
+            // already wrapped when additive) with '*'.
+            std::string fs = p(f, is_a<GiNaC::add>(f) ? 2 : 0);
             if (den_str.empty())
                 den_str = fs;
             else
@@ -154,8 +158,10 @@ std::string p(const ex& e, int prec) {
         std::string out = negative ? "-" : "";
         out += num_str;
         if (!den_str.empty()) {
-            bool wrap = dens.size() > 1 || is_a<GiNaC::add>(dens[0]);
-            out += "/" + (wrap ? "(" + den_str + ")" : den_str);
+            // A single denominator factor is already wrapped by p(.,2) when it
+            // is additive; more than one factor is joined by '*' and needs one
+            // outer wrap so `a/(X*Y)` is not parsed as `(a/X)*Y`.
+            out += "/" + (dens.size() > 1 ? "(" + den_str + ")" : den_str);
         }
         if (prec >= 3) out = "(" + out + ")";
         return out;

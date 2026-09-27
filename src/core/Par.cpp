@@ -155,30 +155,42 @@ bool extract_from_product(const ex& prod, ex& out_gain) {
     };
     walk(prod);
 
-    // Try each two-term additive denominator factor for a parallel match.
+    // Try each additive denominator factor for a parallel match. The factor
+    // may have more than two terms, in which case we split it into a two-way
+    // partition and accept when BOTH halves appear literally as numerator
+    // factors: R1*(R2+R3)/(R1+R2+R3) -> R1||(R2+R3). (A 2-term factor is the
+    // m==2 case of the same loop.)
     for (size_t di = 0; di < dens.size(); ++di) {
         const ex& den = dens[di];
-        if (!is_a<GiNaC::add>(den) || den.nops() != 2) continue;
-        ex d1 = den.op(0), d2 = den.op(1);
-        auto has = [&](const ex& want) {
-            for (const ex& n : nums)
-                if (n.is_equal(want)) return true;
-            return false;
-        };
-        if (!has(d1) || !has(d2)) continue;
-        // remove one d1 and one d2 from the numerator factors
-        ex rest = lead;
-        bool r1 = false, r2 = false;
-        for (const ex& n : nums) {
-            if (!r1 && n.is_equal(d1)) { r1 = true; continue; }
-            if (!r2 && n.is_equal(d2)) { r2 = true; continue; }
-            rest = rest * n;
+        if (!is_a<GiNaC::add>(den)) continue;
+        int m = int(den.nops());
+        if (m < 2 || m > 12) continue;
+        for (int mask = 1; mask < (1 << m) - 1; ++mask) {
+            ex a = 0, b = 0;
+            for (int i = 0; i < m; ++i) {
+                if (mask & (1 << i)) a += den.op(i);
+                else b += den.op(i);
+            }
+            auto has = [&](const ex& want) {
+                for (const ex& n : nums)
+                    if (n.is_equal(want)) return true;
+                return false;
+            };
+            if (!has(a) || !has(b)) continue;
+            // remove one a and one b from the numerator factors
+            ex rest = lead;
+            bool ra = false, rb = false;
+            for (const ex& n : nums) {
+                if (!ra && n.is_equal(a)) { ra = true; continue; }
+                if (!rb && n.is_equal(b)) { rb = true; continue; }
+                rest = rest * n;
+            }
+            ex out = rest * par(a, b);
+            for (size_t dj = 0; dj < dens.size(); ++dj)
+                if (dj != di) out = out / dens[dj];
+            out_gain = out.normal();
+            return true;
         }
-        ex out = rest * par(d1, d2);
-        for (size_t dj = 0; dj < dens.size(); ++dj)
-            if (dj != di) out = out / dens[dj];
-        out_gain = out.normal();
-        return true;
     }
     return false;
 }

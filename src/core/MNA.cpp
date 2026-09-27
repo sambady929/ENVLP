@@ -249,16 +249,16 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         // plain symbol so it appears symbolically in the operating point.
         sys.params.set("Vth", dc_supply->vth, UnitClass::Volt);
     }
-    // Parse a source's DC value once (used only in dc_mode). Prefer GiNaC's
-    // exact numeric (so "0.8" stays 4/5, not 0.80000000000000004), falling back
-    // to the SI-suffix parser for values like "1k".
-    auto dc_value_of = [](const Component& c) -> ex {
-        long long n = 0, d = 1;
-        if (eng::parse_exact_decimal(c.dc_text, n, d))
-            return ex(GiNaC::numeric(n, d));
-        double v = 0.0;
-        eng::parse_value(c.dc_text, v);
-        return ex(v);
+    // DC source value as a SYMBOL (the source's own name: V1, VDD, I1), so the
+    // operating point reads as a design equation. The numeric DC value the user
+    // entered is registered as the symbol's estimate, used for pruning and for
+    // numeric evaluation. (In AC/TF mode the selected input is a numeric unit
+    // drive instead, so this is DC-only.)
+    auto dc_source_symbol = [&](const Component& c, const std::string& est_text) {
+        double est = 0.0;
+        if (!eng::parse_value(est_text, est)) est = 0.0;
+        sys.params.set(c.ref, est, UnitClass::Volt);
+        return sys.params.get(c.ref);
     };
 
     // Fold genuine series groups of same-class passives into held atoms BEFORE
@@ -535,15 +535,15 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(bb, k) -= 1;
                 sys.Y(k, bb) -= 1;
             }
-            // DC bias solve: the branch voltage is the source's DC value.
-            // Otherwise: the selected input is driven per-unit (transfer
-            // function) and every other source is zeroed (AC).
-            sys.b(k, 0) = dc_mode ? dc_value_of(c)
+            // DC bias solve: the branch voltage is the source's DC symbol
+            // (V1, VDD, ...). Otherwise: the selected input is driven per-unit
+            // (transfer function) and every other source is zeroed (AC).
+            sys.b(k, 0) = dc_mode ? dc_source_symbol(c, c.dc_text)
                                   : ((c.ref == input_ref) ? ex(1) : ex(0));
             break;
         }
         case Kind::I: {
-            ex drive = dc_mode ? dc_value_of(c)
+            ex drive = dc_mode ? dc_source_symbol(c, c.dc_text)
                                : ((c.ref == input_ref) ? ex(1) : ex(0));
             int a = idx(nd[0]), bb = idx(nd[1]);
             // SPICE independent-current-source convention: positive current
@@ -607,7 +607,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 if (S >= 0) sys.Y(S, k) -= 1;
                 if (G >= 0) sys.Y(k, G) += 1;
                 if (S >= 0) sys.Y(k, S) -= 1;
-                sys.Y(k, k) -= 2.0 / gm;
+                sys.Y(k, k) -= 2 / gm;
                 sys.b(k, 0) = sgn * vth;
                 if (c.param_enabled("ro")) stamp_adm(D, S, ex(1) / ro);
             } else {
@@ -672,18 +672,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             }
             // Register the supply value as a parameter so reports can name it.
             // In the large-signal DC solve the rail is driven at its supply
-            // voltage; otherwise it is a per-unit AC excitation only when it is
-            // the selected input, and zero (a short to ground) otherwise.
-            sys.params.set(c.ref, c.estimate(), UnitClass::Volt);
+            // voltage symbol (VDD); otherwise it is a per-unit AC excitation
+            // only when it is the selected input, and zero otherwise.
             if (dc_mode) {
-                // The rail's DC voltage is the VDD value (edited as the supply
-                // value), parsed exactly so it stays rational.
-                long long n = 0, d = 1;
-                if (eng::parse_exact_decimal(c.value_text, n, d))
-                    sys.b(k, 0) = ex(GiNaC::numeric(n, d));
-                else
-                    sys.b(k, 0) = ex(c.estimate());
+                sys.b(k, 0) = dc_source_symbol(c, c.value_text);
             } else {
+                sys.params.set(c.ref, c.estimate(), UnitClass::Volt);
                 sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
             }
             break;
