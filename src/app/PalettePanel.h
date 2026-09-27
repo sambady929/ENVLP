@@ -3,18 +3,19 @@
 #include "SchematicCanvas.h" // Tool
 
 #include <wx/wx.h>
-#include <wx/imaglist.h>
-#include <wx/listctrl.h>
+#include <wx/scrolwin.h>
 
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace symcirc {
 
-// Left-side component palette: a grid of component glyphs. The active tool
+// Left-side component palette, styled after the analog-canvas shapes panel: a
+// wrapping grid of compact tiles (artwork + abbreviated label). The active tool
 // (Select / Wire / Delete) is owned by the canvas and the toolbar; clicking a
-// glyph enters placement mode for that component.
-class PalettePanel : public wxPanel {
+// tile enters placement mode for that component.
+class PalettePanel : public wxScrolledWindow {
 public:
     explicit PalettePanel(wxWindow* parent, Document* doc);
 
@@ -27,16 +28,31 @@ public:
     void set_active(Tool t, syms::Kind k);
 
 private:
-    Document* doc_;
-    wxImageList* glyphs_;
-    wxListCtrl* comps_;
-    bool updating_ = false;
-    int active_idx_ = -1;
+    struct Tile {
+        const char* label;
+        syms::Kind kind;
+    };
 
+    Document* doc_;
+    std::vector<Tile> tiles_;
+    int active_idx_ = -1;
+    int hover_idx_ = -1;
+
+    // tile metrics (documented so the hit-test and the paint agree)
+    static constexpr int kTileW = 60;
+    static constexpr int kTileH = 58;
+    static constexpr int kPad = 3;
+
+    int index_at(const wxPoint& p) const;
+    wxRect tile_rect(int i) const;
+    int wrap_width() const;
     int comp_index_for(syms::Kind k) const;
 
-    void on_kind_selected(wxListEvent& e);
-    wxDECLARE_EVENT_TABLE();
+    void on_paint(wxPaintEvent&);
+    void on_left_down(wxMouseEvent&);
+    void on_motion(wxMouseEvent&);
+    void on_leave(wxMouseEvent&);
+    void on_size(wxSizeEvent&);
 };
 
 } // namespace symcirc

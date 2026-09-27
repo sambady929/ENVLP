@@ -1028,12 +1028,20 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         if (wire_idx_ < 0) {
             Wire w;
             w.pts = seg;
+            // Authored interior vertices = every point but the two ends.
+            if (seg.size() > 2)
+                w.waypoints.assign(seg.begin() + 1, seg.end() - 1);
             doc_->bind_wire_ends(w);
             doc_->wires.push_back(w);
             wire_idx_ = int(doc_->wires.size()) - 1;
         } else {
-            doc_->wires[wire_idx_].pts = seg;
-            doc_->bind_wire_ends(doc_->wires[wire_idx_]);
+            Wire& w = doc_->wires[wire_idx_];
+            w.pts = seg;
+            if (seg.size() > 2)
+                w.waypoints.assign(seg.begin() + 1, seg.end() - 1);
+            else
+                w.waypoints.clear();
+            doc_->bind_wire_ends(w);
         }
         wire_pts_ = seg;
 
@@ -1360,21 +1368,32 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             if (o.first != n.first || o.second != n.second)
                 moved[{o.first, o.second}] = n;
         }
-        // Apply to the dragged wire itself.
-        doc_->wires[drag_wire_].pts = new_pts;
+        // Apply to the dragged wire itself. The authored waypoints become the
+        // dragged interior, so a later re-sync (e.g. after a component moves)
+        // rebuilds from the same pinned vertices instead of stale `pts`.
+        {
+            Wire& w = doc_->wires[drag_wire_];
+            w.pts = new_pts;
+            if (new_pts.size() > 2)
+                w.waypoints.assign(new_pts.begin() + 1, new_pts.end() - 1);
+            else
+                w.waypoints.clear();
+        }
 
         // Carry other wires whose vertices coincide with a moved vertex.
         for (size_t wi = 0; wi < doc_->wires.size(); ++wi) {
             if (int(wi) == drag_wire_) continue;
-            bool any = false;
-            for (auto& v : doc_->wires[wi].pts) {
+            Wire& w = doc_->wires[wi];
+            for (auto& v : w.pts) {
                 auto it = moved.find({v.first, v.second});
-                if (it != moved.end()) {
-                    v = it->second;
-                    any = true;
-                }
+                if (it != moved.end()) v = it->second;
             }
-            if (any) (void)0;
+            // Keep the waypoints in step with the (translated) interior so a
+            // later re-sync reproduces the same route.
+            if (w.pts.size() > 2)
+                w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
+            else
+                w.waypoints.clear();
         }
         // Carry labels whose anchor sits on a moved vertex.
         for (auto& l : doc_->labels) {

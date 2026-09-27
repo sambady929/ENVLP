@@ -523,41 +523,37 @@ void Document::bind_wire_ends(Wire& w) const {
 void Document::sync_wire_endpoints() {
     for (auto& w : wires) {
         if (w.pts.size() < 2) continue;
-        bool moved = false;
         Pt a = wire_end_pt(w, true);
         Pt b = wire_end_pt(w, false);
-        if (std::hypot(a.first - w.pts.front().first,
-                       a.second - w.pts.front().second) > 1e-9 ||
-            std::hypot(b.first - w.pts.back().first,
-                       b.second - w.pts.back().second) > 1e-9) {
-            w.pts.front() = a;
-            w.pts.back() = b;
-            moved = true;
-        }
-        if (moved) {
-            // First, pull each pin-bound end out along its pin's outward
-            // axis (analog-canvas's "escape: outward"): a wire must leave a
-            // pin going the way the pin points, never back across the body.
-            escape_pin_ends(w);
-            ortho_fix_pts(w.pts);
-            // Drop a bend that became collinear with its neighbours.
-            if (w.pts.size() >= 3) {
-                std::vector<Pt> keep{w.pts.front()};
-                for (size_t i = 1; i + 1 < w.pts.size(); ++i) {
-                    const Pt& p0 = keep.back();
-                    const Pt& p1 = w.pts[i];
-                    const Pt& p2 = w.pts[i + 1];
-                    bool collinear =
-                        (std::fabs(p0.first - p1.first) < 1e-9 &&
-                         std::fabs(p1.first - p2.first) < 1e-9) ||
-                        (std::fabs(p0.second - p1.second) < 1e-9 &&
-                         std::fabs(p1.second - p2.second) < 1e-9);
-                    if (!collinear) keep.push_back(p1);
-                }
-                keep.push_back(w.pts.back());
-                w.pts = std::move(keep);
+        // Rebuild the polyline from the authored waypoints, never by mutating
+        // the stored `pts`. This is what keeps a stretching route from
+        // accumulating stale elbows: each move re-derives the geometry from
+        // the pinned vertices (analog-canvas's stable-waypoint model).
+        std::vector<Pt> rebuilt;
+        rebuilt.push_back(a);
+        for (const auto& wp : w.waypoints) rebuilt.push_back(wp);
+        rebuilt.push_back(b);
+        // Orthogonalise the end legs (waypoints are grid points, so the
+        // interior legs they form are usually already axis-aligned).
+        ortho_fix_pts(rebuilt);
+        // Drop bends that became collinear with their neighbours.
+        if (rebuilt.size() >= 3) {
+            std::vector<Pt> keep{rebuilt.front()};
+            for (size_t i = 1; i + 1 < rebuilt.size(); ++i) {
+                const Pt& p0 = keep.back();
+                const Pt& p1 = rebuilt[i];
+                const Pt& p2 = rebuilt[i + 1];
+                bool collinear =
+                    (std::fabs(p0.first - p1.first) < 1e-9 &&
+                     std::fabs(p1.first - p2.first) < 1e-9) ||
+                    (std::fabs(p0.second - p1.second) < 1e-9 &&
+                     std::fabs(p1.second - p2.second) < 1e-9);
+                if (!collinear) keep.push_back(p1);
             }
+            keep.push_back(rebuilt.back());
+            rebuilt = std::move(keep);
         }
+        w.pts = std::move(rebuilt);
     }
 }
 
@@ -888,6 +884,10 @@ std::string Document::serialize() const {
         };
         emit_end(w.a);
         emit_end(w.b);
+        // Authored interior waypoints (so a loaded route re-syncs from the
+        // same pinned vertices). Omitted when there are none (a plain route).
+        for (const auto& wp : w.waypoints)
+            o << " wp=" << wp.first << "," << wp.second;
         o << "\n";
     }
     for (const auto& l : labels) {
@@ -1031,6 +1031,14 @@ bool Document::deserialize(const std::string& data, std::string& err) {
             std::string t;
             bool saw_binding = false;
             while (next_token(line, i, t)) {
+                if (t.rfind("wp=", 0) == 0) {
+                    // Authored interior waypoint "wp=x,y".
+                    double x, y;
+                    if (std::sscanf(t.c_str() + 3, "%lf,%lf", &x, &y) != 2)
+                        return fail("bad wire waypoint " + t);
+                    w.waypoints.push_back({x, y});
+                    continue;
+                }
                 if (t.rfind("pin:", 0) == 0 || t == "free") {
                     // Endpoint binding: "pin:REF:N" or "free".
                     WireEnd e;

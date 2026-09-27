@@ -41,6 +41,11 @@ struct WireEnd {
 struct Wire {
     std::vector<Pt> pts;
     WireEnd a, b;
+    // Authored interior vertices (analog-canvas "waypoints"). These are the
+    // only bends the user pinned; the geometry between the endpoints is
+    // re-derived from them on every move, so a stretching route never
+    // accumulates stale elbows. Empty => a plain end-to-end route.
+    std::vector<Pt> waypoints;
 };
 
 // A user-assigned net name placed near a net. `anchor` is the point that
