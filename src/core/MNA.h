@@ -10,6 +10,7 @@
 #endif
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -30,13 +31,23 @@ struct MnaSystem {
 
 // Throws std::runtime_error with a user-facing message on:
 //   invalid circuit, unknown/invalid input source, missing ground.
+// `used_nodes` are nodes the caller will probe; they are excluded from the
+// structural series fold so `V(node)` still resolves. The 2-argument form
+// protects only the empty set (callers that probe nothing extra).
 MnaSystem build_mna(const Circuit& c, const std::string& input_ref);
+MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
+                    const std::set<std::string>& used_nodes);
 
 // Compute one time constant per reactive element (capacitors and inductors) of
 // `c`. Amplifier gain-bandwidth poles are added by the caller (they are not
-// physical reactive elements).
+// physical reactive elements). `used_nodes` must match the main analysis's set
+// so the structural series fold is identical (a mismatched fold would break the
+// time-constant/denominator identity).
 std::vector<TimeConstant> open_circuit_time_constants(
     const Circuit& c, const std::string& input_ref, ParamTable& params);
+std::vector<TimeConstant> open_circuit_time_constants(
+    const Circuit& c, const std::string& input_ref, ParamTable& params,
+    const std::set<std::string>& used_nodes);
 
 // Zero-value (open-circuit) time-constant computation. For the network with
 // every independent source zeroed, a test current is injected across one

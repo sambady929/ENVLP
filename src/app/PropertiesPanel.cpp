@@ -384,6 +384,14 @@ bool PropertiesPanel::rename_component(const std::string& old_ref,
     for (auto& cc : doc_->circuit.comps)
         for (auto& lk : cc.links)
             if (lk == old_ref) lk = nr;
+    // Carry the wire endpoint bindings across the rename. A wire end bound to
+    // the old reference would otherwise dangle -- and, since next_ref() can
+    // hand the freed name back to a later component, silently re-attach to the
+    // wrong symbol (the same class of bug as deleting a source).
+    for (auto& w : doc_->wires) {
+        if (w.a.kind == WireEnd::Kind::Pin && w.a.ref == old_ref) w.a.ref = nr;
+        if (w.b.kind == WireEnd::Kind::Pin && w.b.ref == old_ref) w.b.ref = nr;
+    }
     doc_->dirty = true;
     return true;
 }

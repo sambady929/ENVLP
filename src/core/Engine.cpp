@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <set>
 
 namespace syms {
 
@@ -32,8 +33,14 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.opts.band_hi_hz = req.sweep.f_stop_hz;
     r.sweep = req.sweep;
     // Zero-value time constants from the topology (TTC ordering) so poles are
-    // attributed to their physical element. `c` is the resolved circuit.
-    r.octc = open_circuit_time_constants(c, req.input_ref, r.params);
+    // attributed to their physical element. `c` is the resolved circuit. Pass
+    // the request's used nodes (plus its output node) so OCTC's structural
+    // series fold matches the main solve exactly.
+    std::set<std::string> octc_used = req.used_nodes;
+    if (req.output.size() > 3 && req.output.front() == 'V' &&
+        req.output.back() == ')')
+        octc_used.insert(req.output.substr(2, req.output.size() - 3));
+    r.octc = open_circuit_time_constants(c, req.input_ref, r.params, octc_used);
     r.opts.octc = r.octc;
     r.pruned = prune_low_entropy(r.num_raw, r.den_raw, r.params, r.opts);
     r.report = format_report(r);

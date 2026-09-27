@@ -69,17 +69,24 @@ struct RawTF {
 };
 
 RawTF raw_tf(const Circuit& c, const std::string& input_ref,
-             const std::string& output) {
+             const std::string& output,
+             const std::set<std::string>& used_nodes = {}) {
     AnalysisRequest r;
     r.input_ref = input_ref;
     r.output = output;
+    r.used_nodes = used_nodes;
     Solved sv = solve(c, r);
     RawTF t;
     t.num = sv.num;
     t.den = sv.den;
     t.params = std::move(sv.params);
     t.out_desc = sv.output_desc;
-    t.octc = open_circuit_time_constants(c, input_ref, t.params);
+    // OCTC must fold exactly as the main solve did: pass the same used-node set
+    // (the caller's extras plus the output node).
+    std::set<std::string> octc_used = used_nodes;
+    if (output.size() > 3 && output.front() == 'V' && output.back() == ')')
+        octc_used.insert(output.substr(2, output.size() - 3));
+    t.octc = open_circuit_time_constants(c, input_ref, t.params, octc_used);
     return t;
 }
 
@@ -166,10 +173,24 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
 // DC: every node voltage and branch current with s -> 0.
 // ---------------------------------------------------------------------------
 CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
+    // DC prints every node, so every node is "used": protect them all from the
+    // structural series fold (otherwise a divider midpoint would vanish and
+    // V(mid) would not resolve). Collect them from the circuit directly.
+    std::set<std::string> dc_nodes;
+    for (const auto& cc : c.comps) {
+        for (const auto& n : cc.nodes) {
+            std::string nd = (n == "GND") ? "0" : n;
+            if (nd != "0") dc_nodes.insert(nd);
+        }
+        if ((cc.kind == Kind::NPN || cc.kind == Kind::PNP) &&
+            cc.param_enabled("rb"))
+            dc_nodes.insert(bjt_internal_node(cc));
+    }
+
     // DC uses the same MNA but evaluates at s = 0. Devices keep their DC
     // transconductance (gm); capacitors open, inductors short (handled by
     // taking the limit s -> 0 of the symbolic result).
-    MnaSystem sys = build_mna(c, s.input_ref);
+    MnaSystem sys = build_mna(c, s.input_ref, dc_nodes);
     ex s_sym = sys.params.get("s");
 
     CardResult cr;
@@ -201,7 +222,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     };
 
     // helper: DC value of V(node)
-    (void)raw_tf(c, s.input_ref, "V(out)");
+    (void)raw_tf(c, s.input_ref, "V(out)", dc_nodes);
 
     std::vector<ex> latex_vals;
     std::vector<std::string> latex_names;
@@ -213,7 +234,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     for (const auto& nd : node_names) {
         try {
-            RawTF t = raw_tf(c, s.input_ref, "V(" + nd + ")");
+            RawTF t = raw_tf(c, s.input_ref, "V(" + nd + ")", dc_nodes);
             ex v = (t.num / t.den).normal().subs(s_sym == 0).normal();
             ex vp = dc_value(t.params, v);
             cr.values.push_back({"V(" + nd + ")", pretty(vp)});
@@ -232,7 +253,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
         else
             continue;
         try {
-            RawTF t = raw_tf(c, s.input_ref, spec);
+            RawTF t = raw_tf(c, s.input_ref, spec, dc_nodes);
             ex v = (t.num / t.den).normal().subs(s_sym == 0).normal();
             ex vp = dc_value(t.params, v);
             cr.values.push_back({spec, pretty(vp)});
@@ -786,14 +807,16 @@ CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
     if (in && !in->nodes.empty()) node = in->nodes[0];
 
     // Zero every independent source, inject 1 A into the input node, and read
-    // the node voltage: Zin = V(node)/1A.
+    // the node voltage: Zin = V(node)/1A. With the SPICE convention
+    // ({n+,n-}: current flows n+ -> n- through the source), a source that
+    // pushes 1 A *into* `node` has its n- terminal there, so order it {0, node}.
     Circuit cs = c;
     for (auto& cc : cs.comps)
         if (is_independent_source(cc.kind)) cc.value_text = "0";
     Component it;
     it.kind = Kind::I;
     it.ref = "__ITEST__";
-    it.nodes = {node.empty() ? std::string("0") : node, "0"};
+    it.nodes = {"0", node.empty() ? std::string("0") : node};
     it.value_text = "1";
     cs.comps.push_back(it);
 
@@ -848,14 +871,16 @@ CardResult analyze_zout(const Circuit& c, const AnalysisSpec& s) {
     if (node.size() > 3 && node.front() == 'V' && node.back() == ')')
         node = node.substr(2, node.size() - 3);
 
-    // zero the input source, add a 1 A test current into the node
+    // zero the input source, add a 1 A test current *into* the node. With the
+    // SPICE convention ({n+,n-}: current flows n+ -> n- through the source),
+    // a source pushing 1 A into `node` has its n- terminal there: {0, node}.
     Circuit cs = c;
     for (auto& cc : cs.comps)
         if (cc.ref == s.input_ref) cc.value_text = "0";
     Component it;
     it.kind = Kind::I;
     it.ref = "__ITEST__";
-    it.nodes = {node, "0"};
+    it.nodes = {"0", node};
     it.value_text = "1";
     cs.comps.push_back(it);
 

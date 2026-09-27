@@ -870,12 +870,52 @@ static ex drop_small_terms(const ex& sum, const ParamTable& pt,
     return acc.is_zero() ? sum : acc;
 }
 
+// Reduce a *held* series atom ser(a,b) with the 20 dB "keep the largest" rule:
+// ser(R1,R2) -> R1 when R2 is more than threshold_db below R1. Returns true and
+// sets `out` when the atom changed. A held series group is the structural form
+// the MNA fold produces, so this is where the "ignore negligible" series rule
+// is applied to it (the expanded-sum path below handles the non-held case).
+static bool reduce_held_series(const ex& e, const ParamTable& pt,
+                              double threshold_db, ex& out) {
+    if (!is_series(e)) return false;
+    std::vector<ex> args = series_args(e);
+    if (args.size() < 2) return false;
+    double lim = std::pow(10.0, threshold_db / 20.0);
+    double best = -1e300;
+    for (const ex& a : args) best = std::max(best, num_mag(a, pt));
+    std::vector<ex> keep;
+    for (const ex& a : args)
+        if (num_mag(a, pt) >= best / lim) keep.push_back(a);
+    if (keep.size() == args.size()) return false;   // nothing dropped
+    out = keep.empty() ? e : make_series(keep);
+    return true;
+}
+
 // Collapse a series combination of resistors to the dominant one (20 dB):
 // R1 + R2 -> R1 when R2 << R1, and R1*C + R2*C -> R1*C. This is the series
 // dual of prune_parallel, and it runs at the same (20 dB) structural threshold
-// dual of prune_parallel, and it runs at the same (20 dB) structural threshold
 // -- distinct from the 60 dB pole/zero reduction applied after factoring.
 ex prune_series(const ex& e, const ParamTable& pt, double threshold_db) {
+    // A held series atom (from the structural MNA fold): reduce its operands
+    // first, then apply the "keep the largest" rule to the held sum itself.
+    if (is_series(e)) {
+        std::vector<ex> args = series_args(e);
+        std::vector<ex> rargs;
+        for (const ex& a : args) rargs.push_back(prune_series(a, pt, threshold_db));
+        ex built = make_series(rargs);
+        ex out;
+        if (reduce_held_series(built, pt, threshold_db, out)) return out;
+        return built;
+    }
+    // Recurse into a held parallel atom's operands so a ser() nested inside it
+    // is reduced too, then rebuild the atom.
+    if (is_parallel(e)) {
+        std::vector<ex> args = parallel_args(e);
+        if (args.size() != 2) return e;
+        ex a = prune_series(args[0], pt, threshold_db);
+        ex b = prune_series(args[1], pt, threshold_db);
+        return make_parallel({a, b});
+    }
     if (is_a<GiNaC::add>(e)) {
         GiNaC::exvector ops;
         for (size_t i = 0; i < e.nops(); ++i)

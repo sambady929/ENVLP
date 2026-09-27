@@ -217,6 +217,54 @@ static void test_serialize_legacy_loads() {
     CHECK(d.labels[0].rot == 0);
 }
 
+// Removing a component must detach the wire ends bound to its pins. A stale
+// Pin binding would silently re-attach if the reference is reused (next_ref
+// hands a freed ref straight back), which can bridge two unrelated nets.
+static void test_remove_detaches_wire_bindings() {
+    Document d = divider_doc();
+    // Bind the wires the way the canvas does (divider_doc's wires are raw).
+    for (auto& w : d.wires) d.bind_wire_ends(w);
+    // Wire 1 runs from R1's right pin to R2's left pin; remove R1 and its bound
+    // end must become Free.
+    CHECK(d.wires[1].a.kind == WireEnd::Kind::Pin);
+    CHECK(d.wires[1].a.ref == "R1");
+    Pt end_before = d.wire_end_pt(d.wires[1], true);
+    d.remove("R1");
+    CHECK(d.wires[1].a.kind == WireEnd::Kind::Free);
+    CHECK(d.wires[1].a.ref.empty());
+    // The frozen coordinate stays where the wire was drawn.
+    Pt end_after = d.wire_end_pt(d.wires[1], true);
+    CHECK(std::fabs(end_after.first - end_before.first) < 1e-9);
+    CHECK(std::fabs(end_after.second - end_before.second) < 1e-9);
+
+    // Placing a new component that reuses the freed ref must NOT re-attach the
+    // wire. Place it away from the old pin coordinate so only the binding
+    // (not geometric coincidence) could re-connect the stub.
+    Component r;
+    r.kind = Kind::R;
+    std::string nr = d.add(r, 300, 50); // next_ref reuses "R1"
+    CHECK(nr == "R1");
+    CHECK(d.wires[1].a.kind == WireEnd::Kind::Free); // still detached
+    // Wire 1 still carries R2's pin at its far end, but no pin of the new
+    // replacement "R1" may appear on that net (a stale binding would add it).
+    NetMap nm = d.net_map();
+    int root = nm.wire_root[1];
+    int new_r1_idx = -1;
+    for (size_t i = 0; i < d.circuit.comps.size(); ++i)
+        if (d.circuit.comps[i].ref == "R1") new_r1_idx = int(i);
+    CHECK(new_r1_idx >= 0);
+    int new_r1_pins_on_root = 0;
+    for (size_t i = 0; i < nm.pin_root.size(); ++i)
+        if (nm.pin_comp[i] == new_r1_idx && nm.pin_root[i] == root)
+            ++new_r1_pins_on_root;
+    CHECK(new_r1_pins_on_root == 0);
+    // The far end (R2's pin) is still legitimately on the wire.
+    int pins_on_root = 0;
+    for (size_t i = 0; i < nm.pin_root.size(); ++i)
+        if (nm.pin_root[i] == root) ++pins_on_root;
+    CHECK(pins_on_root == 1);
+}
+
 int main() {
     test_net_map_topology();
     test_net_name_default();
@@ -224,6 +272,7 @@ int main() {
     test_label_anchor_is_stable();
     test_serialize_round_trip();
     test_serialize_legacy_loads();
+    test_remove_detaches_wire_bindings();
     std::printf("%s (%d failure(s))\n",
                 g_fail ? "DOCUMENT FAILED" : "document ok", g_fail);
     return g_fail == 0 ? 0 : 1;

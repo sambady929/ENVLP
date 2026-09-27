@@ -9,6 +9,7 @@
 #undef As
 #endif
 
+#include <set>
 #include <string>
 
 namespace syms {
@@ -28,6 +29,11 @@ struct SweepSpec {
 struct AnalysisRequest {
     std::string input_ref;  // which ideal source drives the circuit
     std::string output;     // "V(node)" or "I(ref)"
+    // Nodes the caller will explicitly probe (e.g. the output node, or every
+    // node for a DC sweep). A node in this set must stay a real MNA unknown --
+    // never an internal node of a folded series group -- so `V(node)` resolves.
+    // Empty means "only the output node is used".
+    std::set<std::string> used_nodes;
     double f0_hz = 1000.0;  // frequency the low-entropy form is tuned to
     double threshold_db = 20.0; // series/parallel component reduction (dB)
     double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)

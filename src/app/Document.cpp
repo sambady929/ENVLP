@@ -90,6 +90,29 @@ void Document::remove(const std::string& ref) {
     auto it = std::find_if(circuit.comps.begin(), circuit.comps.end(),
                            [&](const syms::Component& c) { return c.ref == ref; });
     if (it == circuit.comps.end()) return;
+    // Detach every wire end bound to this component's pins: a dangling Pin
+    // binding would silently re-attach if the reference is ever reused
+    // (next_ref hands a removed ref straight back), which can bridge two
+    // unrelated nets -- e.g. a wire that used to feed a deleted source
+    // snapping onto a freshly placed symbol's pin. Freeze each such end at
+    // its current coordinate so the wire stays exactly where it was drawn.
+    for (auto& w : wires) {
+        if (w.pts.size() < 2) continue;
+        if (w.a.kind == WireEnd::Kind::Pin && w.a.ref == ref) {
+            Pt p = wire_end_pt(w, true);
+            w.a.kind = WireEnd::Kind::Free;
+            w.a.ref.clear();
+            w.a.pin = -1;
+            w.pts.front() = p;
+        }
+        if (w.b.kind == WireEnd::Kind::Pin && w.b.ref == ref) {
+            Pt p = wire_end_pt(w, false);
+            w.b.kind = WireEnd::Kind::Free;
+            w.b.ref.clear();
+            w.b.pin = -1;
+            w.pts.back() = p;
+        }
+    }
     circuit.comps.erase(it);
     placements.erase(ref);
     dirty = true;

@@ -3,10 +3,14 @@
 #include "core/Par.h"
 #include "core/Solver.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace syms {
 namespace {
@@ -91,9 +95,131 @@ void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
     if (out >= 0) sys.Y(k, out) += s * gain / gbw;
 }
 
+// --- structural series folding (low-entropy by construction) --------------
+//
+// Two components are in SERIES when they share a node that no other component
+// touches. That is the whole test: a clean, degree-2 internal node. Whether the
+// pair is then collapsed depends only on whether that intermediate node is
+// USED:
+//   * if nothing reads it, fold it -- the pair is one branch and becomes one
+//     held atom (`R2+R3`), so a parallel partner reads `R1||(R2+R3)`;
+//   * if it is used (e.g. it is the analysis output node, or a DC sweep prints
+//     every node, or a tapped divider measures through it), it is NOT in series
+//     for this analysis, so it is left alone and stays probeable.
+//
+// A T-coil's two inductors do share a node, but the bridge capacitor also
+// touches it, so the node is not degree-2 and they are not in series. A
+// tapped voltage divider's midpoint is degree-2 but is used -> not collapsed.
+//
+// Nodes are folded into chains: joining the elements at a node rebuilds the
+// branch, so a three-deep chain R1+R2+R3 folds to one held sum as well.
+struct HeldPassive {
+    GiNaC::ex value;    // held atom: a symbol, or a ser()/par() combination
+    double est = 1.0;   // numeric estimate (ranking / pruning)
+    UnitClass cls = UnitClass::Ohm;
+};
+
+// Fold series pairs of same-class passives into held atoms. `used_nodes` are
+// nodes the caller will probe: they are never folded. Every symbol folded away
+// is registered in `params` so the magnitude pruner still knows it. Returns
+// synthetic-ref -> held value; the synthetic components are appended to
+// `circ.comps`.
+std::map<std::string, HeldPassive> fold_series_passives(
+    Circuit& circ, ParamTable& params, const std::set<std::string>& used_nodes) {
+    std::map<std::string, HeldPassive> held;
+    auto cls_of = [](Kind k) {
+        return k == Kind::R   ? UnitClass::Ohm
+               : k == Kind::C ? UnitClass::Farad
+                              : UnitClass::Henry;
+    };
+    auto value_of = [&](const Component& c) -> GiNaC::ex {
+        auto it = held.find(c.ref);
+        return it != held.end() ? it->second.value : params.get(c.ref);
+    };
+    auto est_of = [&](const Component& c) -> double {
+        auto it = held.find(c.ref);
+        return it != held.end() ? it->second.est : c.estimate();
+    };
+    // A node the caller reads: never fold it away.
+    auto is_used = [&](const std::string& n) {
+        return used_nodes.count(n) != 0;
+    };
+
+    int synth = 0;
+    for (bool changed = true; changed;) {
+        changed = false;
+        // Which R/C/L branches touch each node; and the total degree of each
+        // node (every component terminal, so a device pin or a source counts).
+        std::map<std::string, std::vector<int>> at;
+        std::map<std::string, int> degree;
+        for (size_t i = 0; i < circ.comps.size(); ++i) {
+            const Component& c = circ.comps[i];
+            if (c.kind == Kind::R || c.kind == Kind::C || c.kind == Kind::L) {
+                at[c.nodes[0]].push_back(int(i));
+                if (c.nodes[1] != c.nodes[0]) at[c.nodes[1]].push_back(int(i));
+            }
+            for (const auto& n : c.nodes) ++degree[n];
+            if ((c.kind == Kind::NPN || c.kind == Kind::PNP) &&
+                c.param_enabled("rb"))
+                ++degree[bjt_internal_node(c)];
+        }
+        for (const auto& kv : at) {
+            const std::string& m = kv.first;
+            if (m == "0" || m == "GND") continue;   // ground is a terminal
+            if (is_used(m)) continue;               // probed: keep it real
+            if (degree.count(m) && degree[m] != 2) continue; // not a clean node
+            const auto& inc = kv.second;
+            if (inc.size() != 2) continue;
+            int i = inc[0], j = inc[1];
+            if (i == j) continue;
+            Component a = circ.comps[i];
+            Component b = circ.comps[j];
+            if (a.kind != b.kind) continue;         // same class only
+            std::string oa = (a.nodes[0] == m) ? a.nodes[1] : a.nodes[0];
+            std::string ob = (b.nodes[0] == m) ? b.nodes[1] : b.nodes[0];
+            if (oa == ob) continue;                 // would be a shunt
+
+            UnitClass cls = cls_of(a.kind);
+            GiNaC::ex x = value_of(a), y = value_of(b);
+            double ex_ = est_of(a), ey = est_of(b);
+            GiNaC::ex hv;
+            double hest;
+            if (cls == UnitClass::Farad) {
+                // capacitors in series combine as a parallel product
+                hv = par_ex(x, y);
+                hest = (ex_ * ey) / (ex_ + ey);
+            } else {
+                // resistors / inductors in series add: a held sum
+                hv = make_series({x, y});
+                hest = ex_ + ey;
+            }
+            // Register every folded-away original so pruning still sees it.
+            params.set(a.ref, ex_, cls_of(a.kind));
+            params.set(b.ref, ey, cls_of(b.kind));
+
+            Component s;
+            s.kind = a.kind;
+            s.ref = "__FOLD" + std::to_string(synth++);
+            s.nodes = {oa, ob};
+            circ.comps.push_back(s);
+            held[s.ref] = HeldPassive{hv, hest, cls};
+            circ.comps.erase(circ.comps.begin() + std::max(i, j));
+            circ.comps.erase(circ.comps.begin() + std::min(i, j));
+            changed = true;
+            break; // indices changed: rescan
+        }
+    }
+    return held;
+}
+
 } // namespace
 
 MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
+    return build_mna(cin, input_ref, std::set<std::string>{});
+}
+
+MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
+                    const std::set<std::string>& used_nodes) {
     // Resolve mirror copies into concrete scaled parameters first, so the MNA
     // stamp and the pruner both see the materialised device model.
     Circuit circ = cin;
@@ -111,6 +237,18 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
 
     MnaSystem sys;
     ex s = sys.params.get("s");
+
+    // Fold genuine series groups of same-class passives into held atoms BEFORE
+    // anything is stamped (low-entropy by construction: R2+R3 becomes a held
+    // sum, so the parallel deferral below combines R1 with it and prints
+    // R1||(R2+R3) without ever expanding the pair). Nodes the caller probes are
+    // protected so they stay real, resolvable unknowns.
+    std::map<std::string, HeldPassive> held =
+        fold_series_passives(circ, sys.params, used_nodes);
+    auto held_of = [&](const Component& c) -> const HeldPassive* {
+        auto it = held.find(c.ref);
+        return it == held.end() ? nullptr : &it->second;
+    };
 
     // --- collect node names (ground = "0"; "GND" is normalized to "0") ---
     std::vector<std::string> nodes;
@@ -214,7 +352,28 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
         bool all_res = true;    // every contribution so far is a pure 1/R
     };
     std::map<std::pair<long long, long long>, Deferred> def;
-    // Try to read `y` as 1/R for an Ohm-class symbol; on success set `rsym`.
+    // Try to read `y` as 1/R for an Ohm-class *resistance expression*: a bare
+    // Ohm symbol, or a held series sum of Ohm symbols, `1/(R2+R3)`, produced by
+    // the structural series fold. On success set `rsym` to that resistance.
+    auto ohm_resistance = [&](ex base) -> bool {
+        auto is_ohm_sym = [&](const ex& e) {
+            if (!GiNaC::is_a<GiNaC::symbol>(e)) return false;
+            for (const auto& kv : sys.params.syms)
+                if (e.is_equal(kv.second)) {
+                    auto c = sys.params.cls.find(kv.first);
+                    return c != sys.params.cls.end() &&
+                           c->second == UnitClass::Ohm;
+                }
+            return false;
+        };
+        if (is_ohm_sym(base)) return true;
+        if (is_series(base)) {
+            for (const ex& a : series_args(base))
+                if (!is_ohm_sym(a)) return false;
+            return true;
+        }
+        return false;
+    };
     auto as_conductance_of = [&](const ex& y, ex& rsym) -> bool {
         ex base = y;
         if (GiNaC::is_a<GiNaC::power>(base)) {
@@ -225,17 +384,9 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
                 return false;
             base = base.op(0);
         }
-        if (!GiNaC::is_a<GiNaC::symbol>(base)) return false;
-        for (const auto& kv : sys.params.syms)
-            if (base.is_equal(kv.second)) {
-                if (sys.params.cls.count(kv.first) &&
-                    sys.params.cls.at(kv.first) == UnitClass::Ohm) {
-                    rsym = base;
-                    return true;
-                }
-                return false;
-            }
-        return false;
+        if (!ohm_resistance(base)) return false;
+        rsym = base;
+        return true;
     };
     auto defer_adm = [&](int a, int b2, const ex& y) {
         long long ra = acg_rank(a), rb = acg_rank(b2);
@@ -294,22 +445,37 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
         const auto& nd = c.nodes;
         switch (c.kind) {
         case Kind::R: {
-            sys.params.set(c.ref, c.estimate(), UnitClass::Ohm);
-            ex r = sys.params.get(c.ref);
-            stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
+            if (const HeldPassive* hp = held_of(c)) {
+                // A synthetic fold: stamp its held resistance/admittance.
+                sys.params.set(c.ref, hp->est, hp->cls);
+                ex r = hp->value;
+                stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
+            } else {
+                sys.params.set(c.ref, c.estimate(), UnitClass::Ohm);
+                ex r = sys.params.get(c.ref);
+                stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
+            }
             break;
         }
         case Kind::C: {
-            sys.params.set(c.ref, c.estimate(), UnitClass::Farad);
-            ex cap = sys.params.get(c.ref);
-            stamp_cap(idx(nd[0]), idx(nd[1]), cap);
+            if (const HeldPassive* hp = held_of(c)) {
+                // A synthetic series-capacitor fold: held capacitance value.
+                sys.params.set(c.ref, hp->est, hp->cls);
+                stamp_cap(idx(nd[0]), idx(nd[1]), hp->value);
+            } else {
+                sys.params.set(c.ref, c.estimate(), UnitClass::Farad);
+                ex cap = sys.params.get(c.ref);
+                stamp_cap(idx(nd[0]), idx(nd[1]), cap);
+            }
             break;
         }
         case Kind::L: {
-            sys.params.set(c.ref, c.estimate(), UnitClass::Henry);
-            ex l = sys.params.get(c.ref);
+            const HeldPassive* hp = held_of(c);
+            ex l = hp ? hp->value : sys.params.get(c.ref);
+            if (hp) sys.params.set(c.ref, hp->est, hp->cls);
+            else sys.params.set(c.ref, c.estimate(), UnitClass::Henry);
             int a = idx(nd[0]), bb = idx(nd[1]);
-            int k = sys.branch_idx.at("L:" + c.ref);
+            int k = sys.branch_idx.at(c.ref);
             if (a >= 0) {
                 sys.Y(a, k) += 1;
                 sys.Y(k, a) += 1;
@@ -338,8 +504,14 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
         case Kind::I: {
             ex drive = (c.ref == input_ref) ? ex(1) : ex(0);
             int a = idx(nd[0]), bb = idx(nd[1]);
-            if (a >= 0) sys.b(a, 0) += drive;
-            if (bb >= 0) sys.b(bb, 0) -= drive;
+            // SPICE independent-current-source convention: positive current
+            // flows from n+ (pin 0, drawn at the top) through the source to n-
+            // (pin 1, the tail). Node a therefore *loses* `drive` and node bb
+            // *gains* it. (The earlier sign pushed current the other way, so
+            // the glyph read upside-down relative to the maths: a +1 with the
+            // arrow pointing down implies positive current enters at the top.)
+            if (a >= 0) sys.b(a, 0) -= drive;
+            if (bb >= 0) sys.b(bb, 0) += drive;
             break;
         }
         case Kind::E: {
@@ -641,8 +813,8 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
                 int bb = sys.node_idx.count(lb->nodes[1])
                              ? sys.node_idx.at(lb->nodes[1])
                              : -1;
-                int ka = sys.branch_idx.at("L:" + la->ref);
-                int kb = sys.branch_idx.at("L:" + lb->ref);
+                int ka = sys.branch_idx.at(la->ref);
+                int kb = sys.branch_idx.at(lb->ref);
                 // v(a1) - v(a2) += s*M*i(b);  v(b1) - v(b2) += s*M*i(a)
                 if (aa >= 0) sys.Y(ka, aa) += s * m;
                 if (ab >= 0) sys.Y(ka, ab) -= s * m;
@@ -686,9 +858,36 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref) {
 
 std::vector<TimeConstant> open_circuit_time_constants(
     const Circuit& cin, const std::string& input_ref, ParamTable& params) {
+    return open_circuit_time_constants(cin, input_ref, params,
+                                       std::set<std::string>{});
+}
+
+std::vector<TimeConstant> open_circuit_time_constants(
+    const Circuit& cin, const std::string& input_ref, ParamTable& params,
+    const std::set<std::string>& used_nodes) {
     Circuit c = cin;
     resolve_mirrors(c);
     std::vector<TimeConstant> out;
+
+    // The structural series fold must be IDENTICAL here to the one the main
+    // solve performs, or the time constant will not symbolically divide the
+    // denominator. The main fold only collapses a node that is degree-2 in the
+    // full circuit; OCTC *removes* elements (every capacitor), which can drop a
+    // higher-degree node to degree 2 and create a fold that the full circuit
+    // never had. Protect every node whose full-circuit degree is not exactly 2
+    // (plus the caller's used nodes), so a fold only happens at a node that is
+    // degree-2 in both views.
+    std::map<std::string, int> full_degree;
+    for (const auto& cc : c.comps) {
+        for (const auto& n : cc.nodes) ++full_degree[n];
+        if ((cc.kind == Kind::NPN || cc.kind == Kind::PNP) &&
+            cc.param_enabled("rb"))
+            ++full_degree[bjt_internal_node(cc)];
+    }
+    std::set<std::string> protect = used_nodes;
+    for (const auto& kv : full_degree)
+        if (kv.first != "0" && kv.first != "GND" && kv.second != 2)
+            protect.insert(kv.first);
 
     // With every independent source zeroed, every capacitor opened (omitted),
     // and every inductor except the one under test shorted (a 0 V source),
@@ -727,13 +926,18 @@ std::vector<TimeConstant> open_circuit_time_constants(
         Component it;
         it.kind = Kind::I;
         it.ref = "__OCTC__";
-        it.nodes = {na, nb};
+        // Inject 1 A *into* node `na` (and out of `nb`). With the SPICE
+        // convention ({n+,n-}: current flows n+ -> n- through the source), the
+        // source that delivers current into `na` has n- = na, so the nodes are
+        // ordered {nb, na}. Then R = (v(na) - v(nb)) / 1 A is positive.
+        it.nodes = {nb, na};
         it.value_text = "1";
         ct.comps.push_back(it);
         try {
             AnalysisRequest r;
             r.input_ref = "__OCTC__";
             r.output = "V(" + na + ")";
+            r.used_nodes = protect;
             Solved sa = solve(ct, r);
             ex va = (sa.num / sa.den).normal();
             if (nb == "0" || nb == "GND") return va;

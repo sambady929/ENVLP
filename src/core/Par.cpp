@@ -14,6 +14,41 @@ using GiNaC::numeric;
 namespace {
 
 DECLARE_FUNCTION_2P(par)
+DECLARE_FUNCTION_2P(ser)
+
+// ser_eval: a *held sum*. A series combination of two same-class passives is
+// printed and kept as (a+b) -- never expanded -- so that a parallel partner can
+// bind to it as one operand (R1||(R2+R3)). Folds to a number when both
+// arguments are numeric. Unlike par(), the operand order is preserved so the
+// sum reads in the order the user drew the chain (R2+R3, not R3+R2).
+ex ser_eval(const ex& a, const ex& b) {
+    if (is_a<numeric>(a) && is_a<numeric>(b)) return a + b;
+    return ser(a, b).hold();
+}
+
+ex ser_evalf(const ex& a, const ex& b) {
+    ex va = a.evalf(), vb = b.evalf();
+    if (is_a<numeric>(va) && is_a<numeric>(vb)) return va + vb;
+    return ser(va, vb).hold();
+}
+
+// The plain printer prints the held sum with its parentheses; the LaTeX printer
+// likewise, so `R1||(R3+R2)` is unambiguous in both views.
+void ser_print(const ex& a, const ex& b, const GiNaC::print_context& c) {
+    c.s << "(";
+    a.print(c);
+    c.s << "+";
+    b.print(c);
+    c.s << ")";
+}
+
+void ser_print_latex(const ex& a, const ex& b, const GiNaC::print_context& c) {
+    c.s << "\\left(";
+    a.print(c);
+    c.s << "+";
+    b.print(c);
+    c.s << "\\right)";
+}
 
 // par_eval: fold when both arguments are numeric (or equal), otherwise stay
 // symbolic so that R1||R2 survives into the output. The arguments are
@@ -40,10 +75,22 @@ ex par_evalf(const ex& a, const ex& b) {
 }
 
 void par_print(const ex& a, const ex& b, const GiNaC::print_context& c) {
+    // Parenthesise an operand that is itself a sum: `R1||R3+R2` reads as
+    // `(R1||R3)+R2`, so a held series group like R2+R3 must print as
+    // `R1||(R3+R2)`.
+    auto op_pr = [&](const ex& o) {
+        if (is_a<GiNaC::add>(o)) {
+            c.s << "(";
+            o.print(c);
+            c.s << ")";
+        } else {
+            o.print(c);
+        }
+    };
     c.s << "(";
-    a.print(c);
+    op_pr(a);
     c.s << "||";
-    b.print(c);
+    op_pr(b);
     c.s << ")";
 }
 
@@ -51,12 +98,22 @@ void par_print(const ex& a, const ex& b, const GiNaC::print_context& c) {
 // `a\parallel b` sitting inside a product like `Cgd_M1 R1\parallel ro_M1 s`
 // reads ambiguously (is it (R1∥ro_M1), or Cgd_M1·R1 ∥ ro_M1·s?). The
 // plain-text printer has always parenthesised (`(R1||ro_M1)`); the LaTeX
-// printer must do the same so the two views agree.
+// printer must do the same so the two views agree. A sum operand is also
+// wrapped, so `R1\parallel (R3+R2)` does not read as `(R1\parallel R3)+R2`.
 void par_print_latex(const ex& a, const ex& b, const GiNaC::print_context& c) {
+    auto op_pr = [&](const ex& o) {
+        if (is_a<GiNaC::add>(o)) {
+            c.s << "\\left(";
+            o.print(c);
+            c.s << "\\right)";
+        } else {
+            o.print(c);
+        }
+    };
     c.s << "\\left(";
-    a.print(c);
+    op_pr(a);
     c.s << "\\parallel ";
-    b.print(c);
+    op_pr(b);
     c.s << "\\right)";
 }
 
@@ -64,10 +121,15 @@ void par_print_latex(const ex& a, const ex& b, const GiNaC::print_context& c) {
 // Pattern extraction:  k * a * b / (a + b)  ->  k * par(a, b)
 // ---------------------------------------------------------------------------
 // Given a product's numerator factor list and denominator factors, return
-// par(a,b) when some two-term denominator factor (a+b) has both its terms
+// par(a,b) when some additive denominator factor (a+b) has both its operands
 // present among the numerator factors: k*a*b/[(a+b)*rest] -> k*par(a,b)/rest.
 // The `rest` handles the common case where the a+b sits inside a larger
 // product such as (R1+R2)*(1+A) (a TIA's closed-loop pole).
+//
+// NOTE: this only ever fires on an atom that is *already* split; the primary
+// low-entropy guarantee is that a series group is formed and held upstream (at
+// the MNA stamp), so a parallel partner like R1 combines with (R2+R3) and is
+// never expanded in the first place.
 bool extract_from_product(const ex& prod, ex& out_gain) {
     // collect multiplicative factors (flattening)
     std::vector<ex> nums, dens;
@@ -153,11 +215,39 @@ REGISTER_FUNCTION(par, eval_func(par_eval)
                            .print_func<GiNaC::print_latex>(par_print_latex)
                            .latex_name("\\parallel"));
 
+REGISTER_FUNCTION(ser, eval_func(ser_eval)
+                           .evalf_func(ser_evalf)
+                           .print_func<GiNaC::print_context>(ser_print)
+                           .print_func<GiNaC::print_latex>(ser_print_latex)
+                           .latex_name("+"));
+
 GiNaC::ex par_ex(const ex& a, const ex& b) { return par(a, b); }
+
+GiNaC::ex ser_ex(const ex& a, const ex& b) { return ser(a, b); }
 
 bool is_parallel(const ex& e) {
     return is_a<GiNaC::function>(e) &&
            GiNaC::ex_to<GiNaC::function>(e).get_name() == "par";
+}
+
+bool is_series(const ex& e) {
+    return is_a<GiNaC::function>(e) &&
+           GiNaC::ex_to<GiNaC::function>(e).get_name() == "ser";
+}
+
+std::vector<ex> series_args(const ex& e) {
+    std::vector<ex> out;
+    if (!is_series(e)) return out;
+    for (size_t i = 0; i < e.nops(); ++i) out.push_back(e.op(i));
+    return out;
+}
+
+ex make_series(const std::vector<ex>& args) {
+    if (args.empty()) return ex(0);
+    if (args.size() == 1) return args[0];
+    ex acc = args[0];
+    for (size_t i = 1; i < args.size(); ++i) acc = ser(acc, args[i]);
+    return acc;
 }
 
 std::vector<ex> parallel_args(const ex& e) {

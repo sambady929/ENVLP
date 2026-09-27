@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace syms {
@@ -80,7 +81,22 @@ ex det_with_column(const matrix& Y, int k, const matrix& bcol) {
 } // namespace
 
 Solved solve(const Circuit& circ, const AnalysisRequest& req) {
-    MnaSystem sys = build_mna(circ, req.input_ref);
+    // The output node is always read, and the caller may add more (DC enumerates
+    // every node): those nodes must not be folded into an internal series node.
+    std::set<std::string> used = req.used_nodes;
+    if (req.output.size() > 3 && req.output.front() == 'V' && req.output.back() == ')')
+        used.insert(req.output.substr(2, req.output.size() - 3));
+    // A branch-current output I(ref) reads both terminals of `ref`: those nodes
+    // must stay real unknowns so the current is well defined (folding a series
+    // group through them would change which branch the current refers to).
+    if (req.output.size() > 3 && req.output.front() == 'I' && req.output.back() == ')') {
+        std::string ref = req.output.substr(2, req.output.size() - 3);
+        if (ref.rfind("L:", 0) == 0) ref = ref.substr(2);
+        if (const Component* cp = circ.find(ref)) {
+            used.insert(cp->nodes.begin(), cp->nodes.end());
+        }
+    }
+    MnaSystem sys = build_mna(circ, req.input_ref, used);
 
     Solved out;
     out.input_desc = req.input_ref;

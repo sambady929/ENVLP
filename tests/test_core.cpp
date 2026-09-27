@@ -1509,6 +1509,152 @@ static void test_mirror_multiplicity() {
     CHECK(threw);
 }
 
+// A purely resistive series group must be combined FIRST and then combined in
+// parallel with its partner, and -- critically -- the result must stay one held
+// term through the WHOLE flow: numerator, denominator, poles and gain. R2+R3 in
+// series with R1 in parallel must read R1||(R2+R3) everywhere, never an
+// expanded (R1*R3 + R1*R2)/(R1+R3+R2).
+static void test_series_then_parallel_form() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.param_text["GBW"] = "100M";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"n1", "m"}, "3.3k"));
+    c.comps.push_back(comp(Kind::R, "R3", {"m", "out"}, "3.3k"));
+    c.comps.push_back(comp(Kind::C, "C1", {"n1", "0"}, "1n"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    const std::string& t = cr.transfer.pruned.text;
+    const std::string& ltx = cr.transfer.pruned.latex;
+    // The series group is a held atom, not expanded, and it is never broken
+    // apart anywhere (nothing may recompute R1*R3 or R1*R2).
+    CHECK(cr.transfer.pruned.den_factors.size() >= 1);
+    for (const auto& f : cr.transfer.pruned.den_factors) {
+        std::string s = str(f.expr);
+        CHECK(s.find("R1*R3") == std::string::npos);
+        CHECK(s.find("R1*R2") == std::string::npos);
+    }
+    // The numerator, the denominator and the gain all carry the SAME held atom.
+    auto holds = [](const std::string& s) {
+        bool par = s.find("||") != std::string::npos ||
+                   s.find("\\parallel") != std::string::npos;
+        return par && (s.find("R2+R3") != std::string::npos ||
+                       s.find("R3+R2") != std::string::npos);
+    };
+    CHECK(holds(t));                        // text (numerator + denominator)
+    CHECK(!t.empty() && holds(ltx));        // LaTeX mirrors it
+    CHECK(holds(str(cr.transfer.pruned.gain)));
+    // The denominator's s-coefficient holds the atom as a single factor too.
+    CHECK(holds(str(cr.transfer.pruned.den_poly)));
+    // No expanded resistor-ratio form survives anywhere.
+    CHECK(t.find("R1*R3") == std::string::npos);
+    CHECK(t.find("R1*R2") == std::string::npos);
+    // The held parallel atom binds to the held SERIES atom (par(.,ser)).
+    CHECK(is_parallel(cr.transfer.pruned.gain));
+    auto pa = parallel_args(cr.transfer.pruned.gain);
+    bool has_series_operand = false;
+    for (const auto& a : pa)
+        if (is_series(a)) has_series_operand = true;
+    CHECK(has_series_operand);
+}
+
+// Independent current sources follow the SPICE convention: positive current
+// flows from n+ (pin 0) through the source to n- (pin 1). A 1 A source into a
+// grounded resistor therefore drives the node NEGATIVE (LTspice: V = -I*R).
+static void test_current_source_spice_sign() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"out", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"out", "0"}, "1k"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::DC;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("V(out) = -R1") != std::string::npos);
+}
+
+// Series is "two elements share a node nothing else touches". Whether to fold
+// depends ONLY on whether that intermediate node is USED. This delta divider
+// (R1 in->m, R2 m->out, Rb in->out) is the tia_lg topology:
+//   * output V(out): m is unused -> R1+R2 fold, then parallel with Rb:
+//     (R1+R2)||Rb;
+//   * output V(m): m is the probe -> R1+R2 must NOT fold, and V(m) must resolve.
+static void test_series_fold_respects_used_node() {
+    auto build = []() {
+        Circuit c;
+        c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+        c.comps.push_back(comp(Kind::R, "R1", {"in", "m"}, "10k"));
+        c.comps.push_back(comp(Kind::R, "R2", {"m", "out"}, "10k"));
+        c.comps.push_back(comp(Kind::R, "Rb", {"in", "out"}, "100k"));
+        c.comps.push_back(comp(Kind::R, "Rl", {"out", "0"}, "1k"));
+        return ground(c);
+    };
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.sweep.f_start_hz = 1;
+    req.sweep.f_stop_hz = 1e9;
+
+    // m unused: R1+R2 fold into a held series atom, then bind in parallel with
+    // Rb, so the text carries (R1+R2)||Rb and never the expanded R1*R2.
+    req.output = "V(out)";
+    AnalysisResult ro = analyze(build(), req);
+    CHECK(ro.pruned.text.find("||") != std::string::npos);
+    CHECK(ro.pruned.text.find("R1*R2") == std::string::npos); // not expanded
+
+    // m used: the pair must stay two separate real nodes, and V(m) must
+    // resolve (not throw "unknown node"). This is the exact bug the fold
+    // introduced when it ignored whether the intermediate node was probed.
+    req.output = "V(m)";
+    bool threw = false;
+    AnalysisResult rm;
+    try {
+        rm = analyze(build(), req);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(!threw);
+    CHECK(rm.output_desc == "V(m)");
+}
+
+// An inductor must actually be usable: an RL low-pass V1 -> R1 -> L1 -> gnd
+// has H(s) = s*L1/R1 / (1 + s*L1/R1). Regression for the branch-index key
+// mismatch (registered as the bare ref, looked up as "L:"+ref) that made every
+// circuit with an inductor throw map::at.
+static void test_inductor_rl_lowpass() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "1k"));
+    c.comps.push_back(comp(Kind::L, "L1", {"out", "0"}, "1m"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisRequest req;
+    req.input_ref = "V1";
+    req.output = "V(out)";
+    req.sweep.f_start_hz = 1;
+    req.sweep.f_stop_hz = 1e9;
+    bool threw = false;
+    AnalysisResult r;
+    try {
+        r = analyze(c, req);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(!threw);
+    ex s = S(r, "s");
+    ex H = raw_H(r);
+    ex expect = (s * S(r, "L1") / S(r, "R1")) /
+                (ex(1) + s * S(r, "L1") / S(r, "R1"));
+    CHECK((H - expect).normal().is_zero());
+}
+
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
     struct Test { const char* name; std::function<void()> fn; };
@@ -1563,6 +1709,10 @@ int main(int argc, char** argv) {
         {"octc_time_constants", test_octc_time_constants},
         {"all_analyses_latex_report", test_all_analyses_have_latex_report},
         {"percent_no_exponent", test_percent_no_exponent},
+        {"series_then_parallel", test_series_then_parallel_form},
+        {"current_source_sign", test_current_source_spice_sign},
+        {"series_fold_used_node", test_series_fold_respects_used_node},
+        {"inductor_rl_lowpass", test_inductor_rl_lowpass},
     };
 
     std::string filter = argc > 1 ? argv[1] : "";
