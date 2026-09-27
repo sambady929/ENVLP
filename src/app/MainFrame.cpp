@@ -359,7 +359,7 @@ void MainFrame::build_layout() {
         canvas_->invalidate_nets(); // the props-panel delete button can
                                     // remove wires without going through the
                                     // canvas's notify_doc()
-        canvas_->Refresh();
+        canvas_->Refresh(false); // deferred: coalesce a fast typist's keystrokes
         SetStatusText("Settings changed -- press F5 to (re)analyze.", 0);
     };
     props_->on_selection_changed = [this](const std::string& s) {
