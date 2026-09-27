@@ -30,12 +30,13 @@ PruneOptions opts_of(const AnalysisSpec& s) {
     // Rank terms by their worst case across the sweep band.
     o.band_lo_hz = s.sweep.f_start_hz;
     o.band_hi_hz = s.sweep.f_stop_hz;
-    // Impedance analyses: the denominator's DC value can be a symbolic sum,
-    // and normalizing by it would push that sum into the numerator as nested
-    // fractions. Transfer-like analyses keep normalization (it is what yields
-    // (1+s*tau) factors).
-    o.normalize = !(s.kind == AnalysisKind::InputImpedance ||
-                    s.kind == AnalysisKind::OutputImpedance);
+    // Normalize the denominator's DC term to 1 for every analysis. This is
+    // what yields (1 + s*tau) factors AND what lets a parallel combination
+    // collapse: an output impedance R1*ro/(R1+ro+s*R1*ro*C1) normalizes to
+    // (R1||ro)/(1 + s*(R1||ro)*C1). Impedance analyses previously disabled
+    // this, which is exactly why their results came out fully expanded and
+    // high-entropy.
+    o.normalize = true;
     return o;
 }
 
@@ -264,9 +265,18 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     rep += "----------------------------------------\n";
     for (const auto& kv : cr.values)
         rep += "  " + kv.first + " = " + kv.second + "\n";
-    rep += "\nLaTeX (s = 0):\n  " + cr.latex + "\n";
     cr.report = rep;
     cr.text = cr.summary;
+    // LaTeX report: one line per DC value (mirrors the text report; the
+    // aligned block is the headline, shown above).
+    {
+        std::ostringstream lr;
+        lr << "DC operating point (s \\to 0):\n";
+        for (size_t i = 0; i < latex_vals.size(); ++i)
+            lr << "\\mathrm{" << latex_names[i] << "} = "
+               << to_latex(latex_vals[i]) << "\n";
+        cr.latex_report = lr.str();
+    }
     return cr;
 }
 
@@ -340,6 +350,20 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
 
     cr.text = "PSR = " + psr_p.text + " ;  PSRR = " + psrr_p.text;
     cr.latex = psrr_p.latex;
+    // The LaTeX report mirrors the text report section-for-section.
+    {
+        std::ostringstream lr;
+        lr << "PSR / PSRR:\\quad \\mathrm{input}=" << s.input_ref
+           << ",\\ \\mathrm{supply}=" << vdd_ref << "\n";
+        lr << "PSR:\n";
+        lr << "\\mathrm{PSR} = \\frac{\\mathrm{V_{out}}}{\\mathrm{V_{DD}}} = "
+           << latex_rhs(psr_p.latex) << "\n";
+        lr << "PSRR:\n";
+        lr << "\\mathrm{PSRR} = \\frac{\\mathrm{V_{out}/V_{in}}}"
+              "{\\mathrm{V_{out}/V_{DD}}} = "
+           << latex_rhs(psrr_p.latex) << "\n";
+        cr.latex_report = lr.str();
+    }
     cr.summary = cr.text;
     cr.report = rep;
     cr.has_transfer = true;
@@ -788,8 +812,9 @@ CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
     std::string rep = "Input impedance seen by " + s.input_ref + "\n";
     rep += "----------------------------------------\n";
     rep += "  Zin(s) = " + p.text + "\n";
-    rep += "  LaTeX:  " + cr.latex + "\n";
     cr.report = rep;
+    // LaTeX report mirrors the text report.
+    cr.latex_report = "Input impedance:\nZ_{in}(s) = " + zl + "\n";
     cr.has_transfer = true;
     {
         AnalysisResult res;

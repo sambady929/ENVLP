@@ -784,9 +784,11 @@ static void test_dc_analysis() {
     CardResult cr = run_analysis(c, sp);
     // resistive divider: V(out) = 1/2
     CHECK(cr.report.find("V(out)") != std::string::npos);
-    CHECK(cr.report.find("LaTeX") != std::string::npos);
     CHECK(!cr.latex.empty());
     CHECK(cr.latex.find("aligned") != std::string::npos);
+    // the LaTeX report mirrors the text report (one line per value)
+    CHECK(!cr.latex_report.empty());
+    CHECK(cr.latex_report.find("V(out)") != std::string::npos);
 }
 
 static void test_noise_analysis_input_referred() {
@@ -909,6 +911,60 @@ static void test_tf_low_entropy_parallel() {
     CHECK(cr.transfer.pruned.gain.is_equal(ex(1)) == false);
     CHECK(cr.transfer.pruned.text.find("(R1||R2)") != std::string::npos ||
           cr.transfer.pruned.text.find("(R2||R1)") != std::string::npos);
+}
+
+// Output impedance must collapse R1 and ro into (R1||ro) -- the impedance
+// analyses used to disable normalization, which left the result fully expanded
+// (R1*ro/(R1+ro+s*C1*R1*ro)) instead of (R1||ro)/(1+s*C1*(R1||ro)).
+static void test_zout_parallel_collapses() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    Component m = comp(Kind::NMOS, "M1", {"out", "in", "0"}, "");
+    m.param_on["ro"] = true;
+    m.param_text["gm"] = "1m";
+    m.param_text["ro"] = "100k";
+    m.param_on["Cgs"] = false;
+    m.param_on["Cgd"] = false;
+    m.param_on["Cds"] = false;
+    c.comps.push_back(m);
+    c.comps.push_back(comp(Kind::R, "R1", {"out", "VDD"}, "100k"));
+    c.comps.push_back(comp(Kind::VDD, "VDD1", {"VDD"}));
+    c.comps.push_back(comp(Kind::C, "C1", {"out", "0"}, "1p"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::OutputImpedance;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.transfer.pruned.text.find("||") != std::string::npos);
+    // it must not print the expanded R1*ro/(R1+ro) form
+    CHECK(cr.transfer.pruned.text.find("ro_M1*R1") == std::string::npos);
+    CHECK(cr.transfer.pruned.text.find("R1*ro_M1") == std::string::npos);
+}
+
+// Every analysis must produce a LaTeX report (the Math tab mirrors the text).
+static void test_all_analyses_have_latex_report() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "R2", {"out", "0"}, "10k"));
+    c = ground(c);
+    const AnalysisKind kinds[] = {
+        AnalysisKind::TransferFunction, AnalysisKind::AC, AnalysisKind::DC,
+        AnalysisKind::InputImpedance, AnalysisKind::OutputImpedance};
+    for (AnalysisKind k : kinds) {
+        AnalysisSpec sp;
+        sp.kind = k;
+        sp.input_ref = "V1";
+        sp.output = "V(out)";
+        sp.sweep.f_start_hz = 1;
+        sp.sweep.f_stop_hz = 1e6;
+        CardResult cr = run_analysis(c, sp);
+        CHECK(!cr.report.empty());
+        CHECK(!cr.latex_report.empty());
+    }
 }
 
 // The amplifier-noise percent must not use scientific notation.
@@ -1406,6 +1462,8 @@ int main(int argc, char** argv) {
         {"noise_bad_input", test_noise_survives_bad_input},
         {"noise_current_amp", test_noise_current_input_and_amp},
         {"tf_low_entropy_parallel", test_tf_low_entropy_parallel},
+        {"zout_parallel_collapses", test_zout_parallel_collapses},
+        {"all_analyses_latex_report", test_all_analyses_have_latex_report},
         {"percent_no_exponent", test_percent_no_exponent},
     };
 
