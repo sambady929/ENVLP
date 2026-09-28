@@ -76,6 +76,11 @@ std::string ginac_str(const ex& e) {
 
 std::string fmt_number(const numeric& n) {
     if (n.is_integer()) return ginac_str(n);
+    // Keep an exact rational as a fraction ("4/5", not "0.8"): the low-entropy
+    // reports are meant to stay exact, matching the LaTeX \frac.
+    if (n.is_rational() && !n.is_integer()) {
+        return ginac_str(n.numer()) + "/" + ginac_str(n.denom());
+    }
     double d = n.to_double();
     char buf[64];
     if (d == std::floor(d) && std::fabs(d) < 1e15)
@@ -108,6 +113,39 @@ std::string p(const ex& e, int prec) {
     }
 
     if (is_a<GiNaC::mul>(e)) {
+        // sqrt(2)*sqrt(A)/sqrt(B) -> sqrt(2*A/B): GiNaC splits a radical of a
+        // product/quotient, which reads as a chain of separate square roots.
+        // Merge a positive numeric radical and both half-power directions back
+        // under one root for display.
+        {
+            ex numpart = 1, numrad = 1, denrad = 1;
+            bool all_sqrt = true;
+            for (size_t i = 0; i < e.nops() && all_sqrt; ++i) {
+                const ex& f = e.op(i);
+                if (is_a<numeric>(f)) { numpart = numpart * f; continue; }
+                if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1))) {
+                    double x = GiNaC::ex_to<numeric>(f.op(1)).to_double();
+                    if (x == 0.5) { numrad = numrad * f.op(0); continue; }
+                    if (x == -0.5) { denrad = denrad * f.op(0); continue; }
+                }
+                all_sqrt = false;
+            }
+            if (all_sqrt && (!numrad.is_equal(ex(1)) ||
+                             !denrad.is_equal(ex(1)))) {
+                ex merged = (numpart * numpart * numrad / denrad).normal();
+                ex outside, inside;
+                split_radical(merged, outside, inside);
+                std::string out;
+                if (inside.is_equal(ex(1)))
+                    out = p(outside, 0);
+                else if (outside.is_equal(ex(1)))
+                    out = "sqrt(" + p(inside, 0) + ")";
+                else
+                    out = p(outside, 3) + kDot + "sqrt(" + p(inside, 0) + ")";
+                if (prec >= 3) out = "(" + out + ")";
+                return out;
+            }
+        }
         bool negative = false;
         std::string coeff;
         std::vector<ex> nums, dens;
@@ -198,6 +236,69 @@ std::string p(const ex& e, int prec) {
 }
 
 } // namespace
+
+// Largest a with a^2 | n (n a positive integer), and the square-free leftover.
+static void int_square_part(long n, long& a, long& r) {
+    a = 1;
+    if (n <= 0) { r = 1; return; }
+    for (long k = 2; k * k <= n; ++k) {
+        while (n % (k * k) == 0) { a *= k; n /= (k * k); }
+    }
+    r = n;
+}
+
+void split_radical(const ex& X, ex& outside, ex& radicand) {
+    // Split X = numer/denom into a rational coefficient times powers, then move
+    // every perfect-square part (even exponent, and the square factor of the
+    // integer coefficients) to the outside.
+    ex num = X.numer(), den = X.denom();
+    long coeff_n = 1, coeff_d = 1;
+    ex sn = 1, sd = 1, inn = 1, ind = 1; // symbolic outside/inside, num/den
+
+    auto take = [&](ex Y, long& coeff, ex& sout, ex& sin) {
+        if (is_a<numeric>(Y)) {
+            numeric ny = GiNaC::ex_to<numeric>(Y);
+            if (ny.is_integer()) {
+                long n = 0;
+                try { n = ny.to_long(); } catch (...) { n = 0; }
+                if (n > 0) coeff *= n;
+            }
+            return;
+        }
+        for (size_t i = 0; i < Y.nops(); ++i) {
+            const ex& f = Y.op(i);
+            if (is_a<numeric>(f)) {
+                numeric ny = GiNaC::ex_to<numeric>(f);
+                if (ny.is_integer()) {
+                    long n = 0;
+                    try { n = ny.to_long(); } catch (...) { n = 0; }
+                    if (n > 0) coeff *= n;
+                }
+                continue;
+            }
+            if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1))) {
+                long e = 0;
+                try { e = GiNaC::ex_to<numeric>(f.op(1)).to_int(); }
+                catch (...) { e = 0; }
+                ex base = f.op(0);
+                if (e % 2 == 0) { sout = sout * GiNaC::pow(base, e / 2); continue; }
+                sout = sout * GiNaC::pow(base, (e - 1) / 2);
+                sin = sin * base;
+                continue;
+            }
+            sin = sin * f; // a non-power factor stays inside
+        }
+    };
+    take(num, coeff_n, sn, inn);
+    take(den, coeff_d, sd, ind);
+
+    long a_n, r_n, a_d, r_d;
+    int_square_part(coeff_n, a_n, r_n);
+    int_square_part(coeff_d, a_d, r_d);
+
+    outside = (ex(a_n) * sn / (ex(a_d) * sd)).normal();
+    radicand = (ex(r_n) * inn / (ex(r_d) * ind)).normal();
+}
 
 std::string pretty(const ex& e) { return p(e, 0); }
 

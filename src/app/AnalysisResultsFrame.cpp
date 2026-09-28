@@ -1,5 +1,7 @@
 #include "AnalysisResultsFrame.h"
 
+#include <wx/sizer.h>
+
 namespace symcirc {
 
 AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
@@ -16,6 +18,13 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     book_->AddPage(bode_, "Plot");
     // The Lua console is hidden for now (messy): lua_ stays null, so the
     // lua()->...() plumbing in MainFrame is a no-op via the null guard.
+
+    // The notebook must fill the frame and follow every resize, so the typeset
+    // results page (and the text/plot tabs) reflow with the window instead of
+    // staying at their construction size.
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(book_, 1, wxEXPAND);
+    SetSizer(sizer);
 
     // The RICH2 text controls report a huge best-size, which would make the
     // frame taller than the screen; pin it to a sensible client size.

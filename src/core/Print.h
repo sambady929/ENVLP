@@ -32,4 +32,12 @@ std::string pretty_product(const std::vector<GiNaC::ex>& factors);
 std::string pretty_ratio(const GiNaC::ex& num, const GiNaC::ex& den,
                          const GiNaC::ex& s);
 
+// Decompose sqrt(X) (X = r*p^2/q^2, r square-free) into an outside factor
+// p/q and the remaining radicand r, so a radical can be shown as
+// (p/q)*sqrt(r). Returns {outside, radicand}; radicand == 1 means X was a
+// perfect square and there is no remaining root. Used by the printers to keep
+// a square root to a single, clearly-parenthesised radical.
+void split_radical(const GiNaC::ex& X, GiNaC::ex& outside,
+                   GiNaC::ex& radicand);
+
 } // namespace syms

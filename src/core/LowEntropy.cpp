@@ -1056,12 +1056,6 @@ std::string wrap_compound(const std::string& t) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-std::string to_latex(const ex& e) {
-    std::ostringstream os;
-    e.print(GiNaC::print_latex(os));
-    return os.str();
-}
-
 namespace {
 // LaTeX printer that inserts an explicit `\cdot` between every multiplied
 // factor, so `Cds_M1 ro_M1` (juxtaposition) becomes `Cds_M1\cdot ro_M1` and
@@ -1072,6 +1066,34 @@ namespace {
 // print_latex so it renders as \frac{..}{..} rather than a\cdot b^{-1}.
 std::string to_latex_cdot(const ex& e) {
     if (is_a<GiNaC::mul>(e)) {
+        // Merge square roots into one: GiNaC splits a radical of a
+        // product/quotient into sqrt(..)\cdot sqrt(..) factors (or a negative
+        // half-power), which renders as a chain of separate roots and reads
+        // ambiguously. Group them back under one \sqrt (or \frac{1}{\sqrt{..}}).
+        {
+            ex numpart = 1, numrad = 1, denrad = 1;
+            bool all_sqrt = true;
+            for (size_t i = 0; i < e.nops() && all_sqrt; ++i) {
+                const ex& f = e.op(i);
+                if (is_a<numeric>(f)) { numpart = numpart * f; continue; }
+                if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1))) {
+                    double x = GiNaC::ex_to<numeric>(f.op(1)).to_double();
+                    if (x == 0.5) { numrad = numrad * f.op(0); continue; }
+                    if (x == -0.5) { denrad = denrad * f.op(0); continue; }
+                }
+                all_sqrt = false;
+            }
+            if (all_sqrt && (!numrad.is_equal(ex(1)) ||
+                             !denrad.is_equal(ex(1)))) {
+                ex merged = (numpart * numpart * numrad / denrad).normal();
+                ex outside, inside;
+                split_radical(merged, outside, inside);
+                if (inside.is_equal(ex(1))) return to_latex_cdot(outside);
+                std::string root = "\\sqrt{" + to_latex_cdot(inside) + "}";
+                if (outside.is_equal(ex(1))) return root;
+                return to_latex_cdot(outside) + "\\cdot " + root;
+            }
+        }
         bool has_denominator = false;
         for (size_t i = 0; i < e.nops(); ++i) {
             const ex& op = e.op(i);
@@ -1130,6 +1152,8 @@ std::string to_latex_cdot(const ex& e) {
     return os.str();
 }
 } // namespace
+
+std::string to_latex(const ex& e) { return to_latex_cdot(e); }
 
 // The right-hand side of the low-entropy LaTeX (no "H(s) = " prefix), so
 // callers can attach it to whatever left-hand side they need (e.g. the loop

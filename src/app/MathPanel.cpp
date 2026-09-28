@@ -83,7 +83,10 @@ namespace {
 const char* kReportCss =
     "html, body { margin: 0; padding: 0; background: #f4f5f8; }"
     "body { font-family: 'Segoe UI', sans-serif; color: #202634; }"
-    ".wrap { padding: 10px 12px 16px 12px; max-width: 780px; }"
+    // Fill the window width so the typeset page reflows as the results
+    // frame is resized (a fixed max-width left it looking unchanged).
+    ".wrap { padding: 10px 12px 16px 12px; max-width: none;"
+    "        box-sizing: border-box; }"
     ".expr { margin: 0 0 10px 0; padding: 8px 12px;"
     "        background: #ffffff; border: 1px solid #e3e6ee;"
     "        border-radius: 6px; overflow-x: auto; }"

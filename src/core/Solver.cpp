@@ -246,7 +246,7 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
     // gm by its overdrive form gm = uCox*(W/L)*Vov (keeping Vov a symbol), then
     // replace Vov by sqrt(2*Id*L/(uCox*W)). With the same Vov symbol in both,
     // products of the sqrt and its reciprocal collapse.
-    exmap gm_to_vov, vov_to_val;
+    exmap gm_to_vov, vov_to_val, vov_recip;
     if (tech.dc_mode == DcMode::SquareLaw) {
         for (const auto& cc : c.comps) {
             if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
@@ -273,20 +273,34 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
             ex id_sub = out.id[cc.ref];
             ex gm_sym = out.params.get(param_symbol(cc, "gm"));
             id_sub = id_sub.subs(gm_sym == (ucox * wsym * vov / lsym));
-            ex vov_val =
-                sqrt((2 * sgn * id_sub * lsym / (ucox * wsym)).normal());
-            if (vov_val.has(vov)) {
-                out.vov[cc.ref] = vov; // gate-driven: keep the overdrive symbol
-            } else {
+            ex r2 = (2 * sgn * id_sub * lsym / (ucox * wsym)).normal();
+            ex vov_val = sqrt(r2);
+            if (!r2.has(vov)) {
                 vov_to_val[vov] = vov_val;
+                // A 1/Vov factor would otherwise leave a second radical that
+                // GiNaC will not combine with a numerator sqrt; replace Vov by
+                // the equivalent r2/Vov so every term has at most one radical.
+                vov_recip[vov] = (r2 / vov).normal();
                 out.vov[cc.ref] = vov_val.normal();
+            } else {
+                out.vov[cc.ref] = vov; // gate-driven: keep the overdrive symbol
             }
         }
     }
+    // Staged: substitute gm (Vov still a symbol), clear any 1/Vov via Vov = r/Vov,
+    // and only then replace Vov by its single sqrt -- otherwise the numerator
+    // sqrt and the denominator sqrt stay two un-combinable radicals.
     auto simplify = [&](ex e) -> ex {
-        if (!gm_to_vov.empty()) e = e.subs(gm_to_vov);
-        if (!vov_to_val.empty()) e = e.subs(vov_to_val);
-        return e.normal();
+        if (!gm_to_vov.empty()) e = e.subs(gm_to_vov).normal();
+        for (const auto& kv : vov_recip) {
+            if (e.has(kv.first)) {
+                exmap m;
+                m[kv.first] = kv.second;
+                e = e.subs(m).normal();
+            }
+        }
+        if (!vov_to_val.empty()) e = e.subs(vov_to_val).normal();
+        return e;
     };
     if (!gm_to_vov.empty())
         for (auto& kv : out.node_v) kv.second = simplify(kv.second);
