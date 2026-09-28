@@ -553,6 +553,39 @@ void peel_factors(ex& poly, const std::vector<Candidate>& cands,
             break;
         }
         if (peeled) continue;
+
+        // Dominant-pole (whiteboard) factorization: for a well-separated pair
+        // 1 + c1*s + c2*s^2 with c2/c1^2 << 1 the roots are ~ -1/c1 and
+        // ~ -c1/c2, so factor symbolically as (1 + c1*s)*(1 + (c2/c1)*s).
+        // This keeps the *symbolic* time constants -- the TTC construction
+        // makes them R*C products, and this exposes them factored instead of
+        // collapsing to numeric roots. A near-double pole (c2/c1^2 ~ 1) is not
+        // well separated, so it is left for the numeric path / kept whole.
+        if (deg == 2) {
+            ex c0 = poly.coeff(s, 0);
+            ex c1 = poly.coeff(s, 1);
+            ex c2 = poly.coeff(s, 2);
+            if (!c0.is_zero() && !c1.is_zero() && !c2.is_zero()) {
+                ex p1 = c1 / c0;      // dominant tau
+                ex p2 = (c2 / c0) / p1; // fast tau = c2/(c0*p1)
+                ex ratio = p2 / p1;   // = c0*c2/c1^2
+                ex rn = pt.eval_real(ratio);
+                double rel;
+                if (is_a<numeric>(rn))
+                    rel = std::fabs(GiNaC::ex_to<numeric>(rn).to_double());
+                else
+                    rel = 1.0; // unknown separation: do not guess
+                if (rel < 0.1) {
+                    ex f1 = ex(1) + s * p1;
+                    ex f2 = ex(1) + s * p2;
+                    factors.push_back({f1, pretty_in_s(f1, s), false});
+                    factors.push_back({f2, pretty_in_s(f2, s), false});
+                    poly = ex(1);
+                    continue;
+                }
+            }
+        }
+
         // No exact factor: attempt approximate (numeric) factoring so a
         // multi-pole denominator still comes out as (1+s*tau1)(1+s*tau2).
         if (approx_ok) {
@@ -1541,6 +1574,34 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         d = factor_coeffs(d, s);
         n = simplify_coeffs(n);
         d = simplify_coeffs(d);
+    }
+
+    // 5d. Final parallel recovery, per s-coefficient, on the *unexpanded*
+    //     coefficient. The passes above (ratio reduction, coefficient
+    //     factoring) can reintroduce an expanded R1*R2/(R1+R2), so recover the
+    //     held (R1||R2) atom once more here. This does NOT expand, so a grouped
+    //     factor such as (C1 + Cds_M1)*R1 is left intact.
+    if (opts.use_parallel) {
+        auto recover_par = [&](const ex& poly) -> ex {
+            int deg = 0;
+            try { deg = poly.has(s) ? poly.degree(s) : 0; } catch (...) { return poly; }
+            if (deg < 0 || deg > 64) return poly;
+            ex acc = 0;
+            for (int k = 0; k <= deg; ++k) {
+                ex c = poly.coeff(s, k);
+                if (c.is_zero()) continue;
+                ex cp = is_a<GiNaC::add>(c)
+                            ? [&] { ex t = 0;
+                                    for (size_t i = 0; i < c.nops(); ++i)
+                                        t += to_parallel(c.op(i));
+                                    return t; }()
+                            : to_parallel(c);
+                acc += cp * GiNaC::pow(s, k);
+            }
+            return acc;
+        };
+        n = recover_par(n);
+        d = recover_par(d);
     }
 
     R.num_poly = n;

@@ -713,6 +713,35 @@ static void test_rational_sum_exposes_parallel() {
     CHECK(any_par);
 }
 
+// A well-separated two-pole denominator with SYMBOLIC coefficients factors
+// symbolically as the dominant-pole product (1 + c1*s)*(1 + (c2/c1)*s), so the
+// time constants stay R*C products instead of collapsing to numeric roots.
+static void test_symbolic_two_pole_factorization() {
+    ParamTable pt;
+    ex s = pt.get("s");
+    ex R = pt.get("R"), C1 = pt.get("C1"), C2 = pt.get("C2");
+    pt.set("R", 1e5, UnitClass::Ohm);
+    pt.set("C1", 1e-12, UnitClass::Farad);
+    pt.set("C2", 1e-14, UnitClass::Farad); // 100x: separable but not pruned
+    // (1 + s*R*C1)*(1 + s*R*C2) expanded -- exact, but presented expanded
+    ex den = (1 + s * R * C1) * (1 + s * R * C2);
+
+    LowEntropyOptions o;
+    o.prune = true;
+    o.normalize = false;
+    o.approx_factor = false; // no numeric help
+    o.threshold_db = 20;
+    o.pole_zero_threshold_db = 60;
+    o.use_parallel = false;
+    o.band_lo_hz = 1.0;
+    o.band_hi_hz = 1e9;
+    LowEntropy le = low_entropy(ex(1), den.expand(), pt, o);
+    // Two symbolic first-order factors, each with an R*C-like time constant.
+    CHECK(le.den_factors.size() == 2);
+    CHECK(le.den_factors[0].text.find("s*") != std::string::npos);
+    CHECK(le.den_factors[1].text.find("s*") != std::string::npos);
+}
+
 static void test_latex_output() {
     Circuit c = cs_amp(1e-12, true);
     AnalysisRequest req;
@@ -2218,6 +2247,7 @@ int main(int argc, char** argv) {
         {"magnitude_pruning", test_magnitude_pruning},
         {"parallel_collapse", test_parallel_collapse},
         {"rational_sum_parallel", test_rational_sum_exposes_parallel},
+        {"symbolic_two_pole_factor", test_symbolic_two_pole_factorization},
         {"latex_output", test_latex_output},
         {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},
