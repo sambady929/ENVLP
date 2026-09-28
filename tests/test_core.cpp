@@ -1755,6 +1755,37 @@ static void test_dc_large_signal_mosfet() {
     CHECK(cr.report.find("not in saturation") == std::string::npos);
     CHECK(cr.report.find("I(M1)") != std::string::npos);
     CHECK(!cr.latex_report.empty());
+    // Mode 1 reports the saturation voltage directly: Vdsat = Vgs - Vth =
+    // VG - Vth = 0.8 - 0.5 = 0.3 V, and the drain current is gm*Vdsat/2.
+    // Mode 1 reports the saturation voltage directly (Vdsat = Vgs - Vth) and
+    // the drain current as gm*Vdsat/2; the exact sign/ordering of the printed
+    // sum varies, so match on the structure.
+    CHECK(cr.report.find("Vdsat = ") != std::string::npos);
+    CHECK(cr.report.find("VG") != std::string::npos);
+    CHECK(cr.report.find("Vth") != std::string::npos);
+    CHECK(cr.report.find("I(M1) = ") != std::string::npos);
+    CHECK(cr.report.find("gm_M1") != std::string::npos);
+    CHECK(cr.report.find("not in saturation") == std::string::npos);
+}
+
+// An inverting amplifier's gain is a *magnitude* in dB: K = -A reports +N dB,
+// not -N dB (the sign is a 180-degree phase, not attenuation).
+static void test_gain_db_is_magnitude() {
+    Circuit c;
+    Component v = comp(Kind::V, "V1", {"in", "0"}, "0");
+    v.dc_text = "0";
+    v.ac_text = "1";
+    c.comps.push_back(v);
+    // inverting amp block with gain -100 (magnitude 100 -> 40 dB)
+    c.comps.push_back(comp(Kind::AMP, "A1", {"in", "out"}, "-100"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("DC Gain: 40.00 dB") != std::string::npos);
+    CHECK(cr.report.find("-40.00 dB") == std::string::npos);
 }
 
 // Push the same device into triode by lowering the drain resistor's headroom
@@ -2127,6 +2158,7 @@ int main(int argc, char** argv) {
         {"series_fold_used_node", test_series_fold_respects_used_node},
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
         {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
+        {"gain_db_is_magnitude", test_gain_db_is_magnitude},
         {"dc_common_source", test_dc_common_source_vdd_minus_rid},
         {"dc_square_law", test_dc_square_law_symbolic},
         {"dc_numeric_spice", test_dc_numeric_spice},

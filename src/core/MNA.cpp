@@ -360,17 +360,24 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 ++sys.n;
             }
         }
-        // Large-signal DC: each MOSFET gets an extra unknown -- its drain
-        // current Id -- and the row that ties Vgs to it:
-        //   Mode 1 (gm/Id):  (v(G)-v(S)) - 2*Id/gm = sgn*Vth.
-        //   Mode 2 (square): (v(G)-v(S)) - sgn*Vov   = sgn*Vth, with the
-        //     overdrive Vov a symbol that is pinned after the solve from
-        //     Vov = sqrt(2*Id*L/(uCox*W)). Making Id an unknown lets KCL fix it
-        //     directly, so a mirror leg reports I(M1) = I1 rather than the
-        //     square-law expression.
+        // Large-signal DC: each MOSFET gets one extra unknown that is fixed by
+        // KCL, plus the gate row that ties Vgs to it. The choice of unknown is
+        // what makes the report read like a hand analysis:
+        //   Mode 2 (square law): the drain current Id, so a mirror leg reports
+        //     I(M1) = I1 and Vov is solved afterwards from the square law.
+        //   Mode 1 (gm/Id): the saturation voltage Vds = 2*Id/gm, so a device
+        //     reports Vds directly and its current is Vds*gm/2 (or, when the
+        //     device is driven by *current*, Vds = 2*Id/gm with Id the KCL
+        //     value). The gate row is (v(G)-v(S)) - Vds = sgn*Vth, and the
+        //     branch current entering D is Vds*gm/2.
         if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
-            sys.branch_idx["Id:" + c.ref] = sys.n;
-            sys.var_names.push_back("Id(" + c.ref + ")");
+            if (dc_supply->square_law) {
+                sys.branch_idx["Id:" + c.ref] = sys.n;
+                sys.var_names.push_back("Id(" + c.ref + ")");
+            } else {
+                sys.branch_idx["Vdsat:" + c.ref] = sys.n;
+                sys.var_names.push_back("Vdsat(" + c.ref + ")");
+            }
             ++sys.n;
         }
     }
@@ -689,20 +696,23 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // conductance, so the DC operating currents are the pure KCL
                 // values (a mirror leg is exactly the reference current).
             } else if (dc_mode) {
-                // Mode 1: Id is the unknown drain-to-source current (positive
-                // into D, out of S; negative for a PMOS in normal operation).
-                // With |Vdsat| = 2|Id|/gm and |Vgs| = |Vdsat| + |Vth|, the gate
-                // relation is the same row for both polarities:
-                //     (v(G) - v(S)) - (2/gm)*Id = sgn*|Vth|
-                // with sgn = +1 (NMOS) / -1 (PMOS). Id flows D->S as a plain
-                // current source; channel-length modulation adds 1/ro D->S.
+                // Mode 1: the unknown is the overdrive/saturation voltage
+                // X = 2*Id/gm -- Vdsat for an NMOS, Vov for a PMOS (signed).
+                // The drain branch carries Id = X*gm/2 (into D, out of S; the
+                // sign follows from X), and the gate row is the same for both
+                // polarities:
+                //     (v(G) - v(S)) - X = sgn*|Vth|
+                // with sgn = +1 (NMOS) / -1 (PMOS). For a current-driven device
+                // KCL fixes X; for a gate-driven one the gate row fixes it, so
+                // the report reads Vdsat directly and Id = gm*Vdsat/2.
                 const int sgn = (c.kind == Kind::NMOS) ? +1 : -1;
-                int k = sys.branch_idx.at("Id:" + c.ref);
-                if (D >= 0) sys.Y(D, k) += 1;
-                if (S >= 0) sys.Y(S, k) -= 1;
+                int k = sys.branch_idx.at("Vdsat:" + c.ref);
+                ex id_k = gm / 2; // per-unit-X drain current coefficient
+                if (D >= 0) sys.Y(D, k) += id_k;
+                if (S >= 0) sys.Y(S, k) -= id_k;
                 if (G >= 0) sys.Y(k, G) += 1;
                 if (S >= 0) sys.Y(k, S) -= 1;
-                sys.Y(k, k) -= 2 / gm;
+                sys.Y(k, k) -= 1;
                 sys.b(k, 0) = sgn * vth;
                 // No ro in the large-signal solve (small-signal parameter).
             } else {

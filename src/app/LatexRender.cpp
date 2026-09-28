@@ -199,8 +199,14 @@ private:
         }
         if (w == "sqrt") {
             std::string a = read_raw_arg();
-            return "&radic;<span class=\"overline\">" + render_tex(a) +
-                   "</span>";
+            // The radical and the radicand are separate inline-blocks aligned on
+            // their vertical centre, with the bar as the radicand's top border.
+            // Wrapping the radicand as its own box keeps the bar attached to the
+            // *whole* radicand: a tall fraction inside would otherwise push a
+            // plain inline `border-top` up off the fraction (bar floating).
+            return "<span class=\"sqrt\"><span class=\"radic\">&radic;</span>"
+                   "<span class=\"radicand\">" +
+                   render_tex(a) + "</span></span>";
         }
         if (w == "mathrm" || w == "text" || w == "operatorname" ||
             w == "mathbf" || w == "mathit") {
@@ -257,6 +263,10 @@ const char* kStyle =
     "               border-bottom: 1.4px solid #10141a; }"
     ".frac > .den { display: block; padding: 1px 4px 0 4px; }"
     "sub, sup { font-size: 72%; }"
+    ".sqrt { display: inline-flex; align-items: center; }"
+    ".sqrt > .radic { margin-right: 1px; }"
+    ".sqrt > .radicand { border-top: 1.3px solid #10141a;"
+    "                   padding: 2px 3px 0 2px; }"
     ".overline { border-top: 1.3px solid #10141a; padding-top: 1px; }"
     ".mathrm, .text { font-style: normal; }"
     ".mathit { font-style: italic; }"

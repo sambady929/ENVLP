@@ -226,15 +226,32 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         auto it = out.node_v.find(nd);
         return it == out.node_v.end() ? ex(0) : it->second;
     };
-    // --- per-device drain current, then (Mode 2) the overdrive ---
-    // Id is the raw KCL unknown: for a current mirror leg that is exactly the
-    // reference current, so I(M1) = I1 is reported directly.
+    // --- per-device drain current ---
+    // Mode 1's unknown is X = 2*Id/gm (Vdsat/Vov, signed), so Id = X*gm/2;
+    // Mode 2's unknown is Id itself (the raw KCL current: a mirror leg
+    // reports I1 directly).
+    auto branch_val = [&](const char* prefix, const std::string& ref) -> ex {
+        auto it = sys.branch_idx.find(std::string(prefix) + ref);
+        return it == sys.branch_idx.end() ? ex(0) : solution(it->second).normal();
+    };
     for (const auto& cc : c.comps) {
         if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
-        auto it = sys.branch_idx.find("Id:" + cc.ref);
-        if (it == sys.branch_idx.end()) continue;
+        bool has_id = sys.branch_idx.count("Id:" + cc.ref) != 0;
+        bool has_vd = sys.branch_idx.count("Vdsat:" + cc.ref) != 0;
+        if (!has_id && !has_vd) continue;
         out.mosfets.push_back(cc.ref);
-        out.id[cc.ref] = solution(it->second).normal();
+        if (has_id) {
+            out.id[cc.ref] = branch_val("Id:", cc.ref);
+        } else {
+            // The Mode 1 unknown is X = 2*Id/gm (Vdsat for an NMOS, Vov for a
+            // PMOS, both signed), so Id = X*gm/2 directly.
+            ex gm = reg_param(out.params, cc, "gm");
+            out.id[cc.ref] = (branch_val("Vdsat:", cc.ref) * gm / 2).normal();
+        }
+        // The saturation voltage Vdsat = 2*Id/gm is an unknown in Mode 1 and a
+        // plain report quantity in Mode 2.
+        out.vov[cc.ref] = (2 * out.id[cc.ref] / reg_param(out.params, cc, "gm"))
+                              .normal();
     }
 
     // Mode 2 (square law): solve each overdrive from the drain current and the
@@ -307,8 +324,9 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
 
     for (const auto& cc : c.comps) {
         if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
-        auto it = sys.branch_idx.find("Id:" + cc.ref);
-        if (it == sys.branch_idx.end()) continue;
+        if (sys.branch_idx.count("Id:" + cc.ref) == 0 &&
+            sys.branch_idx.count("Vdsat:" + cc.ref) == 0)
+            continue;
         // Express the drain current through the overdrive as well.
         if (tech.dc_mode == DcMode::SquareLaw && !gm_to_vov.empty())
             out.id[cc.ref] = simplify(out.id[cc.ref]);
@@ -324,8 +342,6 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         } else {
             out.vgs[cc.ref] = vgs.normal();
             out.vds[cc.ref] = vds.normal();
-            ex gm = reg_param(out.params, cc, "gm");
-            out.vov[cc.ref] = (2 * out.id[cc.ref] / gm).normal();
         }
     }
     return out;
