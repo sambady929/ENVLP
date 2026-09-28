@@ -236,8 +236,14 @@ Metrics compute_metrics(const AnalysisResult& r) {
     Metrics m;
     char buf[96];
 
+    // Normalize H(s) = num/den ONCE. `normal()` is a full gcd over the dense
+    // symbolic rational and costs ~10 ms here; doing it per scan point (400 of
+    // them) made the report take seconds.
+    ex H = r.num_raw / r.den_raw;
+    if (!GiNaC::is_a<GiNaC::numeric>(H)) H = H.normal();
+
     // ---- DC gain ----
-    double dc = mag_db_at(r, 0.0);
+    double dc = eval_mag_db(H, r.params, 0.0);
     if (std::isfinite(dc)) {
         std::snprintf(buf, sizeof(buf), "%.2f dB", dc);
         m.dc_db = buf;
@@ -256,7 +262,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
     for (int i = 0; i < N; ++i) {
         double t = double(i) / (N - 1);
         f[i] = f0 * std::pow(f1 / f0, t);
-        mag[i] = mag_db_at(r, 2.0 * M_PI * f[i]);
+        mag[i] = eval_mag_db(H, r.params, 2.0 * M_PI * f[i]);
     }
     auto find_cross = [&](double target_db) -> double {
         if (std::isfinite(mag[0]) && mag[0] <= target_db) return f0; // below start

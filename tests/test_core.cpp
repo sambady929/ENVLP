@@ -138,6 +138,57 @@ static void test_sweep_points() {
     CHECK_CLOSE(lp[4], 100.0, 1e-9);
 }
 
+// A zero (or pole) is negligible relative to the *dominant pole*, not relative
+// to the other zeros: two zeros 25 dB apart are both far beyond a dominant pole
+// 2000x slower than both and must both be dropped. A zero only 10x above the
+// dominant pole (20 dB) stays.
+static void test_far_zeros_vs_dominant_pole() {
+    // Mirror the 5T-OTA shape: a dominant pole set by a big load, plus a
+    // numerator quadratic whose numeric roots are both far beyond it. Because
+    // the zeros are close to *each other* (25 dB apart, not 60), the old rule
+    // -- comparing each zero only against the other zeros -- kept both; the
+    // correct rule compares against the dominant pole and drops both.
+    {
+        ParamTable pt;
+        ex s = pt.get("s");
+        // dominant pole w = 500 rad/s (tau = 2 ms); zeros at w = 2.5e6 and
+        // 5e5 rad/s (tau 4e-7 / 2e-6), i.e. > 60 dB above the pole, and only
+        // 5x (14 dB) apart from each other.
+        ex num = (1 + s * ex(4e-7)) * (1 + s * ex(2e-6));
+        ex den = (1 + s * ex(2e-3));
+        LowEntropyOptions o;
+        o.prune = true;
+        o.normalize = false;
+        o.approx_factor = true; // numeric linear factors, as the OTA produces
+        o.threshold_db = 20;
+        o.pole_zero_threshold_db = 60;
+        o.use_parallel = false;
+        o.band_lo_hz = 1.0;
+        o.band_hi_hz = 1e9;
+        LowEntropy le = low_entropy(num.expand(), den.expand(), pt, o);
+        CHECK(le.zeros.empty());
+        CHECK(!le.poles.empty());
+    }
+    // A zero only ~40x (32 dB) above the dominant pole stays.
+    {
+        ParamTable pt;
+        ex s = pt.get("s");
+        ex num = (1 + s * ex(5e-5)); // w = 20e3, pole w = 500 -> 32 dB, kept
+        ex den = (1 + s * ex(2e-3));
+        LowEntropyOptions o;
+        o.prune = true;
+        o.normalize = false;
+        o.approx_factor = true;
+        o.threshold_db = 20;
+        o.pole_zero_threshold_db = 60;
+        o.use_parallel = false;
+        o.band_lo_hz = 1.0;
+        o.band_hi_hz = 1e9;
+        LowEntropy le = low_entropy(num.expand(), den.expand(), pt, o);
+        CHECK(!le.zeros.empty());
+    }
+}
+
 // The ranking band decides which terms are negligible. A term that is tiny at
 // DC but dominant at the top of the band must be kept.
 static void test_rank_band_keeps_high_freq_term() {
@@ -2159,6 +2210,7 @@ int main(int argc, char** argv) {
         {"inductor_rl_lowpass", test_inductor_rl_lowpass},
         {"dc_large_signal_mosfet", test_dc_large_signal_mosfet},
         {"gain_db_is_magnitude", test_gain_db_is_magnitude},
+        {"far_zeros_vs_dominant_pole", test_far_zeros_vs_dominant_pole},
         {"dc_common_source", test_dc_common_source_vdd_minus_rid},
         {"dc_square_law", test_dc_square_law_symbolic},
         {"dc_numeric_spice", test_dc_numeric_spice},

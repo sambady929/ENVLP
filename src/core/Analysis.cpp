@@ -806,11 +806,15 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         double f0 = s.sweep.f_start_hz > 0 ? s.sweep.f_start_hz : 1.0;
         double f1 = s.sweep.f_stop_hz > f0 ? s.sweep.f_stop_hz : f0 * 1e6;
         const int N = 800;
-        double prev_f = f0, prev_m = mag_db_at(res, 2.0 * M_PI * f0);
+        // Normalize the rational ONCE (see compute_metrics) -- 800 gcds would
+        // otherwise dominate the loop-gain analysis.
+        ex Hloop = (res.num_raw / res.den_raw);
+        if (!GiNaC::is_a<GiNaC::numeric>(Hloop)) Hloop = Hloop.normal();
+        double prev_f = f0, prev_m = eval_mag_db(Hloop, res.params, 2.0 * M_PI * f0);
         for (int i = 1; i <= N; ++i) {
             double t = double(i) / N;
             double f = f0 * std::pow(f1 / f0, t);
-            double m = mag_db_at(res, 2.0 * M_PI * f);
+            double m = eval_mag_db(Hloop, res.params, 2.0 * M_PI * f);
             if (std::isfinite(prev_m) && std::isfinite(m) && prev_m > 0.0 &&
                 m <= 0.0) {
                 double frac = (prev_m - 0.0) / (prev_m - m);
