@@ -689,6 +689,30 @@ static void test_parallel_collapse() {
     (void)s;
 }
 
+// A sum of rationals whose shared, expanded denominator is
+// gm_M4*gm_M1*(ro_M1 + ro_M4) must collapse to gm_M4*gm_M1*(ro_M1||ro_M4) --
+// the parallel partner of a differential pair's ro. factor()+normal() exposes
+// the additive factor and to_parallel recovers the held atom; without the
+// recursive denominator handling the expanded denominator was repeated in
+// every s-coefficient and the mirror's ro_M1/ro_M4 never combined.
+static void test_rational_sum_exposes_parallel() {
+    ParamTable pt;
+    GiNaC::ex ro1 = pt.get("ro_M1"), ro4 = pt.get("ro_M4");
+    GiNaC::ex gm1 = pt.get("gm_M1"), gm4 = pt.get("gm_M4");
+    GiNaC::ex C1 = pt.get("C1"), Cds1 = pt.get("Cds_M1");
+    GiNaC::ex c = (C1 * ro4 * ro1 * gm1 * Cds1) / (ro1 * gm4 * gm1 + ro4 * gm4 * gm1) / 2 +
+                  (C1 * ro4 * ro1 * gm4 * Cds1) / (ro1 * gm4 * gm1 + ro4 * gm4 * gm1);
+    GiNaC::ex par = to_parallel(GiNaC::factor(c.normal()));
+    // The collapsed form must contain a single held parallel atom.
+    bool any_par = false;
+    std::function<void(const GiNaC::ex&)> scan = [&](const GiNaC::ex& e) {
+        if (is_parallel(e)) { any_par = true; return; }
+        for (size_t i = 0; i < e.nops(); ++i) scan(e.op(i));
+    };
+    scan(par);
+    CHECK(any_par);
+}
+
 static void test_latex_output() {
     Circuit c = cs_amp(1e-12, true);
     AnalysisRequest req;
@@ -2193,6 +2217,7 @@ int main(int argc, char** argv) {
         {"parallel_form", test_parallel_form},
         {"magnitude_pruning", test_magnitude_pruning},
         {"parallel_collapse", test_parallel_collapse},
+        {"rational_sum_parallel", test_rational_sum_exposes_parallel},
         {"latex_output", test_latex_output},
         {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},

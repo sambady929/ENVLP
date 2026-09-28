@@ -142,9 +142,31 @@ bool extract_from_product(const ex& prod, ex& out_gain) {
         if (is_a<GiNaC::power>(f)) {
             const ex& base = f.op(0);
             const ex& xp = f.op(1);
-            if (is_a<numeric>(xp) && GiNaC::ex_to<numeric>(xp).is_negative()) {
-                dens.push_back(GiNaC::pow(base, -xp));
-                return;
+            if (is_a<numeric>(xp)) {
+                numeric xn = GiNaC::ex_to<numeric>(xp);
+                if (xn.is_negative()) {
+                    // Flatten the denominator's own product so an additive
+                    // factor nested inside it is examined directly: a
+                    // denominator such as gm_M4*gm_M1*(ro_M1+ro_M4) is one
+                    // `mul`, and without this its (ro_M1+ro_M4) pair is unseen.
+                    if (is_a<GiNaC::mul>(base))
+                        for (size_t i = 0; i < base.nops(); ++i)
+                            dens.push_back(GiNaC::pow(base.op(i), -xp));
+                    else
+                        dens.push_back(GiNaC::pow(base, -xp));
+                    return;
+                }
+                // A positive integer power in the numerator (ro_M4^2) must be
+                // split into its repeated factors, or a parallel partner like
+                // ro_M4 is not seen among the numerator's factors.
+                if (xn.is_integer()) {
+                    long kk = 0;
+                    try { kk = xn.to_long(); } catch (...) { kk = 0; }
+                    if (kk >= 2 && kk <= 32) {
+                        for (long j = 0; j < kk; ++j) nums.push_back(base);
+                        return;
+                    }
+                }
             }
         }
         if (is_a<numeric>(f)) {

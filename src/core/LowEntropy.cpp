@@ -121,13 +121,22 @@ std::vector<std::complex<double>> poly_roots(std::vector<double> c) {
     if (!(scale > 0.0) || !std::isfinite(scale)) scale = 1.0;
     std::vector<double> cs(n + 1);
     for (int k = 0; k <= n; ++k) cs[k] = c[k] * std::pow(scale, k);
+    // Make the scaled polynomial monic. Durand-Kerner's step p(z)/prod(z-z_j)
+    // is NOT invariant to a constant scaling of the coefficients (the
+    // denominator is built from the roots alone), so a large leading
+    // coefficient otherwise drives the first steps to infinity and the roots
+    // come back as NaN -- which happens for a cubic whose coefficients span
+    // many decades (a wide-bandwidth amplifier's denominator).
+    double lc = cs[n];
+    if (lc != 0.0)
+        for (int k = 0; k <= n; ++k) cs[k] /= lc;
 
     for (int i = 0; i < n; ++i) {
         double a2 = 2.0 * M_PI * (i + 0.5) / n;
         roots.push_back(std::complex<double>(0.4 * std::cos(a2),
                                              0.9 * std::sin(a2)));
     }
-    std::complex<double> lead(cs[n], 0.0);
+    std::complex<double> lead(1.0, 0.0);
     for (int it = 0; it < 500; ++it) {
         double maxd = 0.0;
         for (int i = 0; i < n; ++i) {
@@ -145,8 +154,10 @@ std::vector<std::complex<double>> poly_roots(std::vector<double> c) {
         }
         if (maxd < 1e-13) break;
     }
-    // undo the scaling: original roots are scaled roots / scale
-    for (auto& r : roots) r /= scale;
+    // Undo the scaling. With cs[k] = c[k]*scale^k the scaled polynomial is
+    // P(scale*z), so its root z satisfies scale*z = (original root): recover
+    // the original root by multiplying by scale.
+    for (auto& r : roots) r *= scale;
     std::sort(roots.begin(), roots.end(),
               [](const std::complex<double>& a, const std::complex<double>& b) {
                   if (std::abs(a.real() - b.real()) > 1e-9)
@@ -1394,26 +1405,33 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                 // Factor the coefficient so a product denominator such as
                 // (R1+R2)*(1+A) is exposed: this lets to_parallel recover an
                 // embedded (R1||R2) that an expanded coefficient would hide.
-                // Only do this when the coefficient actually has a rational
-                // structure (a negative power), to avoid factoring every
-                // plain polynomial coefficient (which is slow and needless).
-                bool has_den = false;
-                if (is_a<GiNaC::mul>(c))
-                    for (size_t i = 0; i < c.nops(); ++i) {
-                        const ex& op = c.op(i);
-                        if (is_a<GiNaC::power>(op) &&
-                            is_a<numeric>(op.op(1)) &&
-                            GiNaC::ex_to<numeric>(op.op(1)).is_negative()) {
-                            has_den = true;
-                            break;
-                        }
-                    }
-                if (has_den) c = GiNaC::factor(c);
+                // The negative power may be nested inside the operands of a sum
+                // of rationals (the mirror denominator's s^2/s^3 terms), so the
+                // check recurses; a plain polynomial coefficient has none and is
+                // left untouched (factoring it would be slow and can split a
+                // grouped (C1 + Cds) factor).
+                std::function<bool(const ex&)> has_neg = [&](const ex& e) {
+                    if (is_a<GiNaC::power>(e) && is_a<numeric>(e.op(1)) &&
+                        GiNaC::ex_to<numeric>(e.op(1)).is_negative())
+                        return true;
+                    for (size_t i = 0; i < e.nops(); ++i)
+                        if (has_neg(e.op(i))) return true;
+                    return false;
+                };
+                if (has_neg(c)) {
+                    // Normalize over a common denominator so the shared
+                    // (ro_M1 + ro_M4) factor surfaces, then factor it out:
+                    // gm_M4*gm_M1*(ro_M1+ro_M4) exposes (ro_M1+ro_M4) for the
+                    // parallel match. factor() throws on held par/ser atoms, so
+                    // keep the normalized form on failure.
+                    try { c = GiNaC::factor(c.normal()); }
+                    catch (const std::exception&) { c = c.normal(); }
+                }
                 if (is_a<GiNaC::add>(c)) {
                     ex cc = 0;
                     for (size_t i = 0; i < c.nops(); ++i)
                         cc += to_parallel(c.op(i));
-                    c = cc;
+                    try { c = cc.normal(); } catch (const std::exception&) { c = cc; }
                 } else {
                     c = to_parallel(c);
                 }
