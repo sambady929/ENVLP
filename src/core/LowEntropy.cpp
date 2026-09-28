@@ -628,20 +628,56 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
     }
 }
 
-// The time constant (1/tau) of a first-order (1 + s*tau) factor, or 0 when the
-// factor is not a numeric first-order one.
+// Numeric roots of a factor polynomial with c0 normalized to 1, or false when
+// the coefficients are not all numeric. `taus` receives one time constant per
+// root: -1/re for a real root, 1/|root| for a complex pair (its natural
+// frequency). The slowest (largest tau) is the dominant one.
+static bool factor_root_taus(const ex& poly, ParamTable& pt, const ex& s,
+                             std::vector<double>& taus) {
+    int deg = 0;
+    try { deg = poly.degree(s); } catch (...) { return false; }
+    if (deg < 1) return false;
+    std::vector<double> c;
+    for (int k = 0; k <= deg; ++k) {
+        ex v = pt.eval_real(poly.coeff(s, k));
+        if (!is_a<numeric>(v)) return false;
+        c.push_back(GiNaC::ex_to<numeric>(v).to_double());
+    }
+    if (!(std::fabs(c[0]) > 0.0)) return false;
+    for (auto& v : c) v /= c[0];
+    for (const auto& r : poly_roots(c)) {
+        double re = r.real(), im = r.imag();
+        double tau;
+        if (std::fabs(im) < 1e-6 * (1.0 + std::fabs(re)))
+            tau = re != 0.0 ? -1.0 / re : 0.0;
+        else
+            tau = 1.0 / std::abs(r);
+        taus.push_back(tau);
+    }
+    return true;
+}
+
+// The time constant of a factor: for (1 + s*tau) the tau, for a higher-degree
+// factor the slowest of its numeric roots' time constants. 0 when unknown.
 static double factor_tau(const Factor& f, ParamTable& pt, const ex& s) {
     if (f.origin) return 0.0;
     int deg = 0;
     try { deg = f.expr.degree(s); } catch (...) { return 0.0; }
-    if (deg != 1) return 0.0;
-    ex c1 = f.expr.coeff(s, 1);
-    ex c0 = f.expr.coeff(s, 0);
-    if (c0.is_zero()) return 0.0;
-    ex tv = pt.eval_real((c1 / c0).normal());
-    if (!is_a<numeric>(tv)) return 0.0;
-    double v = GiNaC::ex_to<numeric>(tv).to_double();
-    return (v > 0.0 && std::isfinite(v)) ? v : 0.0;
+    if (deg == 1) {
+        ex c1 = f.expr.coeff(s, 1);
+        ex c0 = f.expr.coeff(s, 0);
+        if (c0.is_zero()) return 0.0;
+        ex tv = pt.eval_real((c1 / c0).normal());
+        if (!is_a<numeric>(tv)) return 0.0;
+        double v = GiNaC::ex_to<numeric>(tv).to_double();
+        return (v > 0.0 && std::isfinite(v)) ? v : 0.0;
+    }
+    std::vector<double> taus;
+    if (!factor_root_taus(f.expr, pt, s, taus)) return 0.0;
+    double mt = 0.0;
+    for (double t : taus)
+        if (t > 0.0 && std::isfinite(t)) mt = std::max(mt, t);
+    return mt;
 }
 
 // The dominant (slowest, lowest-frequency) pole's time constant across the
@@ -653,22 +689,99 @@ static double dominant_tau(const std::vector<Factor>& den, ParamTable& pt,
     return mt;
 }
 
+// Rebuild a factor from only its *near* roots, dropping the far ones. Used for
+// a degree>=2 factor (a quadratic that did not factor symbolically): without
+// this the whole quadratic is opaque to the dominant-pole rule, so a fast pole
+// sitting beside the dominant one -- or a pair of fast zeros -- would never be
+// pruned unless the user separately enabled approximate factoring. Returns true
+// and rewrites `f` when at least one root was dropped.
+static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
+                             double ref_tau, double lim,
+                             const std::vector<Candidate>& cands,
+                             const std::string& where,
+                             std::vector<Dropped>& dropped) {
+    int deg = 0;
+    try { deg = f.expr.degree(s); } catch (...) { return false; }
+    if (deg < 2) return false;
+    std::vector<double> c;
+    for (int k = 0; k <= deg; ++k) {
+        ex v = pt.eval_real(f.expr.coeff(s, k));
+        if (!is_a<numeric>(v)) return false;
+        c.push_back(GiNaC::ex_to<numeric>(v).to_double());
+    }
+    if (!(std::fabs(c[0]) > 0.0)) return false;
+    for (auto& v : c) v /= c[0];
+    std::vector<std::complex<double>> roots = poly_roots(c);
+
+    ex near_factor = ex(1);
+    bool changed = false;
+    for (const auto& r : roots) {
+        double re = r.real(), im = r.imag();
+        bool real_root = std::fabs(im) < 1e-6 * (1.0 + std::fabs(re));
+        // A complex root comes with its conjugate; handle the pair once.
+        if (!real_root && im < 0.0) continue;
+        double tau = real_root ? (re != 0.0 ? -1.0 / re : 0.0)
+                               : 1.0 / std::abs(r);
+        bool far = tau > 0.0 && std::isfinite(tau) &&
+                   tau <= ref_tau / lim * 1.000001;
+        if (far) {
+            dropped.push_back({where + ", factor", f.text,
+                               20.0 * std::log10(tau / ref_tau)});
+            changed = true;
+            continue;
+        }
+        if (real_root) {
+            // Prefer a named time-constant candidate so a surviving pole reads
+            // symbolically -- (ro_M2||ro_M1)*C1 -- not as a bare number.
+            const Candidate* best = nullptr;
+            double bestd = std::log(1.02);
+            for (const auto& c : cands) {
+                if (!(c.value > 0.0)) continue;
+                double d = std::fabs(std::log(c.value / tau));
+                if (d < bestd) { bestd = d; best = &c; }
+            }
+            near_factor = near_factor *
+                          (best ? (ex(1) + s * best->expr)
+                                : (ex(1) + s * GiNaC::numeric(tau)));
+        } else {
+            // (s - r)(s - r*) = s^2 - 2*Re*r s + |r|^2, normalized by |r|^2.
+            double wn2 = re * re + im * im;
+            near_factor = near_factor *
+                          (ex(1) + s * GiNaC::numeric(-2.0 * re / wn2) +
+                           GiNaC::pow(s, 2) * GiNaC::numeric(1.0 / wn2));
+        }
+    }
+    if (!changed) return false;
+    f.expr = near_factor.normal();
+    f.text = pretty_in_s(f.expr, s);
+    f.origin = false;
+    return true;
+}
+
 // Drop poles/zeros that lie more than threshold_db (60 dB) along the frequency
 // axis from the *dominant pole* (the slowest denominator time constant). A pole
 // or zero a thousand times (60 dB) faster than the dominant pole barely moves
 // the passband, so it is dropped; one at 100x (40 dB) is kept. Comparing
 // against the dominant pole -- not merely against the other factors in the same
 // numerator/denominator -- is what drops a cluster of fast zeros that are close
-// to *each other* but all far beyond the dominant pole. Operates on the already
-// factored (1 + s*tau) factors, never by chopping the expanded polynomial.
+// to *each other* but all far beyond the dominant pole. A degree>=2 factor
+// (a quadratic that did not factor symbolically) is reduced root-by-root.
 void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
                       const ex& s, double ref_tau, double threshold_db,
+                      const std::vector<Candidate>& cands,
                       const std::string& where,
                       std::vector<Dropped>& dropped) {
-    if (factors.size() <= 1 || ref_tau <= 0.0) return;
+    if (ref_tau <= 0.0) return;
     double lim = std::pow(10.0, threshold_db / 20.0);
     std::vector<Factor> kept;
-    for (const auto& f : factors) {
+    for (auto f : factors) {
+        int deg = 0;
+        try { deg = f.expr.degree(s); } catch (...) { deg = 0; }
+        if (!f.origin && deg >= 2) {
+            reduce_far_roots(f, pt, s, ref_tau, lim, cands, where, dropped);
+            if (!f.expr.is_equal(ex(1))) kept.push_back(f);
+            continue;
+        }
         double tau = factor_tau(f, pt, s);
         // "At or beyond" the threshold is dropped (60 dB == 1000x). The
         // *1.000001 tolerates floating-point error at an exact power-of-ten.
@@ -1466,9 +1579,11 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         // to the other zeros.
         double ref_tau = dominant_tau(R.den_factors, params, s);
         drop_far_factors(R.den_factors, params, s, ref_tau,
-                         opts.pole_zero_threshold_db, "denominator", R.dropped);
+                         opts.pole_zero_threshold_db, cands, "denominator",
+                         R.dropped);
         drop_far_factors(R.num_factors, params, s, ref_tau,
-                         opts.pole_zero_threshold_db, "numerator", R.dropped);
+                         opts.pole_zero_threshold_db, cands, "numerator",
+                         R.dropped);
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);

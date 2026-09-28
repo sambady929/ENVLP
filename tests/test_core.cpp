@@ -187,6 +187,29 @@ static void test_far_zeros_vs_dominant_pole() {
         LowEntropy le = low_entropy(num.expand(), den.expand(), pt, o);
         CHECK(!le.zeros.empty());
     }
+    // With approximate factoring OFF (the default), a numerator quadratic that
+    // does not factor symbolically must still be pruned root-by-root: a fast
+    // zero pair beyond the dominant pole is dropped. This is the 5T-OTA case.
+    {
+        ParamTable pt;
+        ex s = pt.get("s");
+        // dominant pole w = 500 (tau 2 ms); numerator roots at w = 5e5 / 2.5e6
+        // (tau 2e-6 / 4e-7), both > 60 dB above the pole.
+        ex num = (1 + s * ex(2e-6)) * (1 + s * ex(4e-7));
+        ex den = (1 + s * ex(2e-3));
+        LowEntropyOptions o;
+        o.prune = true;
+        o.normalize = false;
+        o.approx_factor = false; // NO approximate factoring
+        o.threshold_db = 20;
+        o.pole_zero_threshold_db = 60;
+        o.use_parallel = false;
+        o.band_lo_hz = 1.0;
+        o.band_hi_hz = 1e9;
+        LowEntropy le = low_entropy(num.expand(), den.expand(), pt, o);
+        CHECK(le.zeros.empty());
+        CHECK(!le.poles.empty());
+    }
 }
 
 // The ranking band decides which terms are negligible. A term that is tiny at
