@@ -1,0 +1,34 @@
+symcirc 1
+req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+tech 0 0.6 1e-16 0.0002 0.0001 "" "nmos" "pmos" 0
+comp "M1" "NMOS" 350 220 0 0 0 0 ""
+param "M1" "Cds" 0 "33f" 0
+param "M1" "Cgd" 0 "" 0
+param "M1" "Cgs" 0 "" 0
+comp "M2" "NMOS" 480 220 0 1 0 0 "" mirror=M1 mult=1
+comp "M3" "PMOS" 480 90 0 0 0 0 "" mirror=M4 mult=1
+comp "M4" "PMOS" 350 90 0 1 0 0 ""
+param "M4" "Cds" 0 "33f" 0
+param "M4" "Cgd" 0 "10f" 0
+param "M4" "Cgs" 1 "100f" 0
+comp "VDD" "VDD" 410 30 0 0 0 0 "5"
+comp "V1" "V" 260 280 0 0 0 0 ""
+comp "GND1" "GND" 260 320 0 0 0 0 ""
+comp "GND2" "GND" 550 240 0 0 0 0 ""
+comp "C1" "C" 590 180 270 0 0 0 "1p"
+comp "GND3" "GND" 590 210 0 0 0 0 ""
+comp "R1" "R" 420 310 90 0 0 0 "1M"
+comp "GND4" "GND" 420 340 0 0 0 0 ""
+wire 390,90 440,90 pin:M4:1 pin:M3:1
+wire 480,130 480,180 pin:M3:0 pin:M2:0
+wire 420,90 420,150 350,150 350,130 free pin:M4:0 wp=420,150 wp=350,150
+wire 350,150 350,180 free pin:M1:0
+wire 350,260 350,280 480,280 480,260 pin:M1:2 pin:M2:2 wp=350,280 wp=430,280 wp=480,280
+wire 350,50 350,30 480,30 480,50 pin:M4:2 pin:M3:2 wp=350,30 wp=360,30 wp=480,30
+wire 260,250 260,220 310,220 pin:V1:0 pin:M1:1 wp=260,220
+wire 550,240 550,220 520,220 pin:GND2:0 pin:M2:1 wp=550,220
+wire 260,320 260,310 pin:GND1:0 pin:V1:1
+wire 590,150 590,140 480,140 pin:C1:0 free wp=590,140
+netlabel 480,166.925 492.37,166.925 "out" 9 0 bind=1:0.738498
+card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0
+card "Differential (Adm/Acm/CMRR)" "" "V(out)" "" 1 1e+09 0 10 1 1 1 "Differential (Adm/Acm/CMRR)" 1 "n2" "0"

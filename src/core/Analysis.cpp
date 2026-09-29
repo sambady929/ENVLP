@@ -633,6 +633,146 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
+// Differential analysis: Adm, Acm and CMRR for a differential input port.
+//
+// The circuit is linear, so each modal response is a linear combination of
+// ordinary single-source transfers. With a 1 V differential drive (v(i+) =
+// +1/2, v(i-) = -1/2) the output is the differential-mode response; with a 1 V
+// common-mode drive (v(i+) = v(i-) = 1) it is the common-mode response. We
+// realise each drive by adding two ideal test voltage sources (one per input
+// node) to a copy of the circuit and solving once, so the input port need not
+// be an existing independent source. The output may itself be a port
+// ("V(out+)-V(out-)" or a single "V(out)"), which the solver already handles.
+// ---------------------------------------------------------------------------
+CardResult analyze_differential(const Circuit& c, const AnalysisSpec& s) {
+    CardResult cr;
+    cr.kind = AnalysisKind::Differential;
+    cr.title = "Differential (Adm / Acm / CMRR)";
+
+    std::string ip = s.input_port_p, in = s.input_port_n;
+    if (ip.empty() || in.empty()) {
+        cr.summary = "differential analysis needs an input port (i+ and i- nodes)";
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
+
+    // The differential port response is H(i+ -> out) - H(i- -> out); the common
+    // -mode response is H(i+ -> out) + H(i- -> out) (superposition: a drive
+    // v(i+) = +v, v(i-) = -v or +v). Each single-node drive is one ordinary
+    // solve with an added 1 V test source. A port node tied to ground cannot be
+    // driven, so its contribution is simply zero.
+    auto node_response = [&](const std::string& node) -> RawTF {
+        Circuit ct = c;
+        // Zero every independent source, then drop any ideal voltage source
+        // incident to the port node: with the source still present it would
+        // clamp the node (an ideal source in parallel with our test source is
+        // singular). The port node's own drive is the test source we add.
+        std::vector<Component> keep;
+        for (auto& cc : ct.comps) {
+            if (is_independent_source(cc.kind)) {
+                bool touches = false;
+                for (const auto& n : cc.nodes)
+                    if (n == node) touches = true;
+                if (touches) continue; // remove the clamping source
+                cc.value_text = "0";
+            }
+            keep.push_back(cc);
+        }
+        ct.comps.swap(keep);
+        Component vs;
+        vs.kind = Kind::V;
+        vs.ref = "__DPORT__";
+        vs.nodes = {node, "0"};
+        vs.dc_text = "0";
+        vs.ac_text = "1";
+        vs.value_text = "1";
+        ct.comps.push_back(vs);
+        return raw_tf(ct, "__DPORT__", s.output);
+    };
+    bool has_p = !ip.empty() && ip != "0" && ip != "GND";
+    bool has_n = !in.empty() && in != "0" && in != "GND";
+    RawTF tp = has_p ? node_response(ip) : RawTF{};
+    RawTF tn = has_n ? node_response(in) : RawTF{};
+    // The denominator is det(Y), which does NOT depend on which node is driven,
+    // so tp.den == tn.den and the modal responses are just sums of numerators
+    // over that one denominator (no degree-doubling product, no gcd):
+    //     Adm = (num_p - num_n)/den,   Acm = (num_p + num_n)/den / 2.
+    // Driving each node with a full 1 V (not 1/2) keeps the arithmetic exact;
+    // the common-mode 1->1/2 scale is applied as the *denominator* factor 2 so
+    // a stray 2.0 never enters the symbolic numerator.
+    auto combine = [&](bool common) -> RawTF {
+        RawTF t;
+        t.params = has_p ? tp.params : tn.params;
+        t.out_desc = s.output;
+        t.octc = has_p ? tp.octc : tn.octc;
+        if (has_p && has_n) {
+            t.num = common ? (tp.num + tn.num) : (tp.num - tn.num);
+            t.den = common ? (2 * tp.den) : tp.den;
+        } else if (has_p) {
+            t.num = tp.num;
+            t.den = common ? 2 * tp.den : tp.den;
+        } else {
+            t.num = common ? tn.num : -tn.num;
+            t.den = common ? 2 * tn.den : tn.den;
+        }
+        return t;
+    };
+
+    RawTF dm = combine(false);
+    RawTF cm = combine(true);
+    // Adm = dm.num/det and Acm = cm.num/det share the denominator, so
+    // CMRR = Adm/Acm = dm.num/cm.num: form the ratio directly and let the
+    // pruner reduce it.
+    ex CMRR_num = dm.num;
+    ex CMRR_den = cm.num;
+    bool cm_zero = cm.num.expand().is_zero();
+
+    PruneOptions o = opts_of(s);
+    Pruned adm_p = prune_low_entropy(dm.num, dm.den, dm.params, o);
+    Pruned cm_p = prune_low_entropy(cm.num, cm.den, cm.params, o);
+    Pruned cmrr_p;
+    if (!cm_zero)
+        cmrr_p = prune_low_entropy(CMRR_num, CMRR_den, dm.params, o);
+    if (cmrr_p.text.empty())
+        cmrr_p.text = cm_zero
+                          ? std::string("infinite (no common-mode response)")
+                          : pretty(CMRR_num / CMRR_den);
+
+    cr.text = "Adm = " + adm_p.text + " ;  Acm = " + cm_p.text +
+              " ;  CMRR = " + cmrr_p.text;
+    cr.latex = adm_p.latex;
+
+    std::string rep = "Differential analysis\n";
+    rep += "input port: " + ip + " - " + in + "   output: " + s.output + "\n";
+    rep += "----------------------------------------\n";
+    rep += "Adm(s)  = Vout / (v(" + ip + ") - v(" + in + ")) = " + adm_p.text + "\n";
+    rep += "Acm(s)  = Vout / (common-mode drive)            = " + cm_p.text + "\n";
+    rep += "CMRR(s) = Adm / Acm                             = " + cmrr_p.text + "\n";
+    cr.report = rep;
+
+    cr.latex_report = "Differential (input " + ip + " - " + in + "):\n";
+    cr.latex_report += "A_{dm} = " + latex_rhs(adm_p.latex) + "\n";
+    cr.latex_report += "A_{cm} = " + latex_rhs(cm_p.latex) + "\n";
+    if (!cmrr_p.latex.empty())
+        cr.latex_report += "\\mathrm{CMRR} = " + latex_rhs(cmrr_p.latex) + "\n";
+
+    cr.has_transfer = true;
+    {
+        AnalysisResult res;
+        res.input_desc = ip + " - " + in;
+        res.output_desc = s.output;
+        res.num_raw = dm.num;
+        res.den_raw = dm.den;
+        res.params = dm.params;
+        res.opts = o;
+        res.pruned = adm_p;
+        res.report = format_report(res);
+        cr.transfer = res;
+    }
+    return cr;
+}
+
+// ---------------------------------------------------------------------------
 // Loop gain by the return-ratio (Rosenstark) method.
 //
 // We never break the loop. The reference amplifier is:
@@ -1831,6 +1971,7 @@ CardResult run_analysis(const Circuit& c, const AnalysisSpec& spec) {
         case AnalysisKind::AC: return analyze_ac(c, spec);
         case AnalysisKind::DC: return analyze_dc(c, spec);
         case AnalysisKind::PSRR: return analyze_psrr(c, spec);
+        case AnalysisKind::Differential: return analyze_differential(c, spec);
         case AnalysisKind::LoopGain: return analyze_loop_gain(c, spec);
         case AnalysisKind::ShortCircuitCurrent:
             return analyze_short_circuit(c, spec);

@@ -28,12 +28,18 @@ enum class AnalysisKind {
     InputImpedance,   // Zin seen by the input source
     OutputImpedance,  // Zout seen at the output node
     Noise,            // input/output referred noise
+    Differential,     // Adm / Acm / CMRR from a differential input port
 };
 
 struct AnalysisSpec {
     AnalysisKind kind = AnalysisKind::TransferFunction;
     std::string input_ref;   // excitation source (Vin)
-    std::string output;      // "V(node)" or "I(ref)"
+    std::string output;      // "V(node)", "I(ref)", or a port such as "V(a)-V(b)"
+    // Differential input port (Differential only): the two nodes the input is
+    // applied across. A differential drive puts +1 on `input_port_p` and -1 on
+    // `input_port_n`.
+    std::string input_port_p;
+    std::string input_port_n;
     std::string probe_ref;   // reference element for loop gain
     double f0_hz = 1e3;      // legacy tuning frequency (kept for compatibility)
     double threshold_db = 20.0; // series/parallel component reduction (dB)

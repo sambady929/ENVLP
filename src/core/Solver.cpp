@@ -1,6 +1,9 @@
 #include "core/Solver.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -79,23 +82,82 @@ ex det_with_column(const matrix& Y, int k, const matrix& bcol) {
     return bareiss_det(std::move(M));
 }
 
+// Evaluate a probe sum such as "V(out)", "V(a)-V(b)", "2*V(a)-V(b)",
+// "V(a)+V(b)". `one_term(type, name)` evaluates a single probe over the common
+// denominator. Used for differential ports (a differential output is just a
+// weighted sum of node voltages).
+ex parse_probe_sum(const std::string& spec,
+                   const std::function<ex(char, const std::string&)>& one_term) {
+    ex acc = 0;
+    size_t i = 0, n = spec.size();
+    int sign = 1;
+    bool any = false;
+    while (i < n) {
+        while (i < n && std::isspace((unsigned char)spec[i])) ++i;
+        if (i >= n) break;
+        if (spec[i] == '+') { sign = 1; ++i; continue; }
+        if (spec[i] == '-') { sign = -1; ++i; continue; }
+        // Optional numeric coefficient like "2*". Keep it an EXACT integer
+        // (not a double): a floating 1.0 coefficient would block the exact
+        // cancellation the low-entropy pruner relies on.
+        long coeff = 1;
+        size_t j = i;
+        bool have_num = false;
+        while (j < n && std::isdigit((unsigned char)spec[j])) {
+            have_num = true;
+            ++j;
+        }
+        if (have_num && j < n && spec[j] == '*') {
+            coeff = std::strtol(spec.substr(i, j - i).c_str(), nullptr, 10);
+            i = j + 1;
+        }
+        if (i + 1 >= n || (spec[i] != 'V' && spec[i] != 'I') || spec[i + 1] != '(') {
+            throw std::runtime_error(
+                "output term must look like V(node) or I(ref): " +
+                spec.substr(i));
+        }
+        char type = spec[i];
+        size_t close = spec.find(')', i);
+        if (close == std::string::npos)
+            throw std::runtime_error("unbalanced parentheses in output: " + spec);
+        std::string name = spec.substr(i + 2, close - (i + 2));
+        acc += ex(sign * coeff) * one_term(type, name);
+        any = true;
+        sign = 1;
+        i = close + 1;
+    }
+    if (!any)
+        throw std::runtime_error(
+            "output must look like V(node), I(ref), or a sum such as "
+            "V(a)-V(b), got: " + spec);
+    return acc;
+}
+
 } // namespace
 
 Solved solve(const Circuit& circ, const AnalysisRequest& req) {
     // The output node is always read, and the caller may add more (DC enumerates
     // every node): those nodes must not be folded into an internal series node.
     std::set<std::string> used = req.used_nodes;
-    if (req.output.size() > 3 && req.output.front() == 'V' && req.output.back() == ')')
-        used.insert(req.output.substr(2, req.output.size() - 3));
-    // A branch-current output I(ref) reads both terminals of `ref`: those nodes
-    // must stay real unknowns so the current is well defined (folding a series
-    // group through them would change which branch the current refers to).
-    if (req.output.size() > 3 && req.output.front() == 'I' && req.output.back() == ')') {
-        std::string ref = req.output.substr(2, req.output.size() - 3);
-        if (ref.rfind("L:", 0) == 0) ref = ref.substr(2);
-        if (const Component* cp = circ.find(ref)) {
-            used.insert(cp->nodes.begin(), cp->nodes.end());
+    // Every probe in the output expression must resolve to a real unknown: a
+    // V(node) names a node; an I(ref) names the branch's two terminals (folding
+    // a series group through them would change which branch the current refers
+    // to). A differential port "V(a)-V(b)" protects both a and b.
+    for (size_t i = 0; i + 1 < req.output.size(); ++i) {
+        char type = req.output[i];
+        if ((type != 'V' && type != 'I') || req.output[i + 1] != '(') continue;
+        size_t close = req.output.find(')', i + 2);
+        if (close == std::string::npos) continue;
+        std::string name = req.output.substr(i + 2, close - (i + 2));
+        if (type == 'V') {
+            if (name != "GND" && name != "0") used.insert(name);
+        } else {
+            std::string ref = name;
+            if (ref.rfind("L:", 0) == 0) ref = ref.substr(2);
+            if (const Component* cp = circ.find(ref))
+                used.insert(cp->nodes.begin(), cp->nodes.end());
         }
+        i = close;
     }
     MnaSystem sys = build_mna(circ, req.input_ref, used);
 
@@ -138,50 +200,45 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
         return solution(it->second);
     };
 
-    const std::string& spec = req.output;
-    ex num;
-
-    if (spec.size() > 3 && spec.front() == 'V' && spec.back() == ')') {
-        std::string node = spec.substr(2, spec.size() - 3);
-        if (node == "GND") node = "0";
-        num = node_solution(node);
-        out.output_desc = "V(" + node + ")";
-    } else if (spec.size() > 3 && spec.front() == 'I' && spec.back() == ')') {
-        std::string ref = spec.substr(2, spec.size() - 3);
-        // strip an explicit L: prefix used to disambiguate the inductor
-        // branch from the inductor's symbol name
+    // The output may be a single probe (V(node) / I(ref)) or a linear
+    // combination of probes with +/- and an optional numeric coefficient, e.g.
+    // a differential port "V(out+)-V(out-)". Every term is evaluated over the
+    // common determinant `det`, so the numerators simply add.
+    auto one_term = [&](char type, const std::string& name) -> ex {
+        if (type == 'V') {
+            std::string node = (name == "GND") ? "0" : name;
+            return node_solution(node);
+        }
+        // I(ref): prefer the branch unknown; fall back to v/z for a 2-terminal
+        // passive that has no branch unknown.
+        std::string ref = name;
         std::string look = ref;
         if (look.rfind("L:", 0) == 0) look = look.substr(2);
         auto bit = sys.branch_idx.find(look);
         if (bit == sys.branch_idx.end() && look != ref)
             bit = sys.branch_idx.find(ref);
-        if (bit != sys.branch_idx.end()) {
-            num = solution(bit->second);
-        } else {
-            const Component* cp = circ.find(ref);
-            if (!cp) throw std::runtime_error("unknown component: " + ref);
-            if (cp->kind == Kind::I || pin_count(cp->kind) != 2)
-                throw std::runtime_error(
-                    "branch current not available for " + ref +
-                    " (supported: R, C, L, V, E)");
-            ex va = node_solution(cp->nodes[0]);
-            ex vb = node_solution(cp->nodes[1]);
-            ex z;
-            switch (cp->kind) {
-                case Kind::R: z = out.params.get(cp->ref); break;
-                case Kind::C: z = ex(1) / (s * out.params.get(cp->ref)); break;
-                case Kind::L: z = s * out.params.get(cp->ref); break;
-                default:
-                    throw std::runtime_error("unsupported I() target: " + ref);
-            }
-            num = (va - vb) / z;
+        if (bit != sys.branch_idx.end()) return solution(bit->second);
+        const Component* cp = circ.find(ref);
+        if (!cp) throw std::runtime_error("unknown component: " + ref);
+        if (cp->kind == Kind::I || pin_count(cp->kind) != 2)
+            throw std::runtime_error("branch current not available for " + ref +
+                                     " (supported: R, C, L, V, E)");
+        ex va = node_solution(cp->nodes[0]);
+        ex vb = node_solution(cp->nodes[1]);
+        ex z;
+        switch (cp->kind) {
+            case Kind::R: z = out.params.get(cp->ref); break;
+            case Kind::C: z = ex(1) / (s * out.params.get(cp->ref)); break;
+            case Kind::L: z = s * out.params.get(cp->ref); break;
+            default: throw std::runtime_error("unsupported I() target: " + ref);
         }
-        out.output_desc = "I(" + ref + ")";
-    } else {
-        throw std::runtime_error(
-            "output must look like V(node) or I(ref), got: " + spec);
-    }
+        return (va - vb) / z;
+    };
 
+    const std::string& spec = req.output;
+    ex num = parse_probe_sum(spec, one_term);
+    out.output_desc = spec;
+    // A bare single probe keeps the tidy "V(out)" description.
     out.num = num;
     out.den = det;
     return out;

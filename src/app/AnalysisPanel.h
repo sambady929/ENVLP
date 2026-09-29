@@ -20,6 +20,9 @@ struct AnalysisCard {
     std::string input_ref;
     std::string output;
     std::string probe_ref;
+    // Differential card: the two nodes the input port spans (i+ - i-).
+    std::string in_port_p;
+    std::string in_port_n;
     // Standard SPICE-style frequency sweep.
     syms::SweepSpec sweep;
     // "Ignore negligible terms": when off the exact (unpruned) form is shown.

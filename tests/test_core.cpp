@@ -1609,6 +1609,36 @@ static void test_copy_of_passive() {
     CHECK(cr.text.find("R2") == std::string::npos);
 }
 
+// Differential analysis on a differential pair: Adm, Acm and CMRR are formed
+// from the two input-port nodes. Adm must be non-zero; with a *finite* tail the
+// common-mode gain is non-zero, so CMRR is finite.
+static void test_differential_analysis() {
+    Circuit c;
+    Component m1 = comp(Kind::NMOS, "M1", {"out", "g1", "t"}, "");
+    m1.param_text["gm"] = "1m"; m1.param_text["ro"] = "100k"; m1.param_on["ro"] = true;
+    c.comps.push_back(m1);
+    Component m2 = comp(Kind::NMOS, "M2", {"d2", "g2", "t"}, "");
+    m2.param_text["gm"] = "1m"; m2.param_text["ro"] = "100k"; m2.param_on["ro"] = true;
+    c.comps.push_back(m2);
+    c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "Rtail", {"t", "0"}, "100k"));
+    c.comps.push_back(comp(Kind::VDD, "VDD", {"vdd"}, ""));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::Differential;
+    sp.input_port_p = "g1";
+    sp.input_port_n = "g2";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(c, sp);
+    CHECK(cr.report.find("Adm") != std::string::npos);
+    CHECK(cr.report.find("Acm") != std::string::npos);
+    CHECK(cr.report.find("CMRR") != std::string::npos);
+    // The differential gain references the tail and drain resistors.
+    CHECK(cr.report.find("Rtail") != std::string::npos);
+    CHECK(cr.report.find("Rd") != std::string::npos);
+    CHECK(cr.has_transfer);
+}
+
 // The general amplifier gain is signed: +100 and -100 give opposite-sign H(s).
 static void test_amp_signed_gain() {
     auto make = [](const char* v) {
@@ -2276,6 +2306,7 @@ int main(int argc, char** argv) {
         {"rational_sum_parallel", test_rational_sum_exposes_parallel},
         {"symbolic_two_pole_factor", test_symbolic_two_pole_factorization},
         {"copy_of_passive", test_copy_of_passive},
+        {"differential_analysis", test_differential_analysis},
         {"latex_output", test_latex_output},
         {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},

@@ -940,6 +940,8 @@ void MainFrame::run_card(int index) {
                                               : card.input_ref;
         sp.output = card.output.empty() ? doc_.req.output : card.output;
         sp.probe_ref = card.probe_ref;
+        sp.input_port_p = card.in_port_p;
+        sp.input_port_n = card.in_port_n;
         sp.sweep = card.sweep;
         sp.f0_hz = card.sweep.f_start_hz;
         sp.threshold_db = card.threshold_db;

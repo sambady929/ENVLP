@@ -25,6 +25,7 @@ const KindEntry kKinds[] = {
     {"Short-circuit current", AnalysisKind::ShortCircuitCurrent},
     {"Input impedance", AnalysisKind::InputImpedance},
     {"Output impedance", AnalysisKind::OutputImpedance},
+    {"Differential (Adm/Acm/CMRR)", AnalysisKind::Differential},
     {"Noise", AnalysisKind::Noise},
 };
 constexpr int kKindCount = int(sizeof(kKinds) / sizeof(kKinds[0]));
@@ -164,13 +165,21 @@ void AnalysisPanel::refresh(Document* doc) {
             });
         };
         // AC drives every independent source (the output is the superposition),
-        // and output impedance turns all sources off -- neither uses a single
-        // "in" source, so that field is omitted for them.
+        // output impedance turns all sources off, and the differential card
+        // uses its own port instead of a single input source -- so the "in"
+        // field is omitted for all three.
         bool needs_input = c.kind != AnalysisKind::AC &&
-                           c.kind != AnalysisKind::OutputImpedance;
+                           c.kind != AnalysisKind::OutputImpedance &&
+                           c.kind != AnalysisKind::Differential;
         if (needs_input)
             add_field("in", wxString::FromUTF8(c.input_ref),
                       [&c](const wxString& v) { c.input_ref = v.ToStdString(); });
+        if (c.kind == AnalysisKind::Differential) {
+            add_field("in+", wxString::FromUTF8(c.in_port_p),
+                      [&c](const wxString& v) { c.in_port_p = v.ToStdString(); });
+            add_field("in-", wxString::FromUTF8(c.in_port_n),
+                      [&c](const wxString& v) { c.in_port_n = v.ToStdString(); });
+        }
         add_field("out", wxString::FromUTF8(c.output),
                   [&c](const wxString& v) { c.output = v.ToStdString(); });
         if (c.kind == AnalysisKind::LoopGain)
@@ -327,7 +336,8 @@ std::string AnalysisPanel::serialize() const {
           << type_of(c.sweep.type) << " " << c.sweep.points_per_interval << " "
           << (c.prune ? 1 : 0) << " " << (c.use_parallel ? 1 : 0) << " "
           << (c.enabled ? 1 : 0) << " " << q(title)
-          << " " << (c.approx_factor ? 1 : 0) << "\n";
+          << " " << (c.approx_factor ? 1 : 0) << " " << q(c.in_port_p) << " "
+          << q(c.in_port_n) << "\n";
     }
     return o.str();
 }
@@ -375,6 +385,11 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         std::string title = unq(ls);
         int af = 1;
         ls >> af;
+        // Differential port nodes (appended; absent in older files).
+        ls >> std::ws;
+        if (ls.peek() == '"') c.in_port_p = unq(ls);
+        ls >> std::ws;
+        if (ls.peek() == '"') c.in_port_n = unq(ls);
         c.kind = analysis_kind_from_name(kind);
         c.sweep.f_start_hz = fs > 0 ? fs : 1.0;
         c.sweep.f_stop_hz = fe > c.sweep.f_start_hz ? fe : c.sweep.f_start_hz * 1e3;
