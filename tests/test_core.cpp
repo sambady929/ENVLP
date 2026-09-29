@@ -1614,13 +1614,19 @@ static void test_copy_of_passive() {
 // common-mode gain is non-zero, so CMRR is finite.
 static void test_differential_analysis() {
     Circuit c;
+    // Device parasitics off: the test only checks the Adm/Acm/CMRR plumbing and
+    // port parsing, and the caps make the symbolic determinant far more
+    // expensive (a full device network with every cap is ~20 s per solve).
     Component m1 = comp(Kind::NMOS, "M1", {"out", "g1", "t"}, "");
-    m1.param_text["gm"] = "1m"; m1.param_text["ro"] = "100k"; m1.param_on["ro"] = true;
+    m1.param_text["gm"] = "1m";
+    for (const char* p : {"Cgs", "Cgd", "Cds", "Cdb", "Csb"}) m1.param_on[p] = false;
     c.comps.push_back(m1);
     Component m2 = comp(Kind::NMOS, "M2", {"d2", "g2", "t"}, "");
-    m2.param_text["gm"] = "1m"; m2.param_text["ro"] = "100k"; m2.param_on["ro"] = true;
+    m2.param_text["gm"] = "1m";
+    for (const char* p : {"Cgs", "Cgd", "Cds", "Cdb", "Csb"}) m2.param_on[p] = false;
     c.comps.push_back(m2);
     c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
+    c.comps.push_back(comp(Kind::R, "Rd2", {"vdd", "d2"}, "10k"));
     c.comps.push_back(comp(Kind::R, "Rtail", {"t", "0"}, "100k"));
     c.comps.push_back(comp(Kind::VDD, "VDD", {"vdd"}, ""));
     c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
@@ -1629,14 +1635,57 @@ static void test_differential_analysis() {
     sp.input_port_p = "g1";
     sp.input_port_n = "g2";
     sp.output = "V(out)";
-    CardResult cr = run_analysis(c, sp);
+    // The port fields accept either bare node names or V(node) probes; the
+    // V(..) form must be stripped, or the card looks for a node named "V(g1)".
+    AnalysisSpec probe = sp;
+    probe.input_port_p = "V(g1)";
+    probe.input_port_n = "V(g2)";
+    CardResult cr = run_analysis(c, probe);
     CHECK(cr.report.find("Adm") != std::string::npos);
     CHECK(cr.report.find("Acm") != std::string::npos);
     CHECK(cr.report.find("CMRR") != std::string::npos);
-    // The differential gain references the tail and drain resistors.
     CHECK(cr.report.find("Rtail") != std::string::npos);
     CHECK(cr.report.find("Rd") != std::string::npos);
+    CHECK(cr.report.find("V(g1)") == std::string::npos); // stripped
     CHECK(cr.has_transfer);
+}
+
+// A true differential pair with both gates as real nodes (a bridging source
+// between the gates): the differential card must ground the un-driven port node
+// (never leave it floating) and report a finite CMRR that grows with the tail.
+static void test_differential_pair_cmrr() {
+    auto make = [](const char* rtail) {
+        Circuit c;
+        // Parasitics off: keeps the symbolic solve small (the test only checks
+        // the finite-CMRR behavior and the tail reference, not the full model).
+        Component m1 = comp(Kind::NMOS, "M1", {"out", "g1", "t"}, "");
+        m1.param_text["gm"] = "1m";
+        for (const char* p : {"Cgs", "Cgd", "Cds", "Cdb", "Csb"}) m1.param_on[p] = false;
+        c.comps.push_back(m1);
+        Component m2 = comp(Kind::NMOS, "M2", {"d2", "g2", "t"}, "");
+        m2.param_text["gm"] = "1m";
+        for (const char* p : {"Cgs", "Cgd", "Cds", "Cdb", "Csb"}) m2.param_on[p] = false;
+        c.comps.push_back(m2);
+        c.comps.push_back(comp(Kind::R, "Rd", {"vdd", "out"}, "10k"));
+        c.comps.push_back(comp(Kind::R, "Rd2", {"vdd", "d2"}, "10k"));
+        c.comps.push_back(comp(Kind::R, "Rtail", {"t", "0"}, rtail));
+        // A source bridging the two gates (the differential drive).
+        c.comps.push_back(comp(Kind::V, "V1", {"g1", "g2"}, "0"));
+        c.comps.push_back(comp(Kind::VDD, "VDD", {"vdd"}, ""));
+        c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+        return c;
+    };
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::Differential;
+    sp.input_port_p = "g1";
+    sp.input_port_n = "g2";
+    sp.output = "V(out)";
+    CardResult cr = run_analysis(make("100k"), sp);
+    CHECK(cr.report.find("Adm") != std::string::npos);
+    // Finite CMRR (not "infinite") because the tail is finite, and it mentions
+    // the tail resistance.
+    CHECK(cr.report.find("infinite") == std::string::npos);
+    CHECK(cr.report.find("Rtail") != std::string::npos);
 }
 
 // The general amplifier gain is signed: +100 and -100 give opposite-sign H(s).
@@ -2307,6 +2356,7 @@ int main(int argc, char** argv) {
         {"symbolic_two_pole_factor", test_symbolic_two_pole_factorization},
         {"copy_of_passive", test_copy_of_passive},
         {"differential_analysis", test_differential_analysis},
+        {"differential_pair_cmrr", test_differential_pair_cmrr},
         {"latex_output", test_latex_output},
         {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},

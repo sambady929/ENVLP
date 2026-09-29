@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -649,72 +650,106 @@ CardResult analyze_differential(const Circuit& c, const AnalysisSpec& s) {
     cr.kind = AnalysisKind::Differential;
     cr.title = "Differential (Adm / Acm / CMRR)";
 
-    std::string ip = s.input_port_p, in = s.input_port_n;
-    if (ip.empty() || in.empty()) {
-        cr.summary = "differential analysis needs an input port (i+ and i- nodes)";
+    // The port fields accept either a bare node name ("n2") or a probe
+    // ("V(n2)"); strip a surrounding V(..) so both forms work.
+    auto as_node = [](std::string t) {
+        if (t.size() > 3 && (t[0] == 'V' || t[0] == 'v') && t[1] == '(' &&
+            t.back() == ')')
+            t = t.substr(2, t.size() - 3);
+        return t == "GND" ? std::string("0") : t;
+    };
+    std::string ip = as_node(s.input_port_p), in = as_node(s.input_port_n);
+    if (ip.empty() || in.empty() || ip == "0" || in == "0") {
+        cr.summary = "differential analysis needs two distinct input-port nodes";
         cr.report = cr.summary + "\n";
         return cr;
     }
+    // Validate the port nodes exist, so a typo is a clear error rather than a
+    // silent 0 V answer (a phantom node has no connection).
+    {
+        std::set<std::string> nodes;
+        for (const auto& cc : c.comps)
+            for (const auto& n : cc.nodes)
+                nodes.insert(n == "GND" ? "0" : n);
+        for (const std::string& nd : {ip, in})
+            if (!nodes.count(nd)) {
+                std::string avail;
+                for (const auto& n : nodes)
+                    if (n != "0") avail += (avail.empty() ? "" : ", ") + n;
+                cr.summary = "differential input port node '" + nd +
+                             "' does not exist. Existing nets: " +
+                             (avail.empty() ? std::string("(none)") : avail);
+                cr.report = cr.summary + "\n";
+                return cr;
+            }
+    }
 
-    // The differential port response is H(i+ -> out) - H(i- -> out); the common
-    // -mode response is H(i+ -> out) + H(i- -> out) (superposition: a drive
-    // v(i+) = +v, v(i-) = -v or +v). Each single-node drive is one ordinary
-    // solve with an added 1 V test source. A port node tied to ground cannot be
-    // driven, so its contribution is simply zero.
-    auto node_response = [&](const std::string& node) -> RawTF {
+    // The differential response is H(i+ -> out) - H(i- -> out); the common-mode
+    // response is H(i+ -> out) + H(i- -> out) (superposition: driving i+ with
+    // +v and i- with -v, or both with +v). Each way of driving the port is one
+    // ordinary solve.
+    //
+    // BOTH port nodes get a ground-referenced test source in every solve: the
+    // selected input is driven at 1 V and the other source is zeroed by the
+    // engine -- which grounds that port node (so it is never left floating when
+    // the original bridging source, e.g. the V1 between the gates, is removed)
+    // and gives the i- drive its own reference. Removing the incident
+    // independent sources first avoids an ideal source in parallel with ours.
+    auto port_solve = [&](const std::string& driven) -> RawTF {
         Circuit ct = c;
-        // Zero every independent source, then drop any ideal voltage source
-        // incident to the port node: with the source still present it would
-        // clamp the node (an ideal source in parallel with our test source is
-        // singular). The port node's own drive is the test source we add.
         std::vector<Component> keep;
         for (auto& cc : ct.comps) {
             if (is_independent_source(cc.kind)) {
                 bool touches = false;
                 for (const auto& n : cc.nodes)
-                    if (n == node) touches = true;
-                if (touches) continue; // remove the clamping source
+                    if (n == ip || n == in) touches = true;
+                if (touches) continue; // drop sources clamping a port node
                 cc.value_text = "0";
             }
             keep.push_back(cc);
         }
         ct.comps.swap(keep);
-        Component vs;
-        vs.kind = Kind::V;
-        vs.ref = "__DPORT__";
-        vs.nodes = {node, "0"};
-        vs.dc_text = "0";
-        vs.ac_text = "1";
-        vs.value_text = "1";
-        ct.comps.push_back(vs);
-        return raw_tf(ct, "__DPORT__", s.output);
+        auto add_src = [&](const std::string& node, const char* ref) {
+            Component vs;
+            vs.kind = Kind::V;
+            vs.ref = ref;
+            vs.nodes = {node, "0"};
+            vs.dc_text = "0";
+            vs.ac_text = "1";
+            vs.value_text = "1";
+            ct.comps.push_back(vs);
+        };
+        add_src(ip, "__DP__");
+        add_src(in, "__DN__");
+        // Solve directly (no OCTC): the differential card only needs the
+        // transfer polynomials, and OCTC runs a full solve per reactive element
+        // -- doubling or tripling the cost for no benefit here.
+        AnalysisRequest r;
+        r.input_ref = driven;
+        r.output = s.output;
+        Solved sv = solve(ct, r);
+        RawTF t;
+        t.num = sv.num;
+        t.den = sv.den;
+        t.params = std::move(sv.params);
+        t.out_desc = sv.output_desc;
+        return t;
     };
-    bool has_p = !ip.empty() && ip != "0" && ip != "GND";
-    bool has_n = !in.empty() && in != "0" && in != "GND";
-    RawTF tp = has_p ? node_response(ip) : RawTF{};
-    RawTF tn = has_n ? node_response(in) : RawTF{};
-    // The denominator is det(Y), which does NOT depend on which node is driven,
-    // so tp.den == tn.den and the modal responses are just sums of numerators
-    // over that one denominator (no degree-doubling product, no gcd):
-    //     Adm = (num_p - num_n)/den,   Acm = (num_p + num_n)/den / 2.
-    // Driving each node with a full 1 V (not 1/2) keeps the arithmetic exact;
-    // the common-mode 1->1/2 scale is applied as the *denominator* factor 2 so
-    // a stray 2.0 never enters the symbolic numerator.
+    RawTF tp = port_solve("__DP__");
+    RawTF tn = port_solve("__DN__");
+    // The denominator is det(Y), which does NOT depend on which source drives,
+    // so tp.den == tn.den and the modal responses are just numerator sums over
+    // that one denominator (no degree-doubling product, no gcd):
+    //     Adm = (num_p - num_n)/den,   Acm = (num_p + num_n)/(2*den).
+    // The common-mode 1 -> 1/2 scale is a *denominator* factor 2 so a stray 2.0
+    // never enters the symbolic numerator.
     auto combine = [&](bool common) -> RawTF {
         RawTF t;
-        t.params = has_p ? tp.params : tn.params;
+        t.params = tp.params;
         t.out_desc = s.output;
-        t.octc = has_p ? tp.octc : tn.octc;
-        if (has_p && has_n) {
-            t.num = common ? (tp.num + tn.num) : (tp.num - tn.num);
-            t.den = common ? (2 * tp.den) : tp.den;
-        } else if (has_p) {
-            t.num = tp.num;
-            t.den = common ? 2 * tp.den : tp.den;
-        } else {
-            t.num = common ? tn.num : -tn.num;
-            t.den = common ? 2 * tn.den : tn.den;
-        }
+        t.octc = tp.octc;
+        t.num = common ? (tp.num + tn.num) : (tp.num - tn.num);
+        t.den = common ? (2 * tp.den) : tp.den;
         return t;
     };
 

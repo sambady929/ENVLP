@@ -738,7 +738,13 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 if (S >= 0) sys.Y(k, S) -= 1;
                 sys.Y(k, k) -= 1;
                 sys.b(k, 0) = sgn * vth;
-                // No ro in the large-signal solve (small-signal parameter).
+                // No ro in the large-signal solve: the idealized gm/Id model
+                // reports the pure KCL currents (I(M1) = the branch current),
+                // and stamping ro would re-expand every operating point. A
+                // consequence is that a node fed only through ideal
+                // current-source drains (e.g. a current-mirror output with no
+                // resistive load) is genuinely floating and the DC solve
+                // reports that -- which is physically correct for the model.
             } else {
                 // no body terminal: the body is tied to the source
                 stamp_vccs(D, S, G, S, gm);
