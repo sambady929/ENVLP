@@ -263,7 +263,6 @@ void si_split(const std::string& txt, std::string& num, int& idx) {
         suf = txt.substr(num.size());
     }
     idx = si_suffix_index(suf);
-    if (num.empty()) num = txt.empty() ? "1" : txt;
 }
 
 // One parameter field: a number plus an SI-suffix dropdown (so the prefix is
@@ -379,6 +378,9 @@ void PropertiesPanel::add_value_row(const wxString& label, std::string* target,
     std::string num;
     int sel = kSiNone;
     si_split(*target, num, sel);
+    // An empty value (an unset source DC/AC) reads as empty; a passive
+    // defaults to unity so the field is never blank for a real value.
+    if (num.empty() && !target->empty()) num = "1";
 
     auto* ntc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(num),
                                wxDefaultPosition, wxSize(FromDIP(56), -1));
