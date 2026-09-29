@@ -77,6 +77,33 @@ ex gain_ex(const Component& c) {
     return ex(v);
 }
 
+// The symbolic value of a component, mirror-aware: a copy of a unit passive
+// contributes `mult * value_unit` (Rf = 6*Rin), so a copied R/C/L's own symbol
+// never appears and the ratio collapses to a number (Rf/Rin -> 6). The
+// `resistance`/unit-class scaling matches resolve_mirrors: a series copy
+// multiplies R/L and divides C.
+ex value_symbol_scaled(ParamTable& pt, const Circuit& circ, const Component& c) {
+    std::string name = c.ref; // the value symbol is the reference (R1, C1...)
+    ex sym = pt.get(name);
+    pt.set(name, c.estimate(), value_unit_class(c.kind));
+    if (c.mirror_ref.empty()) return sym;
+    const Component* unit = circ.find(c.mirror_ref);
+    if (!unit) return sym;
+    ex usym = pt.get(unit->ref);
+    pt.set(unit->ref, unit->estimate(), value_unit_class(unit->kind));
+    int mult = c.multiplicity();
+    switch (value_unit_class(c.kind)) {
+        case UnitClass::Ohm:
+        case UnitClass::Henry:
+        case UnitClass::Plain:
+            return mult == 1 ? usym : ex(mult) * usym;
+        case UnitClass::Farad:
+            return mult == 1 ? usym : usym / ex(mult);
+        default:
+            return usym;
+    }
+}
+
 // Amplifier gain as a *symbolic* design variable A_<ref>, with the user's
 // estimate registered so the magnitude pruner can simplify A/(A+1) -> 1 when
 // A = 1e9. Used for the amplifier-like blocks (op-amp, fully-differential
@@ -532,8 +559,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 ex r = hp->value;
                 stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
             } else {
-                sys.params.set(c.ref, c.estimate(), UnitClass::Ohm);
-                ex r = sys.params.get(c.ref);
+                ex r = value_symbol_scaled(sys.params, circ, c);
                 stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
             }
             break;
@@ -550,17 +576,15 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.params.set(c.ref, hp->est, hp->cls);
                 stamp_cap(idx(nd[0]), idx(nd[1]), hp->value);
             } else {
-                sys.params.set(c.ref, c.estimate(), UnitClass::Farad);
-                ex cap = sys.params.get(c.ref);
+                ex cap = value_symbol_scaled(sys.params, circ, c);
                 stamp_cap(idx(nd[0]), idx(nd[1]), cap);
             }
             break;
         }
         case Kind::L: {
             const HeldPassive* hp = held_of(c);
-            ex l = hp ? hp->value : sys.params.get(c.ref);
+            ex l = hp ? hp->value : value_symbol_scaled(sys.params, circ, c);
             if (hp) sys.params.set(c.ref, hp->est, hp->cls);
-            else sys.params.set(c.ref, c.estimate(), UnitClass::Henry);
             int a = idx(nd[0]), bb = idx(nd[1]);
             int k = sys.branch_idx.at(c.ref);
             if (a >= 0) {

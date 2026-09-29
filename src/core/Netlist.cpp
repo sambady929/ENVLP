@@ -353,15 +353,38 @@ std::string param_symbol(const Component& c, const std::string& p) {
     return p + "_" + c.ref; // gm_M1, Cgd_M2, ...
 }
 
+// A passives-with-a-single-value component whose value can be copied/scaled:
+// a resistor, capacitor, inductor, or the gain of a controlled/gain block.
+// (A source has a DC/AC value pair and no single thing to scale; GND/VDD are
+// rails.)
+bool is_copyable(Kind k) {
+    switch (k) {
+    case Kind::R:
+    case Kind::C:
+    case Kind::L:
+    case Kind::D:
+    case Kind::OPAMP:
+    case Kind::FDOPAMP:
+    case Kind::AMP:
+    case Kind::E:
+    case Kind::G:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool can_mirror(const Component& unit, const Component& copy) {
-    // Only real devices mirror (a resistor "copy" has no meaning), and the
-    // kinds must match exactly: an NMOS cannot copy a PMOS, a BJT cannot copy
-    // a MOSFET.
+    // Devices mirror (a MOSFET's model parameters all scale with the copy
+    // count); a single-value passive or gain block also copies, and its one
+    // value scales. The kinds must match exactly: an NMOS cannot copy a PMOS,
+    // an NPN cannot copy a PNP, a resistor cannot copy a capacitor.
     bool dev = unit.kind == Kind::NMOS || unit.kind == Kind::PMOS ||
                unit.kind == Kind::NPN || unit.kind == Kind::PNP;
-    if (!dev || unit.kind != copy.kind) return false;
-    // A device that is itself a copy must mirror the same unit, never another
-    // copy, so the chain stays one level deep.
+    if ((!dev && !is_copyable(unit.kind)) || unit.kind != copy.kind)
+        return false;
+    // A component that is itself a copy must mirror the same unit, never
+    // another copy, so the chain stays one level deep.
     return unit.mirror_ref.empty();
 }
 
@@ -376,8 +399,10 @@ double scale_mirror_estimate(UnitClass uc, double unit_value, int mult) {
         // current source / series for a voltage), so it scales inversely
         case UnitClass::Ohm:
             return unit_value / mult;
+        // A gain block / controlled source: the copy's gain is the unit's times
+        // the copy count (so an inverting amp's Rf = m*Rin gives a gain of -m).
         default:
-            return unit_value;
+            return unit_value * mult;
     }
 }
 
@@ -400,6 +425,26 @@ void resolve_mirrors(Circuit& c) {
                 ") cannot copy '" + copy.mirror_ref + "' (" +
                 kind_display(unit->kind) + ")");
         int mult = copy.multiplicity();
+        if (is_copyable(copy.kind)) {
+            // A single-value copy scales its *value*: a copy is a *series*
+            // multiple of the unit, so Rf = m*Rin, Cf = Cin/m, Lf = m*Lin, and
+            // an amplifier gain is m*A. (Devices use the parallel rule above,
+            // where the copy is m unit devices.)
+            if (!unit->value_text.empty()) {
+                double uv = unit->estimate();
+                UnitClass uc = value_unit_class(copy.kind);
+                double sv;
+                switch (uc) {
+                    case UnitClass::Ohm:
+                    case UnitClass::Henry:
+                    case UnitClass::Plain: sv = uv * mult; break;
+                    case UnitClass::Farad: sv = uv / mult; break;
+                    default: sv = uv * mult; break;
+                }
+                copy.value_text = eng::format_eng(sv, 4);
+            }
+            continue;
+        }
         for (const auto& d : param_defs(copy.kind)) {
             double uv = unit->param_estimate(d.name);
             copy.param_override[d.name] =

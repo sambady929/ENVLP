@@ -215,78 +215,49 @@ wxWrapSizer* PropertiesPanel::cards_host() {
     return cards_;
 }
 
-// mantissa + exponent dropdowns; stores "<m>e<exp>" into comp->param_text.
-// Each parameter is its own compact card in the wrapping container.
+// One free-text field per parameter: type any engineering value ("10k",
+// "2.5p", "1e-13"). A single editable field -- rather than a pair of
+// mantissa/exponent drop-downs -- keeps the panel snappy: creating dozens of
+// wxComboBox controls on every selection cost ~280 ms and was the selection
+// lag. The field is committed as typed.
 void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
                                        const std::string& name, bool parasitic,
                                        const wxString& default_text) {
     auto* host = cards_host();
     auto* card = new_card(this, wxString::FromUTF8(name));
 
-    double v = 0.0;
     wxString cur = default_text;
     if (comp->param_text.count(name) && !comp->param_text.at(name).empty())
         cur = wxString::FromUTF8(comp->param_text.at(name));
-    if (!syms::eng::parse_value(cur.ToStdString(), v))
-        syms::eng::parse_value(default_text.ToStdString(), v);
-    double mant;
-    int exp;
-    decompose(v, mant, exp);
 
     auto* row = new wxBoxSizer(wxHORIZONTAL);
-
-    wxComboBox* man = nullptr;
-    wxComboBox* ex = nullptr;
     wxCheckBox* cb = nullptr;
     if (parasitic) {
         cb = new wxCheckBox(card, wxID_ANY, wxEmptyString);
         cb->SetValue(comp->param_enabled(name));
-        row->Add(cb, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 2);
+        row->Add(cb, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     }
-    man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                         wxSize(FromDIP(56), -1), kMantissas, wxCB_DROPDOWN);
-    ex = new wxComboBox(card, wxID_ANY, exp_display(exp), wxDefaultPosition,
-                        wxSize(FromDIP(64), -1), kExponents, wxCB_DROPDOWN);
-    if (cb) {
-        man->Enable(cb->GetValue());
-        ex->Enable(cb->GetValue());
-        cb->Bind(wxEVT_CHECKBOX, [this, comp, name, man, ex](wxCommandEvent& e) {
+    auto* tc = new wxTextCtrl(card, wxID_ANY, cur, wxDefaultPosition,
+                              wxSize(FromDIP(72), -1));
+    if (cb) tc->Enable(cb->GetValue());
+    row->Add(tc, 0, wxALIGN_CENTER_VERTICAL);
+    card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
+    host->Add(card, 0, wxALL, FromDIP(4));
+    card->Fit();
+
+    if (cb)
+        cb->Bind(wxEVT_CHECKBOX, [this, comp, name, tc](wxCommandEvent& e) {
             comp->param_on[name] = e.IsChecked();
-            man->Enable(e.IsChecked());
-            ex->Enable(e.IsChecked());
+            tc->Enable(e.IsChecked());
             doc_->dirty = true;
             if (on_edited) on_edited();
         });
-    }
-    row->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
-    row->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(1));
-    row->Add(ex, 0, wxALIGN_CENTER_VERTICAL);
-    card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
-    host->Add(card, 0, wxALL, FromDIP(4));
-
-    auto commit = [this, comp, name, man, ex] {
-        double m = 0.0;
-        if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
-        long e = 0;
-        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
-        comp->param_text[name] = fmt_value(m, int(e)).ToStdString();
+    tc->Bind(wxEVT_TEXT, [this, comp, name, tc](wxCommandEvent&) {
+        if (rebuilding_) return;
+        comp->param_text[name] = tc->GetValue().ToStdString();
         doc_->dirty = true;
         if (on_edited) on_edited();
-    };
-    man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
     });
-    man->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    card->Fit();
 }
 
 void PropertiesPanel::add_param_row(syms::Component* comp,
@@ -323,16 +294,11 @@ void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
     });
 }
 
-// Value dropdowns for passives: pick a mantissa (1, 3.3, 10, 33, ...) and an
-// exponent (multiples of 3) -> value_text = "<mant><SIPrefix>".
+// One free-text value field for passives / gain blocks: type any engineering
+// value ("1k", "-6k", "2.5p"). Far cheaper to build than a mantissa/exponent
+// pair of drop-downs, which was the selection lag.
 void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) {
     auto* host = cards_host();
-
-    double v = 1.0;
-    if (!syms::eng::parse_value(comp->value_text, v) || v == 0.0) v = 1.0;
-    double mant = 1.0;
-    int exp = 0;
-    decompose(std::fabs(v), mant, exp);
 
     // Op-amps / gain blocks: their "value" is the DC gain, so label it
     // "Gain" (GBW is a separate parameter shown below).
@@ -344,28 +310,11 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     auto* card = new_card(this, wxString::FromUTF8(label));
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
 
-    // The general amplifier (single-ended, single output) needs an explicit
-    // polarity: its gain can be +100 or -100. A dropdown flips the sign of
-    // value_text without disturbing the magnitude.
-    wxChoice* pol = nullptr;
-    if (comp->kind == syms::Kind::AMP) {
-        pol = new wxChoice(card, wxID_ANY);
-        pol->Append("+");
-        pol->Append("-");
-        pol->SetSelection(comp->value_text.rfind('-', 0) == 0 ? 1 : 0);
-        sub->Add(pol, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-    }
-
-    auto* man = new wxComboBox(card, wxID_ANY, fmt_num(mant), wxDefaultPosition,
-                               wxSize(FromDIP(56), -1), kMantissas,
-                               wxCB_DROPDOWN);
-    auto* ex = new wxComboBox(card, wxID_ANY, exp_display(exp),
-                              wxDefaultPosition, wxSize(FromDIP(64), -1),
-                              kExponents, wxCB_DROPDOWN);
-    sub->Add(man, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
-    sub->Add(new wxStaticText(card, wxID_ANY, "e"), 0,
-             wxALIGN_CENTER_VERTICAL | wxRIGHT, 1);
-    sub->Add(ex, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 3);
+    wxString cur = comp->value_text.empty() ? wxString("1")
+                                            : wxString::FromUTF8(comp->value_text);
+    auto* tc = new wxTextCtrl(card, wxID_ANY, cur, wxDefaultPosition,
+                              wxSize(FromDIP(80), -1));
+    sub->Add(tc, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     if (with_unit) {
         std::string unit = (comp->kind == syms::Kind::VDD)
                                ? std::string("V")
@@ -377,41 +326,11 @@ void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) 
     card->Fit();
     host->Add(card, 0, wxALL, FromDIP(4));
 
-    auto commit = [this, comp, man, ex, pol] {
-        double m = 1.0;
-        if (!syms::eng::parse_value(man->GetValue().ToStdString(), m)) m = 1.0;
-        m = std::fabs(m);
-        long e = 0;
-        if (!parse_exp_string(ex->GetValue(), e)) e = 0;
-        wxString v = fmt_value(m, int(e));
-        if (pol && pol->GetSelection() == 1) v = "-" + v;
-        comp->value_text = v.ToStdString();
-        doc_->dirty = true;
-        if (on_edited) on_edited();
-    };
-    if (pol) pol->Bind(wxEVT_CHOICE, [this, pol, comp](wxCommandEvent&) {
+    tc->Bind(wxEVT_TEXT, [this, comp, tc](wxCommandEvent&) {
         if (rebuilding_) return;
-        // flip the sign in place
-        std::string v = comp->value_text;
-        bool neg = v.rfind('-', 0) == 0;
-        bool want_neg = pol->GetSelection() == 1;
-        if (neg && !want_neg) v = v.substr(1);
-        else if (!neg && want_neg) v = "-" + v;
-        comp->value_text = v;
+        comp->value_text = tc->GetValue().ToStdString();
         doc_->dirty = true;
         if (on_edited) on_edited();
-    });
-    man->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    man->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_COMBOBOX, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
-    });
-    ex->Bind(wxEVT_TEXT, [commit, this](wxCommandEvent&) {
-        if (!rebuilding_) commit();
     });
 }
 
@@ -548,14 +467,42 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             add_header(wxString::FromUTF8(syms::kind_display(c->kind) + "  " +
                                           c->ref));
 
-            // editable instance name
+            // --- identity row: Name + "Copy of" side by side (compact) ------
+            // The two short fields share one row rather than each stretching the
+            // full panel width, which looked clunky.
+            bool copyable = syms::is_device(c->kind) || syms::is_copyable(c->kind);
             {
-                auto* sizer = GetSizer();
-                sizer->Add(new wxStaticText(this, wxID_ANY, "Name"), 0,
-                           wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
+                auto* row = new wxBoxSizer(wxHORIZONTAL);
+                row->Add(new wxStaticText(this, wxID_ANY, "Name"), 0,
+                         wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
                 auto* nm = new wxTextCtrl(this, wxID_ANY,
-                                          wxString::FromUTF8(c->ref));
-                sizer->Add(nm, 1, wxEXPAND | wxRIGHT, 6);
+                                          wxString::FromUTF8(c->ref),
+                                          wxDefaultPosition, wxSize(FromDIP(90), -1));
+                row->Add(nm, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
+
+                wxChoice* ch = nullptr;
+                if (copyable) {
+                    row->Add(new wxStaticText(this, wxID_ANY, "Copy of"), 0,
+                             wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
+                    auto* names = new wxArrayString();
+                    names->Add("(none)");
+                    for (const auto& cc : doc_->circuit.comps) {
+                        if (cc.ref == c->ref) continue;
+                        if (!syms::can_mirror(cc, *c)) continue;
+                        names->Add(wxString::FromUTF8(cc.ref));
+                    }
+                    ch = new wxChoice(this, wxID_ANY, wxDefaultPosition,
+                                      wxSize(FromDIP(90), -1), *names);
+                    wxString cur = c->mirror_ref.empty()
+                                       ? wxString("(none)")
+                                       : wxString::FromUTF8(c->mirror_ref);
+                    int sel = names->Index(cur);
+                    ch->SetSelection(sel == wxNOT_FOUND ? 0 : sel);
+                    row->Add(ch, 0, wxALIGN_CENTER_VERTICAL);
+                }
+                GetSizer()->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+                                FromDIP(4));
+
                 nm->Bind(wxEVT_TEXT, [this, old = c->ref, nm](wxCommandEvent&) {
                     if (rebuilding_) return;
                     std::string want = nm->GetValue().ToStdString();
@@ -567,122 +514,103 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                         if (on_selection_changed) on_selection_changed(want);
                     }
                 });
+                if (ch)
+                    ch->Bind(wxEVT_CHOICE, [this, ch](wxCommandEvent&) {
+                        if (rebuilding_) return;
+                        syms::Component* cc = nullptr;
+                        for (auto& x : doc_->circuit.comps)
+                            if (x.ref == sel_) cc = &x;
+                        if (!cc) return;
+                        wxString v = ch->GetString(ch->GetSelection());
+                        cc->mirror_ref = (v == "(none)")
+                                             ? std::string()
+                                             : v.ToStdString();
+                        if (cc->mirror_mult < 1) cc->mirror_mult = 1;
+                        doc_->dirty = true;
+                        if (on_edited) on_edited();
+                        // Rebuild immediately so the value/parameter rows hide
+                        // (or reappear) at once, and pin the scroll back to the
+                        // top so the header stays visible.
+                        CallAfter([this] {
+                            refresh(doc_, sel_);
+                            Scroll(0, 0);
+                        });
+                    });
+            }
+
+            // When this component is a copy of another, its value/parameters are
+            // inherited (and scaled by m): show only the copy controls, not the
+            // duplicated value rows.
+            bool is_copy = !comp->mirror_ref.empty();
+
+            if (is_copy) {
+                auto* mc = new wxBoxSizer(wxHORIZONTAL);
+                mc->Add(new wxStaticText(this, wxID_ANY, "Copies (m)"), 0,
+                        wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
+                auto* msc = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
+                                           wxDefaultPosition, wxSize(FromDIP(80), -1),
+                                           wxSP_ARROW_KEYS, 1, 100000,
+                                           comp->multiplicity());
+                mc->Add(msc, 0, wxALIGN_CENTER_VERTICAL);
+                GetSizer()->Add(mc, 0,
+                                wxLEFT | wxRIGHT | wxBOTTOM | wxTOP, FromDIP(4));
+                msc->Bind(wxEVT_SPINCTRL, [this, msc](wxSpinEvent&) {
+                    if (rebuilding_) return;
+                    syms::Component* cc = nullptr;
+                    for (auto& x : doc_->circuit.comps)
+                        if (x.ref == sel_) cc = &x;
+                    if (!cc) return;
+                    cc->mirror_mult = msc->GetValue();
+                    doc_->dirty = true;
+                    if (on_edited) on_edited();
+                });
+                auto* note = new wxStaticText(
+                    this, wxID_ANY,
+                    wxString::Format("Inherits %s; value scaled by m.",
+                                     comp->mirror_ref.c_str()));
+                note->SetForegroundColour(wxColour(115, 115, 120));
+                note->Wrap(FromDIP(240));
+                GetSizer()->Add(note, 0, wxALL, FromDIP(4));
             }
 
             // Supply rail: a free-text voltage so the user can enter any value
             // (3.3, 5, 12, 1.8, ...), not a fixed mantissa/exponent menu.
-            if (c->kind == Kind::VDD)
+            if (!is_copy && c->kind == Kind::VDD)
                 add_scalar_row("Supply", &comp->value_text, "V");
 
             // Value selector for passives and the non-source blocks. Voltage
             // and current sources are handled separately below (they carry DC
             // and AC values, not a single "value").
-            if (c->kind == Kind::R || c->kind == Kind::C ||
-                c->kind == Kind::L ||
-                c->kind == Kind::D || c->kind == Kind::OPAMP ||
-                c->kind == Kind::FDOPAMP || c->kind == Kind::AMP ||
-                c->kind == Kind::E || c->kind == Kind::G)
+            if (!is_copy &&
+                (c->kind == Kind::R || c->kind == Kind::C ||
+                 c->kind == Kind::L || c->kind == Kind::D ||
+                 c->kind == Kind::OPAMP || c->kind == Kind::FDOPAMP ||
+                 c->kind == Kind::AMP || c->kind == Kind::E ||
+                 c->kind == Kind::G))
                 add_value_selector(comp, true);
 
             // Independent V/I sources carry two typeable values, DC and AC.
             // The unit is fixed by the source kind: a voltage source is in
             // volts, a current source in amps.
-            if (c->kind == Kind::V || c->kind == Kind::I) {
+            if (!is_copy && (c->kind == Kind::V || c->kind == Kind::I)) {
                 const char* unit = (c->kind == Kind::V) ? "V" : "A";
                 add_header("Source values");
                 add_scalar_row("DC", &comp->dc_text, unit);
                 add_scalar_row("AC", &comp->ac_text, unit);
             }
 
-            // Device mirroring (MOSFETs / BJTs): a copy of another device of
-            // the same kind (a diff-pair / current-mirror leg), with a copy
-            // count that scales its parameters.
-            if (syms::is_device(c->kind) && c->kind != Kind::D) {
-                auto* sizer2 = GetSizer();
-                sizer2->Add(new wxStaticText(this, wxID_ANY, "Mirror of"), 0,
-                            wxALIGN_CENTER_VERTICAL | wxLEFT | wxTOP, 4);
-                auto* names = new wxArrayString();
-                names->Add("(unit device)");
-                for (const auto& cc : doc_->circuit.comps) {
-                    if (cc.ref == c->ref) continue;
-                    if (!syms::can_mirror(cc, *c)) continue;
-                    names->Add(wxString::FromUTF8(cc.ref));
-                }
-                auto* ch = new wxChoice(this, wxID_ANY, wxDefaultPosition,
-                                        wxDefaultSize, *names);
-                wxString cur = c->mirror_ref.empty()
-                                   ? wxString("(unit device)")
-                                   : wxString::FromUTF8(c->mirror_ref);
-                int sel = names->Index(cur);
-                ch->SetSelection(sel == wxNOT_FOUND ? 0 : sel);
-                sizer2->Add(ch, 1, wxEXPAND | wxRIGHT, 6);
-                ch->Bind(wxEVT_CHOICE, [this, ch](wxCommandEvent&) {
-                    if (rebuilding_) return;
-                    // `comp` is captured by the outer scope via `this`+sel_;
-                    // re-find it so a rebuild during edit is safe.
-                    syms::Component* cc = nullptr;
-                    for (auto& x : doc_->circuit.comps)
-                        if (x.ref == sel_) cc = &x;
-                    if (!cc) return;
-                    wxString v = ch->GetString(ch->GetSelection());
-                    cc->mirror_ref = (v == "(unit device)")
-                                         ? std::string()
-                                         : v.ToStdString();
-                    if (cc->mirror_mult < 1) cc->mirror_mult = 1;
-                    doc_->dirty = true;
-                    if (on_edited) on_edited();
-                    // Rebuild the panel now so the "Copies (m)" row appears (or
-                    // disappears) immediately -- otherwise the user has to click
-                    // off the part and reselect it to see the change.
-                    CallAfter([this] { refresh(doc_, sel_); });
-                });
-
-                if (!comp->mirror_ref.empty()) {
-                    auto* mc = new wxBoxSizer(wxHORIZONTAL);
-                    mc->Add(new wxStaticText(this, wxID_ANY, "Copies (m)"), 0,
-                            wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-                    auto* msc = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
-                                               wxDefaultPosition, wxDefaultSize,
-                                               wxSP_ARROW_KEYS, 1, 100000,
-                                               comp->multiplicity());
-                    mc->Add(msc, 1);
-                    sizer2->Add(mc, 0,
-                                wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
-                    msc->Bind(wxEVT_SPINCTRL, [this, msc](wxSpinEvent&) {
-                        if (rebuilding_) return;
-                        syms::Component* cc = nullptr;
-                        for (auto& x : doc_->circuit.comps)
-                            if (x.ref == sel_) cc = &x;
-                        if (!cc) return;
-                        cc->mirror_mult = msc->GetValue();
-                        doc_->dirty = true;
-                        if (on_edited) on_edited();
-                    });
-                    auto* note = new wxStaticText(
-                        this, wxID_ANY,
-                        "Parameters are inherited from the unit device, scaled "
-                        "by m.");
-                    note->SetForegroundColour(wxColour(115, 115, 120));
-                    note->Wrap(FromDIP(240));
-                    sizer2->Add(note, 0, wxALL, 4);
-                    sizer->AddSpacer(6);
-                    // Fall through: still show the inherited parameter cards
-                    // below, so the user sees the model this copy uses. The
-                    // common FitInside() at the end lays it all out.
-                }
-            }
-
             // Device model parameters (checkbox + mantissa/exponent). W and L
             // are only meaningful in the numeric DC mode; in the symbolic modes
             // W/L are symbols (or unused), so hide them to avoid confusion.
-            for (const auto& pd : syms::param_defs(c->kind)) {
-                bool is_geometry = (pd.name == "W" || pd.name == "L");
-                if (is_geometry &&
-                    doc_->tech.dc_mode != syms::DcMode::Numeric)
-                    continue;
-                add_param_row(comp, pd.name, pd.unit, pd.parasitic,
-                              pd.default_text);
-            }
+            if (!is_copy)
+                for (const auto& pd : syms::param_defs(c->kind)) {
+                    bool is_geometry = (pd.name == "W" || pd.name == "L");
+                    if (is_geometry &&
+                        doc_->tech.dc_mode != syms::DcMode::Numeric)
+                        continue;
+                    add_param_row(comp, pd.name, pd.unit, pd.parasitic,
+                                  pd.default_text);
+                }
 
             if (c->kind == Kind::K) {
                 auto* names = new wxArrayString();

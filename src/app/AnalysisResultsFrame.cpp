@@ -1,4 +1,5 @@
 #include "AnalysisResultsFrame.h"
+#include "Theme.h"
 
 #include <wx/sizer.h>
 
@@ -7,7 +8,10 @@ namespace symcirc {
 AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     : wxFrame(parent, wxID_ANY, "Analysis results",
               wxDefaultPosition, wxSize(900, 600)) {
+    SetBackgroundColour(theme::chrome_bg);
     book_ = new wxNotebook(this, wxID_ANY);
+    book_->SetBackgroundColour(theme::surface_muted);
+    book_->SetForegroundColour(theme::text);
     results_ = new ResultsPanel(book_);
     math_ = new MathPanel(book_);
     bode_ = new BodePanel(book_);

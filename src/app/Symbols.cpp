@@ -515,9 +515,22 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
             marker_y = by0 - gap - lh;
         }
     } else {
-        double total_h = val_text.IsEmpty() ? lh : 2 * lh;
-        double stack_y = (by0 + by1) / 2.0 - total_h / 2.0;
+        // A three-pin transistor has its gate on one side (left normally, right
+        // when mirrored), drain top, source bottom. The label sits on the side
+        // OPPOSITE the gate and toward the top, so neither the gate wire nor
+        // the drain lead rides over it.
         double tx = bx1 + gap;
+        double stack_y = by0 + gap;
+        bool three_pin = c.kind == Kind::NMOS || c.kind == Kind::PMOS ||
+                         c.kind == Kind::NPN || c.kind == Kind::PNP;
+        if (three_pin) {
+            auto offs = pin_offsets(c.kind);
+            if (offs.size() > 1) {
+                Pt g = transform_pt(offs[1], pl); // gate offset in world frame
+                // Gate on the right -> label on the left (and vice versa).
+                if (g.first > 0.0) tx = bx0 - gap - ref_ts.x;
+            }
+        }
         dc.DrawText(ref_text, wxPoint(int(tx), int(stack_y)));
         if (!val_text.IsEmpty()) {
             wxFont val_font = base;

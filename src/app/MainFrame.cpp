@@ -70,6 +70,7 @@ MainFrame::MainFrame()
     // scaling (a raw pixel size is applied as physical pixels and comes out
     // half-size on a 200% display).
     SetSize(FromDIP(wxSize(1400, 900)));
+    SetBackgroundColour(theme::chrome_bg);
     // sensible default analysis request (before panels read it)
     doc_.req.input_ref = "V1";
     doc_.req.output = "V(out)";
@@ -80,6 +81,8 @@ MainFrame::MainFrame()
 
     update_title();
     CreateStatusBar(2);
+    GetStatusBar()->SetBackgroundColour(theme::surface_muted);
+    GetStatusBar()->SetForegroundColour(theme::text_muted);
     SetStatusText("Pick a component from the palette, then click the canvas.", 0);
 }
 
@@ -389,7 +392,7 @@ void MainFrame::build_layout() {
     // the canvas soaks up the rest.
     sp_main_ = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition,
                                     wxDefaultSize,
-                                    wxSP_3D | wxSP_LIVE_UPDATE);
+                                    wxSP_LIVE_UPDATE);
     sp_main_->SetMinimumPaneSize(FromDIP(60));
     // gravity 0.0: the sash stays put, so the RIGHT pane (everything but the
     // fixed-width palette) absorbs the frame resize.
@@ -399,7 +402,7 @@ void MainFrame::build_layout() {
 
     sp_right_ = new wxSplitterWindow(sp_main_, wxID_ANY, wxDefaultPosition,
                                      wxDefaultSize,
-                                     wxSP_3D | wxSP_LIVE_UPDATE);
+                                     wxSP_LIVE_UPDATE);
     sp_right_->SetMinimumPaneSize(FromDIP(120));
     // gravity 1.0: the sash moves with the edge, so the LEFT pane (the canvas
     // centre) absorbs the resize while the analysis column keeps its width.
@@ -407,7 +410,7 @@ void MainFrame::build_layout() {
 
     sp_bottom_ = new wxSplitterWindow(sp_right_, wxID_ANY, wxDefaultPosition,
                                       wxDefaultSize,
-                                      wxSP_3D | wxSP_LIVE_UPDATE);
+                                      wxSP_LIVE_UPDATE);
     sp_bottom_->SetMinimumPaneSize(FromDIP(80));
     // gravity 1.0: the TOP pane (canvas) absorbs the resize; the props strip
     // keeps its height.

@@ -1582,6 +1582,33 @@ static void test_gbw_optional() {
     CHECK(on.transfer.pruned.poles.size() == 2);  // + op-amp dominant pole
 }
 
+// "Copy of" works for a passive: an inverting op-amp with Rf = 6*Rin reports
+// the low-entropy closed-loop gain -6 (the ratio Rf/Rin collapses to the
+// number), rather than an independent R2 symbol.
+static void test_copy_of_passive() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "0"));
+    c.comps.push_back(comp(Kind::R, "R1", {"in", "n1"}, "1k"));
+    Component rf = comp(Kind::R, "R2", {"n1", "out"}, "1k");
+    rf.mirror_ref = "R1";
+    rf.mirror_mult = 6;
+    c.comps.push_back(rf);
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.value_text = "1e5";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "V1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    // The DC gain is exactly -6, and R2 must not appear as its own symbol.
+    CHECK(cr.text.find("-6") != std::string::npos);
+    CHECK(cr.text.find("R2") == std::string::npos);
+}
+
 // The general amplifier gain is signed: +100 and -100 give opposite-sign H(s).
 static void test_amp_signed_gain() {
     auto make = [](const char* v) {
@@ -2248,6 +2275,7 @@ int main(int argc, char** argv) {
         {"parallel_collapse", test_parallel_collapse},
         {"rational_sum_parallel", test_rational_sum_exposes_parallel},
         {"symbolic_two_pole_factor", test_symbolic_two_pole_factorization},
+        {"copy_of_passive", test_copy_of_passive},
         {"latex_output", test_latex_output},
         {"latex_factor_parens", test_latex_factor_parens},
         {"report_latex", test_report_has_latex_and_factors},

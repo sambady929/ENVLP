@@ -126,10 +126,15 @@ struct Component {
 // Symbol name for a device parameter: "gm_M1", "Cgd_M2", ...
 std::string param_symbol(const Component& c, const std::string& p);
 
-// Whether `copy` may mirror `unit`: both must be the same device kind (a PMOS
-// cannot copy an NMOS; a BJT cannot copy a MOSFET), and both must be a
-// mirrorable device (MOSFET or BJT).
+// Whether `copy` may mirror `unit`: both must be the same kind, and both must
+// be a mirrorable device (MOSFET or BJT) or a single-value copyable passive /
+// gain block (R, C, L, D, op-amp, amp, controlled source).
 bool can_mirror(const Component& unit, const Component& copy);
+
+// Whether a component kind's single value can be copied/scaled (a resistor,
+// capacitor, inductor, gain block, ...). Devices mirror their model parameters
+// instead, so they are excluded here.
+bool is_copyable(Kind k);
 
 // Scale a mirrored parameter's estimate for `mult` copies of the unit device.
 // Transconductances and capacitances scale with the copy count; resistances
