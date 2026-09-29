@@ -82,6 +82,8 @@ ex gain_ex(const Component& c) {
 // never appears and the ratio collapses to a number (Rf/Rin -> 6). The
 // `resistance`/unit-class scaling matches resolve_mirrors: a series copy
 // multiplies R/L and divides C.
+} // namespace
+
 ex value_symbol_scaled(ParamTable& pt, const Circuit& circ, const Component& c) {
     std::string name = c.ref; // the value symbol is the reference (R1, C1...)
     ex sym = pt.get(name);
@@ -103,6 +105,9 @@ ex value_symbol_scaled(ParamTable& pt, const Circuit& circ, const Component& c) 
             return usym;
     }
 }
+
+namespace {
+
 
 // Amplifier gain as a *symbolic* design variable A_<ref>, with the user's
 // estimate registered so the magnitude pruner can simplify A/(A+1) -> 1 when
@@ -183,8 +188,13 @@ std::map<std::string, HeldPassive> fold_series_passives(
                               : UnitClass::Henry;
     };
     auto value_of = [&](const Component& c) -> GiNaC::ex {
+        // An already-folded synthetic keeps its held atom. A real passive uses
+        // the mirror-aware value: a copy of a unit contributes `mult * unit`
+        // (so R2 -> R1, R3 -> R1 here), which lets a parallel partner read
+        // R1||(R1+R1) instead of R1||(R2+R3) -- the whole point of "copy of".
         auto it = held.find(c.ref);
-        return it != held.end() ? it->second.value : params.get(c.ref);
+        return it != held.end() ? it->second.value
+                                : value_symbol_scaled(params, circ, c);
     };
     auto est_of = [&](const Component& c) -> double {
         auto it = held.find(c.ref);

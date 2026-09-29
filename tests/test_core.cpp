@@ -1609,6 +1609,40 @@ static void test_copy_of_passive() {
     CHECK(cr.text.find("R2") == std::string::npos);
 }
 
+// Two passives copied from the same unit must fold together: with R2 and R3 both
+// "copy of" R1, the series group is (R1+R1) and the partner collapses to
+// R1||(2*R1) = 2/3*R1 -- the copy substitution has to reach the *structural*
+// series fold, not just the MNA stamps.
+static void test_copy_of_series_parallel() {
+    Circuit c;
+    c.comps.push_back(comp(Kind::I, "I1", {"n1", "0"}, "1"));
+    Component op = comp(Kind::OPAMP, "U1", {"0", "n1", "out"}, "1e5");
+    op.param_text["GBW"] = "100M";
+    c.comps.push_back(op);
+    c.comps.push_back(comp(Kind::R, "R1", {"n1", "out"}, "10k"));
+    Component r2 = comp(Kind::R, "R2", {"n1", "m"}, "10k");
+    r2.mirror_ref = "R1";
+    c.comps.push_back(r2);
+    Component r3 = comp(Kind::R, "R3", {"m", "out"}, "10k");
+    r3.mirror_ref = "R1";
+    c.comps.push_back(r3);
+    c.comps.push_back(comp(Kind::C, "C1", {"n1", "0"}, "1n"));
+    c.comps.push_back(comp(Kind::GND, "G1", {"0"}));
+    AnalysisSpec sp;
+    sp.kind = AnalysisKind::TransferFunction;
+    sp.input_ref = "I1";
+    sp.output = "V(out)";
+    sp.sweep.f_start_hz = 1;
+    sp.sweep.f_stop_hz = 1e9;
+    CardResult cr = run_analysis(c, sp);
+    const std::string& t = cr.transfer.pruned.text;
+    // The copies substitute to R1: neither R2 nor R3 survives as a symbol, and
+    // the series/parallel group has folded to the single number 2/3.
+    CHECK(t.find("R2") == std::string::npos);
+    CHECK(t.find("R3") == std::string::npos);
+    CHECK(t.find("2/3") != std::string::npos);
+}
+
 // Differential analysis on a differential pair: Adm, Acm and CMRR are formed
 // from the two input-port nodes. Adm must be non-zero; with a *finite* tail the
 // common-mode gain is non-zero, so CMRR is finite.
@@ -2355,6 +2389,7 @@ int main(int argc, char** argv) {
         {"rational_sum_parallel", test_rational_sum_exposes_parallel},
         {"symbolic_two_pole_factor", test_symbolic_two_pole_factorization},
         {"copy_of_passive", test_copy_of_passive},
+        {"copy_of_series_parallel", test_copy_of_series_parallel},
         {"differential_analysis", test_differential_analysis},
         {"differential_pair_cmrr", test_differential_pair_cmrr},
         {"latex_output", test_latex_output},

@@ -103,4 +103,11 @@ MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
 GiNaC::ex reg_param(ParamTable& pt, const Component& c,
                     const std::string& p);
 
+// The symbolic value of a passive component, mirror-aware: a copy of a unit
+// contributes `mult * value_unit`, so a copied resistor is named by its unit's
+// symbol (Rf -> 6*Rin). Exposed so the noise sources collapse a "copy of" the
+// same way the MNA stamps do.
+GiNaC::ex value_symbol_scaled(ParamTable& pt, const Circuit& circ,
+                              const Component& c);
+
 } // namespace syms

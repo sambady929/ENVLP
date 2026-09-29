@@ -1385,7 +1385,9 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         if (cc.kind == Kind::R) {
             double R = cc.estimate();
             if (R > 0.0) {
-                ex Rs = pt.get(cc.ref); // the resistor's own symbol
+                // Mirror-aware: a copied resistor's noise is expressed via its
+                // unit (R2 -> 4kT/R1), so a "copy of" ratio stays collapsed.
+                ex Rs = value_symbol_scaled(pt, c, cc);
                 srcs.push_back({cc.ref, "4kT/R", false, cc.nodes[0],
                                 cc.nodes[1], 4.0 * kT / R, 0.0, ex(0),
                                 4 * kT_sym / Rs, ex(0)});

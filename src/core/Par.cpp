@@ -16,19 +16,78 @@ namespace {
 DECLARE_FUNCTION_2P(par)
 DECLARE_FUNCTION_2P(ser)
 
+// Split `e` into a numeric coefficient and a residual: e == coeff * rest.
+// A bare symbol -> (1, sym); 2*R1 -> (2, R1); R1/R2 -> (1, R1/R2). This is
+// used to fold combinations of *proportional* operands (same symbol, different
+// coefficients), which is exactly what a "copy of" produces: with R2 = R3 = R1
+// the series group is (R1+R1) and the parallel partner reads R1||(R1+R1).
+void prop_split(const ex& e, numeric& coeff, ex& rest) {
+    coeff = numeric(1);
+    rest = e;
+    if (is_a<numeric>(e)) {
+        coeff = GiNaC::ex_to<numeric>(e);
+        rest = ex(1);
+        return;
+    }
+    if (is_a<GiNaC::mul>(e)) {
+        numeric c(1);
+        ex r = 1;
+        for (size_t i = 0; i < e.nops(); ++i) {
+            const ex& f = e.op(i);
+            if (is_a<numeric>(f))
+                c *= GiNaC::ex_to<numeric>(f);
+            else
+                r *= f;
+        }
+        coeff = c;
+        rest = r;
+    }
+}
+
+// If `a` and `b` are numerical multiples of the same atom, combine them
+// exactly: series (a sum) gives (ca+cb)*rest, parallel gives
+// ca*cb/(ca+cb)*rest. Returns false when the operands are unrelated, or when
+// `rest` is itself a sum (kept verbatim so the drawn order survives).
+bool prop_combine(const ex& a, const ex& b, bool series, ex& out) {
+    numeric ca(1), cb(1);
+    ex ra, rb;
+    prop_split(a, ca, ra);
+    prop_split(b, cb, rb);
+    if (!ra.is_equal(rb)) return false;
+    if (is_a<GiNaC::add>(ra)) return false; // don't rewrite drawn sums
+    if (ra.is_equal(ex(1))) return false;   // purely numeric: handled above
+    if (series) {
+        numeric s = ca + cb;
+        if (s.is_zero()) return false;
+        out = s.is_equal(numeric(1)) ? ra : ex(s) * ra;
+    } else {
+        numeric den = ca + cb;
+        if (den.is_zero()) return false;
+        out = ex(ca * cb / den) * ra;
+    }
+    out = out.normal();
+    return true;
+}
+
 // ser_eval: a *held sum*. A series combination of two same-class passives is
 // printed and kept as (a+b) -- never expanded -- so that a parallel partner can
 // bind to it as one operand (R1||(R2+R3)). Folds to a number when both
-// arguments are numeric. Unlike par(), the operand order is preserved so the
-// sum reads in the order the user drew the chain (R2+R3, not R3+R2).
+// arguments are numeric, and to a scaled atom when they are proportional
+// (ser(R1,R1) -> 2*R1, i.e. a "copy of" series). Unlike par(), the operand
+// order is preserved for unrelated operands so the sum reads in the order the
+// user drew the chain (R2+R3, not R3+R2).
 ex ser_eval(const ex& a, const ex& b) {
     if (is_a<numeric>(a) && is_a<numeric>(b)) return a + b;
+    ex out;
+    if (prop_combine(a, b, true, out)) return out;
     return ser(a, b).hold();
 }
 
 ex ser_evalf(const ex& a, const ex& b) {
     ex va = a.evalf(), vb = b.evalf();
     if (is_a<numeric>(va) && is_a<numeric>(vb)) return va + vb;
+    ex out;
+    if (prop_combine(va, vb, true, out)) return out;
     return ser(va, vb).hold();
 }
 
@@ -62,6 +121,11 @@ ex par_eval(const ex& a, const ex& b) {
         if (na.is_zero() || nb.is_zero()) return ex(0);
         return (a * b) / (a + b);
     }
+    // Proportional operands collapse exactly: par(R1, 2*R1) = 2/3*R1. This is
+    // how a "copy of" chain reduces -- with R2 = R3 = R1 the series group is
+    // already ser(R1,R1) = 2*R1, so the partner reads par(R1, 2*R1) = 2/3*R1.
+    ex pc;
+    if (prop_combine(a, b, false, pc)) return pc;
     // Order the two arguments by GiNaC's canonical comparison so the atom is
     // commutative. compare() is the ordering GiNaC itself uses for sums.
     if (a.compare(b) > 0) return par(b, a).hold();
@@ -71,6 +135,8 @@ ex par_eval(const ex& a, const ex& b) {
 ex par_evalf(const ex& a, const ex& b) {
     ex va = a.evalf(), vb = b.evalf();
     if (is_a<numeric>(va) && is_a<numeric>(vb)) return (va * vb) / (va + vb);
+    ex out;
+    if (prop_combine(va, vb, false, out)) return out;
     return par(va, vb).hold();
 }
 
@@ -280,7 +346,7 @@ ex make_series(const std::vector<ex>& args) {
     if (args.empty()) return ex(0);
     if (args.size() == 1) return args[0];
     ex acc = args[0];
-    for (size_t i = 1; i < args.size(); ++i) acc = ser(acc, args[i]);
+    for (size_t i = 1; i < args.size(); ++i) acc = ser_ex(acc, args[i]);
     return acc;
 }
 
@@ -295,7 +361,7 @@ ex make_parallel(const std::vector<ex>& args) {
     if (args.empty()) return ex(0);
     if (args.size() == 1) return args[0];
     ex acc = args[0];
-    for (size_t i = 1; i < args.size(); ++i) acc = par(acc, args[i]);
+    for (size_t i = 1; i < args.size(); ++i) acc = par_ex(acc, args[i]);
     return acc;
 }
 
