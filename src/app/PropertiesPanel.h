@@ -48,7 +48,8 @@ private:
                        const std::string& unit, bool parasitic,
                        const std::string& default_text);
     void add_mantissa_exp(syms::Component* comp, const std::string& name,
-                          bool parasitic, const wxString& default_text);
+                          bool parasitic, const wxString& default_text,
+                          const wxString& unit);
     // The wrapping container the cards tile into (created lazily).
     wxWrapSizer* cards_host();
     // A value editor: a number field plus an SI-suffix dropdown, so the

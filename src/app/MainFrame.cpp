@@ -20,6 +20,134 @@
 
 namespace symcirc {
 
+namespace {
+
+// Pretty, scrollable Help content. A plain wxMessageBox wraps long lines
+// badly and has no scrolling, so the Help items share one read-only,
+// monospaced text window with a copy button.
+
+const char* kAboutText =
+    "SymCirc -- symbolic circuit analysis with low-entropy forms.\n"
+    "\n"
+    "Draw a schematic, add an analysis card, then press its Run button.\n"
+    "SymCirc ranks terms by order-of-magnitude estimates and prunes the\n"
+    "negligible ones, so the transfer function stays as readable as the\n"
+    "hand analysis you would do on a whiteboard.\n"
+    "\n"
+    "See Help > How to use (F1) for the analysis cards and\n"
+    "Help > Experimental features for what is still in flux.";
+
+const char* kShortcutsText =
+    "CANVAS\n"
+    "  R C L            resistor, capacitor, inductor\n"
+    "  V B              voltage source, current source\n"
+    "  M                N-MOSFET   (press M again) P-MOSFET\n"
+    "  Q                NPN        (press Q again) PNP\n"
+    "  D  or  Y         diode\n"
+    "  O                op-amp\n"
+    "  G                ground     (Shift+G) supply rail (VDD)\n"
+    "  T  K             transformer, coupled inductors\n"
+    "  W                wire tool\n"
+    "  N                place net label(s)\n"
+    "  I                component menu (every part)\n"
+    "\n"
+    "  Space            rotate the ghost / selection 90 deg\n"
+    "  Shift+Space      flip horizontally  (wiring: swap the route)\n"
+    "  Ctrl+Space       flip vertically\n"
+    "  F                fit the components to the view\n"
+    "  F7               toggle the dot grid\n"
+    "  Del              delete the selection\n"
+    "  Ctrl+C / Ctrl+V  copy / paste\n"
+    "  Esc              cancel the current action\n"
+    "\n"
+    "EDITING\n"
+    "  U                undo\n"
+    "  Shift+U          redo\n"
+    "\n"
+    "FILE / TABS\n"
+    "  Ctrl+N           new schematic tab\n"
+    "  Ctrl+O           open schematic(s)\n"
+    "  Ctrl+S           save        Ctrl+Shift+S  save as\n"
+    "  Ctrl+W           close the current tab\n"
+    "\n"
+    "HELP\n"
+    "  F1               how to use";
+
+const char* kHowtoText =
+    "Add analysis cards with the + Add picker on the right; each card has\n"
+    "its own Run button. Fill in the input source (in) and the output\n"
+    "expression (out) -- e.g. V(out), or V(a)-V(b) for a differential\n"
+    "output. Wording in quotes below is the card title.\n"
+    "\n"
+    "  \"Transfer function (H(s))\"\n"
+    "      V(out)/V(in): the small-signal gain. Reports the DC gain, the\n"
+    "      pole/zero corner frequencies and the dominant time constant.\n"
+    "\n"
+    "  \"AC (small-signal)\"\n"
+    "      Drives every independent source and superposes the responses,\n"
+    "      so there is no 'in' field.\n"
+    "\n"
+    "  \"PSR / PSRR\"\n"
+    "      Ripple on the supply rail referred to the output; set which\n"
+    "      supply symbol to perturb.\n"
+    "\n"
+    "  \"Loop gain (return ratio)\"\n"
+    "      Rosenstark return ratio: name the amplifier in 'probe'.\n"
+    "\n"
+    "  \"Short-circuit current\"\n"
+    "      The output current into a short.\n"
+    "\n"
+    "  \"Input impedance\"   \"Output impedance\"\n"
+    "      Zin at the input port; Zout with every source turned off (the\n"
+    "      output-impedance card has no 'in' field).\n"
+    "\n"
+    "  \"Noise\"\n"
+    "      Output and input-referred noise density, integrated over the\n"
+    "      sweep band, with a per-source contribution breakdown.\n"
+    "\n"
+    "\"ignore negligible\" (on each card, or the toolbar) drops terms far\n"
+    "below the dominant one so the result stays readable.";
+
+const char* kExperimentalText =
+    "These features work but their interface or output may still change\n"
+    "between versions. Cards that are experimental are labelled in the\n"
+    "Analysis panel.\n"
+    "\n"
+    "  DC analysis\n"
+    "      Large-signal operating point (three model modes). The card also\n"
+    "      holds the process settings: Vth, Is, uCox, the SPICE model file\n"
+    "      and per-device W/L. An ideal current-source output with no\n"
+    "      resistive load is genuinely floating and is reported as such.\n"
+    "\n"
+    "  Differential / common-mode analysis\n"
+    "      Adm, Acm and CMRR from the in+ / in- port nodes.\n"
+    "\n"
+    "  Plotting\n"
+    "      The frequency-response plot in the results window.\n"
+    "\n"
+    "  Switched-capacitor / discrete-time analysis\n"
+    "      Not implemented yet: clocked (z-domain) analysis of SC circuits.";
+
+// A read-only, scrollable text window for the Help entries.
+void show_text_window(wxWindow* parent, const wxString& title,
+                      const wxString& body) {
+    auto* frame = new wxFrame(parent, wxID_ANY, title, wxDefaultPosition,
+                              parent->FromDIP(wxSize(560, 620)));
+    frame->SetBackgroundColour(theme::chrome_bg);
+    auto* tc = new wxTextCtrl(frame, wxID_ANY, body, wxDefaultPosition,
+                              wxDefaultSize,
+                              wxTE_MULTILINE | wxTE_READONLY | wxTE_RICH2 |
+                                  wxTE_DONTWRAP);
+    wxFont mono = wxFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));
+    if (mono.IsOk()) tc->SetFont(mono);
+    auto* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(tc, 1, wxEXPAND | wxALL, frame->FromDIP(8));
+    frame->SetSizer(sizer);
+    frame->Show();
+}
+
+} // namespace
+
 enum {
     ID_NEW = wxID_HIGHEST + 1,
     ID_OPEN,
@@ -40,6 +168,7 @@ enum {
     ID_SHOW_GRID,
     ID_SHORTCUTS,
     ID_HOWTO,
+    ID_EXPERIMENTAL,
     ID_TAB_CLOSE,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
@@ -55,6 +184,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
     EVT_MENU(ID_SHORTCUTS, MainFrame::on_shortcuts)
     EVT_MENU(ID_HOWTO, MainFrame::on_howto)
+    EVT_MENU(ID_EXPERIMENTAL, MainFrame::on_experimental)
     EVT_MENU(ID_IGNORE_NEG, MainFrame::on_ignore_neg)
     EVT_MENU(ID_ZOOM_FIT, MainFrame::on_zoom_fit)
     EVT_MENU(ID_COPY, MainFrame::on_copy)
@@ -144,6 +274,8 @@ void MainFrame::build_menu() {
                  "What each analysis does and what it needs");
     help->Append(ID_SHORTCUTS, "&Keyboard shortcuts...",
                  "Every canvas and app shortcut");
+    help->Append(ID_EXPERIMENTAL, "&Experimental features...",
+                 "Experimental features and the roadmap");
     help->AppendSeparator();
     help->Append(ID_ABOUT_APP, "&About SymCirc");
 
@@ -955,75 +1087,20 @@ void MainFrame::run_card(int index) {
 }
 
 // ---------------------------------------------------------------------------
-void MainFrame::on_about(wxCommandEvent&) {
-    wxMessageBox(
-        "SymCirc -- symbolic circuit analysis with low-entropy forms.\n\n"
-        "Draw a schematic, add an analysis card, then press its Run button.\n"
-        "Ranks terms by order-of-magnitude estimates and prunes the\n"
-        "negligible ones so the transfer function stays readable.",
-        "About SymCirc", wxICON_INFORMATION, this);
-}
-
 void MainFrame::on_shortcuts(wxCommandEvent&) {
-    wxMessageBox(
-        "Canvas\n"
-        "  R / C / L / V / B      place resistor / cap / inductor /\n"
-        "                         voltage source / current source\n"
-        "  M (again)              N-MOSFET, then P-MOSFET\n"
-        "  Q (again)              NPN, then PNP\n"
-        "  D / Y                  diode\n"
-        "  O                      op-amp\n"
-        "  G / Shift+G            ground / supply rail (VDD)\n"
-        "  T / K                  transformer / coupled inductors\n"
-        "  W                      wire tool\n"
-        "  N                      place net label(s)\n"
-        "  I                      component menu (all parts)\n\n"
-        "  Space                  rotate the ghost / selection\n"
-        "  Shift+Space            flip horizontally (wire: swap route)\n"
-        "  Ctrl+Space             flip vertically\n"
-        "  F                      fit components to view\n"
-        "  F7                     toggle the grid\n"
-        "  Del                    delete the selection\n"
-        "  Ctrl+C / Ctrl+V        copy / paste\n"
-        "  Esc                    cancel the current action\n\n"
-        "Editing\n"
-        "  U                      undo\n"
-        "  Shift+U                redo\n\n"
-        "File / tabs\n"
-        "  Ctrl+N                 new schematic tab\n"
-        "  Ctrl+O                 open schematic(s)\n"
-        "  Ctrl+S / Ctrl+Shift+S  save / save as\n"
-        "  Ctrl+W                 close the current tab\n"
-        "  F1                     how to use (analysis help)",
-        "Keyboard shortcuts", wxICON_INFORMATION, this);
+    show_text_window(this, "Keyboard shortcuts", kShortcutsText);
 }
 
 void MainFrame::on_howto(wxCommandEvent&) {
-    wxMessageBox(
-        "Add analysis cards with the + Add picker on the right; each card has\n"
-        "its own Run button. Pick the input source (in) and the output\n"
-        "expression (out, e.g. V(out) or V(a)-V(b)).\n\n"
-        "Transfer function (H(s))     V(out)/V(in): the small-signal gain.\n"
-        "AC (small-signal)            Drives every source; no 'in' field.\n"
-        "PSR / PSRR                   Supply rejection; set the supply.\n"
-        "Loop gain (return ratio)     Rosenstark return ratio; name the\n"
-        "                             amplifier in 'probe'.\n"
-        "Short-circuit current        Output current into a short.\n"
-        "Input impedance              Zin seen at the input port.\n"
-        "Output impedance             Zout; all sources are turned off (no\n"
-        "                             'in' field).\n"
-        "Noise                        Output/input noise density and the\n"
-        "                             integrated value over the sweep band.\n\n"
-        "Experimental (output may change between versions):\n"
-        "DC operating point           Large-signal bias. Its card holds the\n"
-        "                             DC process/model settings (mode, Vth,\n"
-        "                             Is, uCox, SPICE model file, W/L).\n"
-        "Differential (Adm/Acm/CMRR)  Differential / common-mode gain; set\n"
-        "                             the in+ and in- port nodes.\n"
-        "Plot (in the results window) Frequency response; experimental.\n\n"
-        "Tip: 'ignore negligible' (toolbar or per card) drops terms far\n"
-        "below the dominant one so the result stays readable.",
-        "How to use", wxICON_INFORMATION, this);
+    show_text_window(this, "How to use", kHowtoText);
+}
+
+void MainFrame::on_experimental(wxCommandEvent&) {
+    show_text_window(this, "Experimental features & roadmap", kExperimentalText);
+}
+
+void MainFrame::on_about(wxCommandEvent&) {
+    show_text_window(this, "About SymCirc", kAboutText);
 }
 
 } // namespace symcirc

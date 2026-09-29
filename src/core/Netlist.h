@@ -143,9 +143,6 @@ double scale_mirror_estimate(UnitClass uc, double unit_value, int mult);
 
 
 
-// Hidden internal node name used when a BJT's rb is enabled.
-std::string bjt_internal_node(const Component& c);
-
 // ---------------------------------------------------------------------------
 // Circuit
 // ---------------------------------------------------------------------------

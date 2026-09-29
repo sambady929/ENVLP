@@ -237,9 +237,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
          "1/f noise corner frequency (flicker = thermal below this)"},
     };
     static const std::vector<ParamDef> npn = {
-        {"gm", "40m", false, true, "S", "transconductance"},
-        {"rpi", "2.5k", true, true, "Ohm", "base-emitter (input) resistance"},
-        {"rb", "100", true, false, "Ohm", "base spreading resistance"},
+        {"gm", "40m", false, true, "S", "forward transconductance"},
+        {"rpi", "2.5k", true, true, "Ohm",
+         "base-emitter input resistance (= beta/gm)"},
         {"ro", "50k", true, true, "Ohm", "output resistance (Early effect)"},
         {"Cpi", "10p", true, true, "F", "base-emitter capacitance"},
         {"Cmu", "1p", true, true, "F", "base-collector (Miller) capacitance"},
@@ -248,8 +248,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     };
     static const std::vector<ParamDef> pnp = npn;
     static const std::vector<ParamDef> diode = {
-        {"gm", "40m", false, true, "S", "small-signal conductance"},
-        {"rd", "1k", true, false, "Ohm", "series/ohmic resistance"},
+        {"rd", "1k", true, true, "Ohm",
+         "small-signal (dynamic) resistance rd = n*VT/Id"},
         {"Cd", "10p", true, true, "F", "junction capacitance"},
         {"fcn", "1k", true, false, "Hz",
          "1/f noise corner frequency (flicker = thermal below this)"},
@@ -284,8 +284,7 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 UnitClass param_unit_class(Kind k, const std::string& p) {
     (void)k;
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
-    if (p == "ro" || p == "rpi" || p == "rb" || p == "rd")
-        return UnitClass::Ohm;
+    if (p == "ro" || p == "rpi" || p == "rd") return UnitClass::Ohm;
     if (p == "Cgs" || p == "Cgd" || p == "Cds" || p == "Cdb" || p == "Csb" ||
         p == "Cpi" || p == "Cmu" || p == "Cd")
         return UnitClass::Farad;
@@ -454,10 +453,6 @@ void resolve_mirrors(Circuit& c) {
             copy.param_on[d.name] = unit->param_enabled(d.name);
         }
     }
-}
-
-std::string bjt_internal_node(const Component& c) {
-    return c.ref + "_bi"; // Q1_bi
 }
 
 const Component* Circuit::find(const std::string& ref) const {

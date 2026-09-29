@@ -1427,9 +1427,10 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
                                 GiNaC::numeric(i2), GiNaC::numeric(i2 * fcn)});
             }
         } else if (cc.kind == Kind::D) {
-            double gm = cc.param_estimate("gm");
-            double id = gm * kT / q;
-            double i2 = 2.0 * q * id + 4.0 * kT * gm * (2.0 / 3.0);
+            double rd = cc.param_estimate("rd");
+            double gd = rd > 0.0 ? 1.0 / rd : 0.0;
+            double id = gd * kT / q;
+            double i2 = 2.0 * q * id + 4.0 * kT * gd * (2.0 / 3.0);
             if (i2 > 0.0) {
                 double fcn = cc.param_enabled("fcn")
                                  ? cc.param_estimate("fcn")

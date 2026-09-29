@@ -219,9 +219,6 @@ std::map<std::string, HeldPassive> fold_series_passives(
                 if (c.nodes[1] != c.nodes[0]) at[c.nodes[1]].push_back(int(i));
             }
             for (const auto& n : c.nodes) ++degree[n];
-            if ((c.kind == Kind::NPN || c.kind == Kind::PNP) &&
-                c.param_enabled("rb"))
-                ++degree[bjt_internal_node(c)];
         }
         for (const auto& kv : at) {
             const std::string& m = kv.first;
@@ -357,8 +354,6 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     };
     for (const auto& c : circ.comps) {
         for (const auto& n : c.nodes) add_node(n);
-        if ((c.kind == Kind::NPN || c.kind == Kind::PNP) && c.param_enabled("rb"))
-            add_node(bjt_internal_node(c));
     }
     if (!seen.count("0"))
         throw std::runtime_error(
@@ -774,26 +769,19 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         case Kind::NPN:
         case Kind::PNP: {
             int C = idx(nd[0]), B = idx(nd[1]), E = idx(nd[2]);
-            // register every model parameter (enabled or not); only enabled
-            // ones are stamped into the MNA matrix
+            // Hybrid-pi: gm (C<-E), rpi (B-E), ro (C-E), Cpi (B-E), Cmu (B-C).
             ex gm = reg_param(sys.params, c, "gm");
             ex rpi = reg_param(sys.params, c, "rpi");
-            ex rb = reg_param(sys.params, c, "rb");
             ex ro = reg_param(sys.params, c, "ro");
             ex cpi = reg_param(sys.params, c, "Cpi");
             ex cmu = reg_param(sys.params, c, "Cmu");
-            int Bi = B;
-            if (c.param_enabled("rb")) {
-                Bi = sys.node_idx.at(bjt_internal_node(c));
-                stamp_adm(B, Bi, ex(1) / rb);
-            }
-            stamp_vccs(C, E, Bi, E, gm);
-            if (c.param_enabled("rpi")) stamp_adm(Bi, E, ex(1) / rpi);
+            stamp_vccs(C, E, B, E, gm);
+            if (c.param_enabled("rpi")) stamp_adm(B, E, ex(1) / rpi);
             if (c.param_enabled("ro")) stamp_adm(C, E, ex(1) / ro);
             // BJT junction capacitances are open at DC.
             if (!dc_mode) {
-                if (c.param_enabled("Cpi")) stamp_cap(Bi, E, cpi);
-                if (c.param_enabled("Cmu")) stamp_cap(Bi, C, cmu);
+                if (c.param_enabled("Cpi")) stamp_cap(B, E, cpi);
+                if (c.param_enabled("Cmu")) stamp_cap(B, C, cmu);
             }
             break;
         }
@@ -828,12 +816,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             break;
         }
         case Kind::D: {
-            // small-signal diode: gm(A->K), optional rd in series, Cd
+            // small-signal diode as an AC resistance rd (A-K), optional Cd.
+            // gm is the differential conductance 1/rd, so the two are the same
+            // parameter; expose only rd.
             int A = idx(nd[0]), Kk = idx(nd[1]);
-            ex gm = reg_param(sys.params, c, "gm");
             ex rd = reg_param(sys.params, c, "rd");
             ex cd = reg_param(sys.params, c, "Cd");
-            stamp_vccs(A, Kk, A, Kk, gm);
             if (c.param_enabled("rd")) stamp_adm(A, Kk, ex(1) / rd);
             if (!dc_mode && c.param_enabled("Cd")) stamp_cap(A, Kk, cd);
             break;
@@ -1103,9 +1091,6 @@ std::vector<TimeConstant> open_circuit_time_constants(
     std::map<std::string, int> full_degree;
     for (const auto& cc : c.comps) {
         for (const auto& n : cc.nodes) ++full_degree[n];
-        if ((cc.kind == Kind::NPN || cc.kind == Kind::PNP) &&
-            cc.param_enabled("rb"))
-            ++full_degree[bjt_internal_node(cc)];
     }
     std::set<std::string> protect = used_nodes;
     for (const auto& kv : full_degree)

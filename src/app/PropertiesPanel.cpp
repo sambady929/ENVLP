@@ -215,13 +215,63 @@ wxWrapSizer* PropertiesPanel::cards_host() {
     return cards_;
 }
 
+// SI suffix dropdown: top = largest, descending to smallest, with "(none)"
+// in its true position (between milli and kilo). The µ prefix uses the Greek
+// mu. The value shows as e.g. "m  milli (e-3)".
+struct SiSuffix { const char* suffix; const char* label; };
+const SiSuffix kSiSuffixes[] = {
+    {"T", "T  tera  (e+12)"},  {"G", "G  giga  (e+9)"},
+    {"M", "M  mega  (e+6)"},   {"k", "k  kilo  (e+3)"},
+    {"",  "(none)  (e0)"},     {"m", "m  milli (e-3)"},
+    {"\xC2\xB5", "\xC2\xB5  micro (e-6)"}, {"n", "n  nano  (e-9)"},
+    {"p", "p  pico  (e-12)"},  {"f", "f  femto (e-15)"},
+};
+constexpr int kSiCount = int(sizeof(kSiSuffixes) / sizeof(kSiSuffixes[0]));
+constexpr int kSiNone = 4; // index of the "(none)" entry
+
+wxArrayString si_suffix_labels() {
+    wxArrayString a;
+    for (const auto& s : kSiSuffixes) a.Add(wxString::FromUTF8(s.label));
+    return a;
+}
+
+// Map a parsed suffix ("k", "Meg", "µ", ...) to its index in kSiSuffixes.
+int si_suffix_index(const std::string& suf) {
+    if (suf.empty()) return kSiNone;
+    if (suf == "\xC2\xB5") return 6; // µ
+    if (suf == "meg" || suf == "MEG" || suf == "Meg" || suf == "mega" ||
+        suf == "MEGA") return 2;
+    for (int i = 0; i < kSiCount; ++i)
+        if (suf == kSiSuffixes[i].suffix) return i;
+    if (suf == "K") return 3;
+    if (suf == "u") return 6;
+    return kSiNone;
+}
+
+// Split "4.7k"/"100f"/"1e-3" into a number text and a suffix index.
+void si_split(const std::string& txt, std::string& num, int& idx) {
+    num.clear();
+    size_t i = 0;
+    while (i < txt.size() &&
+           ((txt[i] >= '0' && txt[i] <= '9') || txt[i] == '.' ||
+            txt[i] == '-' || txt[i] == '+' || txt[i] == 'e' ||
+            txt[i] == 'E'))
+        num += txt[i++];
+    std::string suf = txt.substr(i);
+    if (!num.empty() && (num.back() == 'e' || num.back() == 'E')) {
+        num.pop_back();
+        suf = txt.substr(num.size());
+    }
+    idx = si_suffix_index(suf);
+    if (num.empty()) num = txt.empty() ? "1" : txt;
+}
+
 // One parameter field: a number plus an SI-suffix dropdown (so the prefix is
-// unambiguous), matching the component value editor. This replaces the old
-// free-text field: creating a dropdown per parameter is affordable now that the
-// panel is built inside a Freeze()/Thaw() pair.
+// unambiguous), matching the component value editor.
 void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
                                        const std::string& name, bool parasitic,
-                                       const wxString& default_text) {
+                                       const wxString& default_text,
+                                       const wxString& unit) {
     auto* host = cards_host();
     auto* card = new_card(this, wxString::FromUTF8(name));
 
@@ -229,22 +279,9 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
     if (comp->param_text.count(name) && !comp->param_text.at(name).empty())
         cur = wxString::FromUTF8(comp->param_text.at(name));
 
-    // Split "100f"/"50k"/"1e-13" into a number part and a suffix part.
-    std::string txt = cur.ToStdString(), num, suf;
-    {
-        size_t i = 0;
-        while (i < txt.size() &&
-               ((txt[i] >= '0' && txt[i] <= '9') || txt[i] == '.' ||
-                txt[i] == '-' || txt[i] == '+' || txt[i] == 'e' ||
-                txt[i] == 'E'))
-            num += txt[i++];
-        suf = txt.substr(i);
-        if (!num.empty() && (num.back() == 'e' || num.back() == 'E')) {
-            num.pop_back();
-            suf = txt.substr(num.size());
-        }
-    }
-    if (num.empty()) num = cur.ToStdString();
+    std::string num;
+    int sel = kSiNone;
+    si_split(cur.ToStdString(), num, sel);
 
     auto* row = new wxBoxSizer(wxHORIZONTAL);
     wxCheckBox* cb = nullptr;
@@ -258,32 +295,20 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
     if (cb) tc->Enable(cb->GetValue());
     row->Add(tc, 0, wxALIGN_CENTER_VERTICAL);
     auto* ch = new wxChoice(card, wxID_ANY, wxDefaultPosition,
-                            wxSize(FromDIP(74), -1),
-                            {"(none)", "f  femto", "p  pico", "n  nano",
-                             "u  micro", "m  milli", "k  kilo", "M  mega",
-                             "G  giga", "T  tera"});
-    int sel = 0;
-    if (suf == "f") sel = 1;
-    else if (suf == "p") sel = 2;
-    else if (suf == "n") sel = 3;
-    else if (suf == "u" || suf == "\xC2\xB5") sel = 4;
-    else if (suf == "m") sel = 5;
-    else if (suf == "k" || suf == "K") sel = 6;
-    else if (suf == "M" || suf == "MEG" || suf == "Meg" || suf == "meg") sel = 7;
-    else if (suf == "G") sel = 8;
-    else if (suf == "T") sel = 9;
+                            wxSize(FromDIP(108), -1), si_suffix_labels());
     ch->SetSelection(sel);
     if (cb) ch->Enable(cb->GetValue());
     row->Add(ch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(2));
+    if (!unit.empty())
+        row->Add(new wxStaticText(card, wxID_ANY, unit), 0,
+                 wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(4));
     card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
     host->Add(card, 0, wxALL, FromDIP(4));
     card->Fit();
 
-    static const char* kSuffix[] = {"",  "f", "p", "n", "u", "m",
-                                    "k", "M", "G", "T"};
     auto commit = [this, comp, name, tc, ch]() {
         int s = ch->GetSelection();
-        std::string pre = (s > 0 && s < 10) ? kSuffix[s] : "";
+        std::string pre = (s >= 0 && s < kSiCount) ? kSiSuffixes[s].suffix : "";
         comp->param_text[name] = tc->GetValue().ToStdString() + pre;
         doc_->dirty = true;
         if (on_edited) on_edited();
@@ -310,8 +335,10 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
                                     const std::string& name,
                                     const std::string& unit, bool parasitic,
                                     const std::string& default_text) {
-    (void)unit;
-    add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text));
+    std::string u = unit;
+    if (u == "Ohm") u = "\xCE\xA9"; // Ω
+    add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text),
+                     wxString::FromUTF8(u));
 }
 
 // A free-text value field (a source's DC or AC value). The user may type
@@ -340,66 +367,24 @@ void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
     });
 }
 
-// A value editor: a number field plus an SI-suffix dropdown. The prefix is
-// chosen from a list so it is unambiguous (the dropdown spells out "M (mega)"
-// vs "m (milli)"), instead of the user having to remember whether "M" or "Meg"
-// means 1e6. Writes "<number><suffix>" into `target` (e.g. 4.7 + k -> "4.7k").
+// A value editor: a number field plus an SI-suffix dropdown (top = largest,
+// descending, "(none)" between milli and kilo). Writes "<number><suffix>" into
+// `target` (e.g. 4.7 + k -> "4.7k").
 void PropertiesPanel::add_value_row(const wxString& label, std::string* target,
                                     const std::string& unit) {
     auto* host = cards_host();
     auto* card = new_card(this, label);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
 
-    // Decompose the current text into a number and a suffix.
-    std::string txt = *target;
-    std::string num, suf;
-    {
-        size_t i = 0;
-        while (i < txt.size() &&
-               ((txt[i] >= '0' && txt[i] <= '9') || txt[i] == '.' ||
-                txt[i] == '-' || txt[i] == '+' || txt[i] == 'e' ||
-                txt[i] == 'E'))
-            num += txt[i++];
-        suf = txt.substr(i);
-        // "1e-3" style has the exponent consumed as a number char; only treat
-        // a trailing prefix letter group as a suffix.
-        if (!num.empty() && (num.back() == 'e' || num.back() == 'E')) {
-            num.pop_back();
-            suf = txt.substr(num.size());
-        }
-    }
-    if (num.empty()) num = "1";
+    std::string num;
+    int sel = kSiNone;
+    si_split(*target, num, sel);
 
     auto* ntc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(num),
                                wxDefaultPosition, wxSize(FromDIP(56), -1));
     sub->Add(ntc, 0, wxALIGN_CENTER_VERTICAL);
-    wxArrayString sufs;
-    for (const char* s : {"", "f", "p", "n", "u", "m", "", "k", "M", "G", "T"})
-        sufs.Add(wxString::FromUTF8(s));
-    // Build the labelled list once (the empty entry means "no prefix").
-    wxArrayString labels;
-    labels.Add("(none)");
-    labels.Add("f  femto");
-    labels.Add("p  pico");
-    labels.Add("n  nano");
-    labels.Add("u  micro");
-    labels.Add("m  milli");
-    labels.Add("k  kilo");
-    labels.Add("M  mega");
-    labels.Add("G  giga");
-    labels.Add("T  tera");
     auto* ch = new wxChoice(card, wxID_ANY, wxDefaultPosition,
-                            wxSize(FromDIP(74), -1), labels);
-    int sel = 0;
-    if (suf == "f") sel = 1;
-    else if (suf == "p") sel = 2;
-    else if (suf == "n") sel = 3;
-    else if (suf == "u" || suf == "\xC2\xB5") sel = 4;
-    else if (suf == "m") sel = 5;
-    else if (suf == "k" || suf == "K") sel = 6;
-    else if (suf == "M" || suf == "MEG" || suf == "Meg" || suf == "meg") sel = 7;
-    else if (suf == "G") sel = 8;
-    else if (suf == "T") sel = 9;
+                            wxSize(FromDIP(108), -1), si_suffix_labels());
     ch->SetSelection(sel);
     sub->Add(ch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(2));
     if (!unit.empty())
@@ -409,15 +394,12 @@ void PropertiesPanel::add_value_row(const wxString& label, std::string* target,
     card->Fit();
     host->Add(card, 0, wxALL, FromDIP(4));
 
-    static const char* kSuffix[] = {"",  "f", "p", "n", "u", "m",
-                                    "",  "k", "M", "G", "T"};
     auto commit = [this, ntc, ch, target]() {
         if (rebuilding_) return;
         int s = ch->GetSelection();
-        std::string pre = (s >= 0 && s < 10) ? kSuffix[s] : "";
+        std::string pre = (s >= 0 && s < kSiCount) ? kSiSuffixes[s].suffix : "";
         std::string n = ntc->GetValue().ToStdString();
-        // Trim; if the number is empty keep the old value.
-        while (!n.empty() && (n.back() == ' ')) n.pop_back();
+        while (!n.empty() && n.back() == ' ') n.pop_back();
         if (n.empty()) return;
         *target = n + pre;
         doc_->dirty = true;

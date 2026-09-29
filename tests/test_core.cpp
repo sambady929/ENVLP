@@ -521,11 +521,15 @@ static void test_branch_current_output() {
 }
 
 // ---------------------------------------------------------------------------
-static void test_bjt_rb_node() {
+// Hybrid-pi BJT: the small-signal model is gm (C<-E), rpi (B-E), ro (C-E),
+// Cpi (B-E) and Cmu (B-C). There is no separate base-spreading node.
+static void test_bjt_hybrid_pi() {
     Circuit c;
     c.comps.push_back(comp(Kind::V, "V1", {"in", "0"}, "1"));
     Component q = comp(Kind::NPN, "Q1", {"out", "in", "0"}, "");
-    q.param_on["rb"] = true;
+    q.param_text["gm"] = "40m";
+    q.param_text["rpi"] = "2.5k";
+    q.param_text["ro"] = "50k";
     c.comps.push_back(q);
     c.comps.push_back(comp(Kind::R, "R1", {"out", "0"}, "10k"));
     c = ground(c);
@@ -534,15 +538,12 @@ static void test_bjt_rb_node() {
     req.input_ref = "V1";
     req.output = "V(out)";
     AnalysisResult r = analyze(c, req);
-    CHECK(str(r.num_raw).find("rb_Q1") != std::string::npos ||
-          str(r.den_raw).find("rb_Q1") != std::string::npos);
-
-    // without rb the internal node must not exist
-    Circuit c2 = c;
-    c2.comps[1].param_on["rb"] = false;
-    AnalysisResult r2 = analyze(c2, req);
-    CHECK(str(r2.num_raw).find("rb_Q1") == std::string::npos &&
-          str(r2.den_raw).find("rb_Q1") == std::string::npos);
+    // The model is expressed entirely in the hybrid-pi parameters, with no
+    // internal base node. (rpi is shunted by the ideal source at the base, so
+    // only gm / ro / Cmu appear here.)
+    std::string both = str(r.num_raw) + str(r.den_raw);
+    CHECK(both.find("_bi") == std::string::npos);
+    CHECK(both.find("gm_Q1") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -2380,7 +2381,7 @@ int main(int argc, char** argv) {
         {"two_stage_factoring", test_two_stage_factoring},
         {"degree_drop_low_f0", test_degree_drop_at_low_f0},
         {"branch_current", test_branch_current_output},
-        {"bjt_rb_node", test_bjt_rb_node},
+        {"bjt_hybrid_pi", test_bjt_hybrid_pi},
         {"errors", test_errors},
         {"size_offset_db", test_size_offset_db},
         {"parallel_form", test_parallel_form},
