@@ -284,7 +284,7 @@ void BodeCanvas::on_paint(wxPaintEvent&) {
 
     if (!res_) {
         dc.SetTextForeground(wxColour(150, 150, 155));
-        dc.DrawText("Run an analysis (F5) to see the plot.", 12, 12);
+        dc.DrawText("Run an analysis to see the plot.", 12, 12);
         return;
     }
     // Noise and transfer-function families are exclusive: a noise result only

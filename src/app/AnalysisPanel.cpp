@@ -1,8 +1,12 @@
 #include "AnalysisPanel.h"
 #include "Theme.h"
 #include "core/Eng.h"
+#include "core/SpiceModel.h"
 
+#include <wx/checkbox.h>
 #include <wx/choice.h>
+#include <wx/combobox.h>
+#include <wx/filedlg.h>
 #include <wx/statline.h>
 
 #include <sstream>
@@ -76,7 +80,156 @@ void AnalysisPanel::remove_card(int i) {
     if (on_changed) on_changed();
 }
 
-void AnalysisPanel::on_add_choice() {}
+// The DC card's process/model block -- everything the large-signal operating
+// point needs. Moved here from the old "DC settings..." modal dialog so the
+// settings live with the analysis that uses them.
+void AnalysisPanel::build_dc_settings(wxWindow* box, wxSizer* s, AnalysisCard& c) {
+    if (!doc_) return;
+    syms::TechParams& tech = doc_->tech;
+
+    auto* grid = new wxFlexGridSizer(2, 4, 5);
+    grid->AddGrowableCol(1, 1);
+    auto add_row = [&](const wxString& label, wxWindow* w) {
+        grid->Add(new wxStaticText(box, wxID_ANY, label), 0,
+                  wxALIGN_CENTER_VERTICAL);
+        grid->Add(w, 1, wxEXPAND);
+    };
+
+    auto* mode = new wxChoice(box, wxID_ANY);
+    mode->Append("1. gm/Id symbolic");
+    mode->Append("2. Square law symbolic");
+    mode->Append("3. Numeric (SPICE models)");
+    mode->SetSelection(tech.dc_mode == syms::DcMode::GmOverId
+                           ? 0
+                           : tech.dc_mode == syms::DcMode::SquareLaw ? 1 : 2);
+    add_row("mode", mode);
+
+    auto* vth = new wxTextCtrl(box, wxID_ANY,
+                               wxString::FromDouble(tech.vth, 6),
+                               wxDefaultPosition, wxSize(70, -1));
+    add_row("Vth (V)", vth);
+    auto* is = new wxTextCtrl(box, wxID_ANY,
+                              wxString::FromDouble(tech.is, 6),
+                              wxDefaultPosition, wxSize(70, -1));
+    add_row("Is (A)", is);
+    auto* uncox = new wxTextCtrl(box, wxID_ANY,
+                                 wxString::FromDouble(tech.uncox, 8),
+                                 wxDefaultPosition, wxSize(70, -1));
+    add_row("uN*Cox", uncox);
+    auto* upcox = new wxTextCtrl(box, wxID_ANY,
+                                 wxString::FromDouble(tech.upcox, 8),
+                                 wxDefaultPosition, wxSize(70, -1));
+    add_row("uP*Cox", upcox);
+
+    auto* mfile = new wxTextCtrl(box, wxID_ANY,
+                                 wxString::FromUTF8(tech.model_file));
+    add_row("model file", mfile);
+    auto* nmname = new wxComboBox(box, wxID_ANY,
+                                  wxString::FromUTF8(tech.nmos_model),
+                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
+                                  wxCB_DROPDOWN);
+    add_row("NMOS model", nmname);
+    auto* pmname = new wxComboBox(box, wxID_ANY,
+                                  wxString::FromUTF8(tech.pmos_model),
+                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
+                                  wxCB_DROPDOWN);
+    add_row("PMOS model", pmname);
+    auto* browse = new wxButton(box, wxID_ANY, "Browse... / reload models");
+    grid->AddSpacer(1);
+    grid->Add(browse, 1, wxEXPAND);
+
+    s->Add(grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+
+    std::vector<std::string> nm_names, pm_names;
+    auto load_models = [&]() {
+        // Remember the selection: Clear() would otherwise blank the field.
+        wxString cur_nm = nmname->GetValue();
+        wxString cur_pm = pmname->GetValue();
+        if (cur_nm.IsEmpty()) cur_nm = wxString::FromUTF8(tech.nmos_model);
+        if (cur_pm.IsEmpty()) cur_pm = wxString::FromUTF8(tech.pmos_model);
+        nm_names.clear();
+        pm_names.clear();
+        std::string err;
+        std::vector<syms::MosModel> ms =
+            syms::parse_spice_models(mfile->GetValue().ToStdString(), err);
+        for (const auto& m : ms) (m.pmos ? pm_names : nm_names).push_back(m.name);
+        nmname->Clear();
+        pmname->Clear();
+        for (const auto& n : nm_names) nmname->Append(wxString::FromUTF8(n));
+        for (const auto& n : pm_names) pmname->Append(wxString::FromUTF8(n));
+        nmname->SetValue(cur_nm);
+        pmname->SetValue(cur_pm);
+    };
+    load_models();
+    mfile->Bind(wxEVT_TEXT, [load_models](wxCommandEvent&) { load_models(); });
+    browse->Bind(wxEVT_BUTTON, [this, box, mfile, load_models](wxCommandEvent&) {
+        wxFileDialog fd(box, "Choose a SPICE model file", "", "",
+                        "SPICE models (*.lib;*.mod;*.sp;*.cir)|*.lib;*.mod;*.sp;*.cir|All files (*.*)|*.*",
+                        wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+        if (fd.ShowModal() == wxID_OK) {
+            mfile->ChangeValue(fd.GetPath());
+            load_models();
+        }
+    });
+
+    auto push_tech = [this]() {
+        if (doc_) doc_->dirty = true;
+        if (on_tech_changed) on_tech_changed();
+        if (on_changed) on_changed();
+    };
+    mode->Bind(wxEVT_CHOICE, [this, mode, push_tech](wxCommandEvent&) {
+        if (rebuilding_) return;
+        doc_->tech.dc_mode =
+            mode->GetSelection() == 0 ? syms::DcMode::GmOverId
+            : mode->GetSelection() == 1 ? syms::DcMode::SquareLaw
+                                        : syms::DcMode::Numeric;
+        push_tech();
+    });
+    auto bind_double = [this, push_tech](wxTextCtrl* tc, double* target) {
+        tc->Bind(wxEVT_TEXT, [this, tc, target, push_tech](wxCommandEvent&) {
+            if (rebuilding_) return;
+            double v = 0.0;
+            if (tc->GetValue().ToDouble(&v)) {
+                *target = v;
+                push_tech();
+            }
+        });
+    };
+    bind_double(vth, &doc_->tech.vth);
+    bind_double(is, &doc_->tech.is);
+    bind_double(uncox, &doc_->tech.uncox);
+    bind_double(upcox, &doc_->tech.upcox);
+    auto bind_str = [this, push_tech](auto* tc, std::string* target) {
+        tc->Bind(wxEVT_TEXT, [this, tc, target, push_tech](wxCommandEvent&) {
+            if (rebuilding_) return;
+            *target = tc->GetValue().ToStdString();
+            push_tech();
+        });
+    };
+    bind_str(mfile, &tech.model_file);
+    bind_str(nmname, &tech.nmos_model);
+    bind_str(pmname, &tech.pmos_model);
+
+    auto* ovr = new wxCheckBox(box, wxID_ANY,
+                               "override small-signal params from numeric DC");
+    ovr->SetValue(tech.override_small_signal);
+    s->Add(ovr, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    ovr->Bind(wxEVT_CHECKBOX, [this, ovr, push_tech](wxCommandEvent& e) {
+        if (rebuilding_) return;
+        doc_->tech.override_small_signal = e.IsChecked();
+        push_tech();
+    });
+
+    auto* hint = new wxStaticText(
+        box, wxID_ANY,
+        "Mode 1: gm per device. Mode 2: uCox and symbolic W/L.\n"
+        "Mode 3: a SPICE .lib/.mod (level 1/3), numeric W/L.");
+    hint->SetForegroundColour(theme::text_muted);
+    wxFont hf = hint->GetFont();
+    hf.SetPointSize(std::max(7, hf.GetPointSize() - 1));
+    hint->SetFont(hf);
+    s->Add(hint, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+}
 
 // ---------------------------------------------------------------------------
 void AnalysisPanel::refresh(Document* doc) {
@@ -111,16 +264,13 @@ void AnalysisPanel::refresh(Document* doc) {
         });
     }
 
-    // run buttons
+    // run button row
     {
         auto* row = new wxBoxSizer(wxHORIZONTAL);
-        auto* all = new wxButton(this, wxID_ANY, "Run all");
         auto* res = new wxButton(this, wxID_ANY, "Results tab");
-        row->Add(all, 1, wxRIGHT, 4);
+        row->AddStretchSpacer(1);
         row->Add(res, 0);
         root->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
-        all->Bind(wxEVT_BUTTON,
-                  [this](wxCommandEvent&) { if (on_run_all) on_run_all(-1); });
         res->Bind(wxEVT_BUTTON,
                   [this](wxCommandEvent&) { if (on_results) on_results(); });
     }
@@ -133,9 +283,6 @@ void AnalysisPanel::refresh(Document* doc) {
         auto* s = new wxBoxSizer(wxVERTICAL);
 
         auto* top = new wxBoxSizer(wxHORIZONTAL);
-        auto* en = new wxCheckBox(box, wxID_ANY, "");
-        en->SetValue(c.enabled);
-        top->Add(en, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
         auto* ttl = new wxStaticText(box, wxID_ANY,
                                      wxString::Format("%d. %s", idx + 1,
                                                       wxString::FromUTF8(c.title)));
@@ -143,6 +290,18 @@ void AnalysisPanel::refresh(Document* doc) {
         tf.SetWeight(wxFONTWEIGHT_BOLD);
         ttl->SetFont(tf);
         top->Add(ttl, 1, wxALIGN_CENTER_VERTICAL);
+        // Experimental cards are marked so the user knows the output may
+        // change shape between versions.
+        bool experimental = c.kind == AnalysisKind::DC ||
+                            c.kind == AnalysisKind::Differential;
+        if (experimental) {
+            auto* badge = new wxStaticText(box, wxID_ANY, " experimental ");
+            badge->SetForegroundColour(wxColour(150, 90, 20));
+            wxFont bf = badge->GetFont();
+            bf.SetPointSize(std::max(7, bf.GetPointSize() - 2));
+            badge->SetFont(bf);
+            top->Add(badge, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+        }
         auto* run = new wxButton(box, wxID_ANY, "Run");
         auto* del = new wxButton(box, wxID_ANY, "x");
         top->Add(run, 0, wxRIGHT, 4);
@@ -253,7 +412,14 @@ void AnalysisPanel::refresh(Document* doc) {
                 if (doc_) doc_->dirty = true;
                 if (on_changed) on_changed();
             });
+        }
 
+        // The DC card carries the process/model settings (previously a modal
+        // dialog) so everything that affects the operating point sits with it.
+        if (c.kind == AnalysisKind::DC) build_dc_settings(box, s, c);
+
+        // Per-card analysis options (every card, including DC).
+        {
             auto* opts = new wxBoxSizer(wxHORIZONTAL);
             auto* prune = new wxCheckBox(box, wxID_ANY, "ignore negligible");
             prune->SetValue(c.prune);
@@ -283,10 +449,6 @@ void AnalysisPanel::refresh(Document* doc) {
         });
         del->Bind(wxEVT_BUTTON, [this, card_index](wxCommandEvent&) {
             remove_card(card_index);
-        });
-        en->Bind(wxEVT_CHECKBOX, [this, &c](wxCommandEvent& e) {
-            c.enabled = e.IsChecked();
-            if (doc_) doc_->dirty = true;
         });
         ++idx;
     }

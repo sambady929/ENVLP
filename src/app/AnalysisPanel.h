@@ -47,9 +47,11 @@ public:
     Document* doc() const { return doc_; }
 
     std::function<void()> on_changed;   // a card changed
-    std::function<void(int)> on_run_all; // run every enabled card
     std::function<void(int)> on_run_one; // run one card index
     std::function<void()> on_results;    // jump to the results tab
+    // DC settings live in the DC card now; the frame redraws the properties
+    // panel (W/L visibility depends on the mode) when they change.
+    std::function<void()> on_tech_changed;
 
     // Load/save the card list alongside the document.
     std::string serialize() const;
@@ -62,7 +64,9 @@ private:
 
     void add_card(syms::AnalysisKind kind);
     void remove_card(int i);
-    void on_add_choice();
+    // Build the DC-settings block (mode, Vth/Is/uCox, model file + models,
+    // override, ignore-negligible) inside a DC card.
+    void build_dc_settings(wxWindow* box, wxSizer* s, AnalysisCard& c);
     wxDECLARE_EVENT_TABLE();
 };
 

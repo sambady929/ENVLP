@@ -51,10 +51,13 @@ private:
                           bool parasitic, const wxString& default_text);
     // The wrapping container the cards tile into (created lazily).
     wxWrapSizer* cards_host();
-    // value dropdowns (mantissa + exponent) writing to value_text
-    void add_value_selector(syms::Component* comp, bool with_unit);
-    // one mantissa+exponent row (typeable, with a fixed step list) that writes
-    // "<mant><exp>" into *target. Used for a source's DC and AC values.
+    // A value editor: a number field plus an SI-suffix dropdown, so the
+    // prefix is chosen from a list (unambiguous: "M (mega)" vs "m (milli)")
+    // rather than typed. Writes "<number><suffix>" into `target`.
+    void add_value_row(const wxString& label, std::string* target,
+                       const std::string& unit);
+    // A free-text scalar row (a source's DC/AC value): type any engineering
+    // value ("10k", "2.5p", "1e-13").
     void add_scalar_row(const wxString& label, std::string* target,
                         const std::string& unit);
     bool rename_component(const std::string& old_ref, const wxString& new_ref);

@@ -18,6 +18,8 @@ namespace symcirc {
 class PalettePanel : public wxScrolledWindow {
 public:
     explicit PalettePanel(wxWindow* parent, Document* doc);
+    // Re-point at the active tab's document (the palette is shared by tabs).
+    void SetDocument(Document* doc) { doc_ = doc; }
 
     std::function<void()> on_tool_changed; // canvas reads tool()/kind()
 

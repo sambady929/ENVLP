@@ -5,17 +5,20 @@
 
 #include <wx/cmdline.h>
 
+#include <vector>
+
 class SymCircApp : public wxApp {
 public:
     void OnInitCmdLine(wxCmdLineParser& p) override {
         wxApp::OnInitCmdLine(p);
         p.AddParam("file (schematic .scx to open)", wxCMD_LINE_VAL_STRING,
-                   wxCMD_LINE_PARAM_OPTIONAL);
+                   wxCMD_LINE_PARAM_OPTIONAL | wxCMD_LINE_PARAM_MULTIPLE);
     }
 
     bool OnCmdLineParsed(wxCmdLineParser& p) override {
         if (!wxApp::OnCmdLineParsed(p)) return false;
-        if (p.GetParamCount() > 0) file_ = p.GetParam(0);
+        for (size_t i = 0; i < p.GetParamCount(); ++i)
+            files_.push_back(p.GetParam(i));
         return true;
     }
 
@@ -24,9 +27,9 @@ public:
         wxInitAllImageHandlers(); // needed for PNG plot export
         auto* frame = new symcirc::MainFrame();
         frame->Show(true);
-        if (!file_.empty()) {
+        for (const auto& f : files_) {
             try {
-                frame->open_path(file_);
+                frame->open_path(f);
             } catch (...) {
                 // never let a bad file take the app down
             }
@@ -35,7 +38,7 @@ public:
     }
 
 private:
-    wxString file_;
+    std::vector<wxString> files_;
 };
 
 wxIMPLEMENT_APP(SymCircApp);

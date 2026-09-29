@@ -19,7 +19,7 @@ AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     // dump is the secondary "Results (Text)" tab.
     book_->AddPage(math_, "Results", true);
     book_->AddPage(results_, "Results (Text)");
-    book_->AddPage(bode_, "Plot");
+    book_->AddPage(bode_, "Plot (experimental)");
     // The Lua console is hidden for now (messy): lua_ stays null, so the
     // lua()->...() plumbing in MainFrame is a no-op via the null guard.
 

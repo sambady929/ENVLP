@@ -23,7 +23,7 @@ const char* kEmptyPage =
     "padding:1px 4px 0 4px;} sub,sup{font-size:72%;}"
     ".overline{border-top:1.3px solid #10141a;padding-top:1px;}"
     "</style></head><body><div class=\"math\">"
-    "Run an analysis (F5) to see the result typeset here."
+    "Run an analysis to see the result typeset here."
     "</div></body></html>";
 } // namespace
 
@@ -149,9 +149,14 @@ std::string render_latex_report(const std::string& lr) {
                (cur.back() == '\n' || cur.back() == '\r' || cur.back() == ' '))
             cur.pop_back();
         if (!cur.empty()) {
-            if (cur.size() < 40 && cur.back() == ':') {
+            std::string heading;
+            if (latex_is_plain_heading(cur))
+                heading = cur;
+            else
+                latex_heading_from_mathrm(cur, heading);
+            if (!heading.empty()) {
                 close_card();
-                card += "<h2 class=\"section\">" + esc_html(cur) + "</h2>";
+                card += "<h2 class=\"section\">" + esc_html(heading) + "</h2>";
             } else {
                 card += "<div class=\"line math\">" +
                         latex_render_line(cur) + "</div>";

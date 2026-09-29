@@ -215,11 +215,10 @@ wxWrapSizer* PropertiesPanel::cards_host() {
     return cards_;
 }
 
-// One free-text field per parameter: type any engineering value ("10k",
-// "2.5p", "1e-13"). A single editable field -- rather than a pair of
-// mantissa/exponent drop-downs -- keeps the panel snappy: creating dozens of
-// wxComboBox controls on every selection cost ~280 ms and was the selection
-// lag. The field is committed as typed.
+// One parameter field: a number plus an SI-suffix dropdown (so the prefix is
+// unambiguous), matching the component value editor. This replaces the old
+// free-text field: creating a dropdown per parameter is affordable now that the
+// panel is built inside a Freeze()/Thaw() pair.
 void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
                                        const std::string& name, bool parasitic,
                                        const wxString& default_text) {
@@ -230,6 +229,23 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
     if (comp->param_text.count(name) && !comp->param_text.at(name).empty())
         cur = wxString::FromUTF8(comp->param_text.at(name));
 
+    // Split "100f"/"50k"/"1e-13" into a number part and a suffix part.
+    std::string txt = cur.ToStdString(), num, suf;
+    {
+        size_t i = 0;
+        while (i < txt.size() &&
+               ((txt[i] >= '0' && txt[i] <= '9') || txt[i] == '.' ||
+                txt[i] == '-' || txt[i] == '+' || txt[i] == 'e' ||
+                txt[i] == 'E'))
+            num += txt[i++];
+        suf = txt.substr(i);
+        if (!num.empty() && (num.back() == 'e' || num.back() == 'E')) {
+            num.pop_back();
+            suf = txt.substr(num.size());
+        }
+    }
+    if (num.empty()) num = cur.ToStdString();
+
     auto* row = new wxBoxSizer(wxHORIZONTAL);
     wxCheckBox* cb = nullptr;
     if (parasitic) {
@@ -237,26 +253,56 @@ void PropertiesPanel::add_mantissa_exp(syms::Component* comp,
         cb->SetValue(comp->param_enabled(name));
         row->Add(cb, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     }
-    auto* tc = new wxTextCtrl(card, wxID_ANY, cur, wxDefaultPosition,
-                              wxSize(FromDIP(72), -1));
+    auto* tc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(num),
+                              wxDefaultPosition, wxSize(FromDIP(56), -1));
     if (cb) tc->Enable(cb->GetValue());
     row->Add(tc, 0, wxALIGN_CENTER_VERTICAL);
+    auto* ch = new wxChoice(card, wxID_ANY, wxDefaultPosition,
+                            wxSize(FromDIP(74), -1),
+                            {"(none)", "f  femto", "p  pico", "n  nano",
+                             "u  micro", "m  milli", "k  kilo", "M  mega",
+                             "G  giga", "T  tera"});
+    int sel = 0;
+    if (suf == "f") sel = 1;
+    else if (suf == "p") sel = 2;
+    else if (suf == "n") sel = 3;
+    else if (suf == "u" || suf == "\xC2\xB5") sel = 4;
+    else if (suf == "m") sel = 5;
+    else if (suf == "k" || suf == "K") sel = 6;
+    else if (suf == "M" || suf == "MEG" || suf == "Meg" || suf == "meg") sel = 7;
+    else if (suf == "G") sel = 8;
+    else if (suf == "T") sel = 9;
+    ch->SetSelection(sel);
+    if (cb) ch->Enable(cb->GetValue());
+    row->Add(ch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(2));
     card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
     host->Add(card, 0, wxALL, FromDIP(4));
     card->Fit();
 
+    static const char* kSuffix[] = {"",  "f", "p", "n", "u", "m",
+                                    "k", "M", "G", "T"};
+    auto commit = [this, comp, name, tc, ch]() {
+        int s = ch->GetSelection();
+        std::string pre = (s > 0 && s < 10) ? kSuffix[s] : "";
+        comp->param_text[name] = tc->GetValue().ToStdString() + pre;
+        doc_->dirty = true;
+        if (on_edited) on_edited();
+    };
     if (cb)
-        cb->Bind(wxEVT_CHECKBOX, [this, comp, name, tc](wxCommandEvent& e) {
+        cb->Bind(wxEVT_CHECKBOX, [this, comp, name, tc, ch](wxCommandEvent& e) {
             comp->param_on[name] = e.IsChecked();
             tc->Enable(e.IsChecked());
+            ch->Enable(e.IsChecked());
             doc_->dirty = true;
             if (on_edited) on_edited();
         });
-    tc->Bind(wxEVT_TEXT, [this, comp, name, tc](wxCommandEvent&) {
+    tc->Bind(wxEVT_TEXT, [this, commit](wxCommandEvent&) {
         if (rebuilding_) return;
-        comp->param_text[name] = tc->GetValue().ToStdString();
-        doc_->dirty = true;
-        if (on_edited) on_edited();
+        commit();
+    });
+    ch->Bind(wxEVT_CHOICE, [this, commit](wxCommandEvent&) {
+        if (rebuilding_) return;
+        commit();
     });
 }
 
@@ -294,44 +340,91 @@ void PropertiesPanel::add_scalar_row(const wxString& label, std::string* target,
     });
 }
 
-// One free-text value field for passives / gain blocks: type any engineering
-// value ("1k", "-6k", "2.5p"). Far cheaper to build than a mantissa/exponent
-// pair of drop-downs, which was the selection lag.
-void PropertiesPanel::add_value_selector(syms::Component* comp, bool with_unit) {
+// A value editor: a number field plus an SI-suffix dropdown. The prefix is
+// chosen from a list so it is unambiguous (the dropdown spells out "M (mega)"
+// vs "m (milli)"), instead of the user having to remember whether "M" or "Meg"
+// means 1e6. Writes "<number><suffix>" into `target` (e.g. 4.7 + k -> "4.7k").
+void PropertiesPanel::add_value_row(const wxString& label, std::string* target,
+                                    const std::string& unit) {
     auto* host = cards_host();
-
-    // Op-amps / gain blocks: their "value" is the DC gain, so label it
-    // "Gain" (GBW is a separate parameter shown below).
-    const char* label = (comp->kind == syms::Kind::OPAMP ||
-                         comp->kind == syms::Kind::FDOPAMP ||
-                         comp->kind == syms::Kind::AMP)
-                            ? "Gain"
-                            : "Value";
-    auto* card = new_card(this, wxString::FromUTF8(label));
+    auto* card = new_card(this, label);
     auto* sub = new wxBoxSizer(wxHORIZONTAL);
 
-    wxString cur = comp->value_text.empty() ? wxString("1")
-                                            : wxString::FromUTF8(comp->value_text);
-    auto* tc = new wxTextCtrl(card, wxID_ANY, cur, wxDefaultPosition,
-                              wxSize(FromDIP(80), -1));
-    sub->Add(tc, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
-    if (with_unit) {
-        std::string unit = (comp->kind == syms::Kind::VDD)
-                               ? std::string("V")
-                               : syms::kind_display(comp->kind);
-        sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
-                 wxALIGN_CENTER_VERTICAL);
+    // Decompose the current text into a number and a suffix.
+    std::string txt = *target;
+    std::string num, suf;
+    {
+        size_t i = 0;
+        while (i < txt.size() &&
+               ((txt[i] >= '0' && txt[i] <= '9') || txt[i] == '.' ||
+                txt[i] == '-' || txt[i] == '+' || txt[i] == 'e' ||
+                txt[i] == 'E'))
+            num += txt[i++];
+        suf = txt.substr(i);
+        // "1e-3" style has the exponent consumed as a number char; only treat
+        // a trailing prefix letter group as a suffix.
+        if (!num.empty() && (num.back() == 'e' || num.back() == 'E')) {
+            num.pop_back();
+            suf = txt.substr(num.size());
+        }
     }
+    if (num.empty()) num = "1";
+
+    auto* ntc = new wxTextCtrl(card, wxID_ANY, wxString::FromUTF8(num),
+                               wxDefaultPosition, wxSize(FromDIP(56), -1));
+    sub->Add(ntc, 0, wxALIGN_CENTER_VERTICAL);
+    wxArrayString sufs;
+    for (const char* s : {"", "f", "p", "n", "u", "m", "", "k", "M", "G", "T"})
+        sufs.Add(wxString::FromUTF8(s));
+    // Build the labelled list once (the empty entry means "no prefix").
+    wxArrayString labels;
+    labels.Add("(none)");
+    labels.Add("f  femto");
+    labels.Add("p  pico");
+    labels.Add("n  nano");
+    labels.Add("u  micro");
+    labels.Add("m  milli");
+    labels.Add("k  kilo");
+    labels.Add("M  mega");
+    labels.Add("G  giga");
+    labels.Add("T  tera");
+    auto* ch = new wxChoice(card, wxID_ANY, wxDefaultPosition,
+                            wxSize(FromDIP(74), -1), labels);
+    int sel = 0;
+    if (suf == "f") sel = 1;
+    else if (suf == "p") sel = 2;
+    else if (suf == "n") sel = 3;
+    else if (suf == "u" || suf == "\xC2\xB5") sel = 4;
+    else if (suf == "m") sel = 5;
+    else if (suf == "k" || suf == "K") sel = 6;
+    else if (suf == "M" || suf == "MEG" || suf == "Meg" || suf == "meg") sel = 7;
+    else if (suf == "G") sel = 8;
+    else if (suf == "T") sel = 9;
+    ch->SetSelection(sel);
+    sub->Add(ch, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(2));
+    if (!unit.empty())
+        sub->Add(new wxStaticText(card, wxID_ANY, wxString::FromUTF8(unit)), 0,
+                 wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(3));
     card->GetSizer()->Add(sub, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
     card->Fit();
     host->Add(card, 0, wxALL, FromDIP(4));
 
-    tc->Bind(wxEVT_TEXT, [this, comp, tc](wxCommandEvent&) {
+    static const char* kSuffix[] = {"",  "f", "p", "n", "u", "m",
+                                    "",  "k", "M", "G", "T"};
+    auto commit = [this, ntc, ch, target]() {
         if (rebuilding_) return;
-        comp->value_text = tc->GetValue().ToStdString();
+        int s = ch->GetSelection();
+        std::string pre = (s >= 0 && s < 10) ? kSuffix[s] : "";
+        std::string n = ntc->GetValue().ToStdString();
+        // Trim; if the number is empty keep the old value.
+        while (!n.empty() && (n.back() == ' ')) n.pop_back();
+        if (n.empty()) return;
+        *target = n + pre;
         doc_->dirty = true;
         if (on_edited) on_edited();
-    });
+    };
+    ntc->Bind(wxEVT_TEXT, [commit](wxCommandEvent&) { commit(); });
+    ch->Bind(wxEVT_CHOICE, [commit](wxCommandEvent&) { commit(); });
 }
 
 // Change a component's reference and rename every keyed map (placements) and
@@ -573,10 +666,9 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                 GetSizer()->Add(note, 0, wxALL, FromDIP(4));
             }
 
-            // Supply rail: a free-text voltage so the user can enter any value
-            // (3.3, 5, 12, 1.8, ...), not a fixed mantissa/exponent menu.
+            // Supply rail: a voltage with an SI-suffix dropdown (3.3, 5, 12...).
             if (!is_copy && c->kind == Kind::VDD)
-                add_scalar_row("Supply", &comp->value_text, "V");
+                add_value_row("Supply", &comp->value_text, "V");
 
             // Value selector for passives and the non-source blocks. Voltage
             // and current sources are handled separately below (they carry DC
@@ -586,8 +678,21 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
                  c->kind == Kind::L || c->kind == Kind::D ||
                  c->kind == Kind::OPAMP || c->kind == Kind::FDOPAMP ||
                  c->kind == Kind::AMP || c->kind == Kind::E ||
-                 c->kind == Kind::G))
-                add_value_selector(comp, true);
+                 c->kind == Kind::G)) {
+                bool gain = (c->kind == Kind::OPAMP ||
+                             c->kind == Kind::FDOPAMP ||
+                             c->kind == Kind::AMP);
+                // Physical unit symbol (not the component name).
+                const char* un = "";
+                switch (c->kind) {
+                    case Kind::R: un = "\xCE\xA9"; break; // ohm
+                    case Kind::C: un = "F"; break;
+                    case Kind::L: un = "H"; break;
+                    default: un = ""; break;
+                }
+                add_value_row(gain ? "Gain" : "Value", &comp->value_text,
+                              gain ? std::string() : std::string(un));
+            }
 
             // Independent V/I sources carry two typeable values, DC and AC.
             // The unit is fixed by the source kind: a voltage source is in
@@ -595,8 +700,8 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             if (!is_copy && (c->kind == Kind::V || c->kind == Kind::I)) {
                 const char* unit = (c->kind == Kind::V) ? "V" : "A";
                 add_header("Source values");
-                add_scalar_row("DC", &comp->dc_text, unit);
-                add_scalar_row("AC", &comp->ac_text, unit);
+                add_value_row("DC", &comp->dc_text, unit);
+                add_value_row("AC", &comp->ac_text, unit);
             }
 
             // Device model parameters (checkbox + mantissa/exponent). W and L

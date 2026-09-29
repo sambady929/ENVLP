@@ -22,6 +22,20 @@ static bool has(const std::string& s, const std::string& sub) {
     return s.find(sub) != std::string::npos;
 }
 
+// A report line ending in ':' is a heading only when it is bare text; a math
+// line like "\mathrm{Density}\ S_{v}(f):" must NOT be treated as a heading
+// (that leaked the literal "\mathrm" to the user).
+static void test_heading_classification() {
+    CHECK(symcirc::latex_is_plain_heading("Output Noise:"));
+    CHECK(symcirc::latex_is_plain_heading("Poles:"));
+    CHECK(!symcirc::latex_is_plain_heading("\\mathrm{Density}\\ S_{v}(f):"));
+    CHECK(!symcirc::latex_is_plain_heading("\\omega_{p0}:"));
+    std::string h;
+    CHECK(symcirc::latex_heading_from_mathrm("\\mathrm{Contribution:}", h));
+    CHECK(h == "Contribution:");
+    CHECK(!symcirc::latex_heading_from_mathrm("\\mathrm{Density}\\ S:", h));
+}
+
 static void test_fraction() {
     std::string h = latex_to_html_fragment("\\frac{a}{b}");
     CHECK(has(h, "class=\"frac\""));
@@ -108,6 +122,7 @@ int main() {
     test_greek_and_symbols();
     test_real_engine_output();
     test_unknown_command_survives();
+    test_heading_classification();
 
     // The Math tab must produce a non-empty HTML doc with real math markup;
     // wxWebView just renders whatever string we give it, so a missing or

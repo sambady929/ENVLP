@@ -12,6 +12,7 @@
 
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
+#include <wx/aui/auibook.h>
 #include <wx/textdlg.h>
 #include <wx/toolbar.h>
 #include <wx/checkbox.h>
@@ -24,8 +25,6 @@ enum {
     ID_OPEN,
     ID_SAVE,
     ID_SAVE_AS,
-    ID_RUN,
-    ID_ROTATE,
     ID_DELETE,
     ID_UNDO,
     ID_REDO,
@@ -38,8 +37,10 @@ enum {
     ID_ZOOM_FIT,
     ID_COPY,
     ID_PASTE,
-    ID_DC_SETTINGS,
     ID_SHOW_GRID,
+    ID_SHORTCUTS,
+    ID_HOWTO,
+    ID_TAB_CLOSE,
     ID_PLACE_BASE = wxID_HIGHEST + 100,
 };
 
@@ -48,17 +49,16 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
     EVT_MENU(ID_OPEN, MainFrame::on_open)
     EVT_MENU(ID_SAVE, MainFrame::on_save)
     EVT_MENU(ID_SAVE_AS, MainFrame::on_save_as)
-    EVT_MENU(ID_RUN, MainFrame::on_run)
-    EVT_MENU(ID_ROTATE, MainFrame::on_rotate)
     EVT_MENU(ID_DELETE, MainFrame::on_delete)
     EVT_MENU(ID_UNDO, MainFrame::on_undo)
     EVT_MENU(ID_REDO, MainFrame::on_redo)
     EVT_MENU(ID_ABOUT_APP, MainFrame::on_about)
+    EVT_MENU(ID_SHORTCUTS, MainFrame::on_shortcuts)
+    EVT_MENU(ID_HOWTO, MainFrame::on_howto)
     EVT_MENU(ID_IGNORE_NEG, MainFrame::on_ignore_neg)
     EVT_MENU(ID_ZOOM_FIT, MainFrame::on_zoom_fit)
     EVT_MENU(ID_COPY, MainFrame::on_copy)
     EVT_MENU(ID_PASTE, MainFrame::on_paste)
-    EVT_MENU(ID_DC_SETTINGS, MainFrame::on_dc_settings)
     EVT_MENU(ID_SHOW_GRID, MainFrame::on_show_grid)
     EVT_CHAR_HOOK(MainFrame::on_char_hook)
 wxEND_EVENT_TABLE()
@@ -71,13 +71,11 @@ MainFrame::MainFrame()
     // half-size on a 200% display).
     SetSize(FromDIP(wxSize(1400, 900)));
     SetBackgroundColour(theme::chrome_bg);
-    // sensible default analysis request (before panels read it)
-    doc_.req.input_ref = "V1";
-    doc_.req.output = "V(out)";
 
     build_menu();
     build_toolbar();
     build_layout();
+    make_page(0); // the first (empty) tab
 
     update_title();
     CreateStatusBar(2);
@@ -86,21 +84,36 @@ MainFrame::MainFrame()
     SetStatusText("Pick a component from the palette, then click the canvas.", 0);
 }
 
+SchematicPage* MainFrame::page() {
+    if (active_ < 0 || active_ >= int(pages_.size())) return nullptr;
+    return pages_[active_].get();
+}
+const SchematicPage* MainFrame::page() const {
+    if (active_ < 0 || active_ >= int(pages_.size())) return nullptr;
+    return pages_[active_].get();
+}
+
 void MainFrame::build_menu() {
     auto* file = new wxMenu;
     file->Append(ID_NEW, "&New\tCtrl+N", "New schematic");
-    file->Append(ID_OPEN, "&Open...\tCtrl+O", "Open schematic");
+    file->Append(ID_OPEN, "&Open...\tCtrl+O", "Open schematic in a new tab");
+    file->AppendSeparator();
     file->Append(ID_SAVE, "&Save\tCtrl+S", "Save schematic");
     file->Append(ID_SAVE_AS, "Save &As...\tCtrl+Shift+S");
     file->AppendSeparator();
+    file->Append(ID_TAB_CLOSE, "&Close tab\tCtrl+W",
+                 "Close the current schematic tab");
     file->Append(wxID_EXIT, "E&xit\tAlt+F4");
 
     auto* edit = new wxMenu;
-    edit->Append(ID_UNDO, "&Undo\tCtrl+Z", "Undo the last edit  (also U)");
-    edit->Append(ID_REDO, "&Redo\tCtrl+Y",
-                 "Redo the last undone edit  (also Shift+U)");
+    // Undo/redo use the Virtuoso-style bare letters. They are NOT real menu
+    // accelerators (wxWidgets would fire them while the user types "U" into a
+    // property field); the frame's CHAR_HOOK owns them, and the label just
+    // advertises them, like the net-label item.
+    edit->Append(ID_UNDO, "&Undo  (U)", "Undo the last edit (U)");
+    edit->Append(ID_REDO, "&Redo  (Shift+U)",
+                 "Redo the last undone edit (Shift+U)");
     edit->AppendSeparator();
-    edit->Append(ID_ROTATE, "&Rotate\tCtrl+R", "Rotate the selection 90 deg");
     edit->Append(ID_DELETE, "&Delete\tDel", "Delete the selection");
     edit->AppendSeparator();
     edit->Append(ID_COPY, "&Copy\tCtrl+C", "Copy the selected components");
@@ -124,19 +137,20 @@ void MainFrame::build_menu() {
     mi_ignore_ = view->AppendCheckItem(
         ID_IGNORE_NEG, "&Ignore negligible terms",
         "Drop terms that are far below the dominant one (low entropy)");
-    mi_ignore_->Check(doc_.req.prune);
-
-    auto* run = new wxMenu;
-    run->Append(ID_RUN, "&Analyze\tF5", "Run the symbolic analysis");
+    mi_ignore_->Check(true);
 
     auto* help = new wxMenu;
+    help->Append(ID_HOWTO, "&How to use...\tF1",
+                 "What each analysis does and what it needs");
+    help->Append(ID_SHORTCUTS, "&Keyboard shortcuts...",
+                 "Every canvas and app shortcut");
+    help->AppendSeparator();
     help->Append(ID_ABOUT_APP, "&About SymCirc");
 
     auto* bar = new wxMenuBar;
     bar->Append(file, "&File");
     bar->Append(edit, "&Edit");
     bar->Append(view, "&View");
-    bar->Append(run, "&Run");
     bar->Append(help, "&Help");
     SetMenuBar(bar);
 }
@@ -164,22 +178,18 @@ void MainFrame::build_toolbar() {
     toolbar_->AddCheckTool(ID_IGNORE_NEG, "Ignore negligible",
                            wxBitmapBundle(), wxBitmapBundle(),
                            "Drop terms far below the dominant one");
-    toolbar_->ToggleTool(ID_IGNORE_NEG, doc_.req.prune);
-    toolbar_->AddSeparator();
-    add(ID_DC_SETTINGS, "DC settings...",
-        "Process values for the DC analysis (Vth, Is)");
-    toolbar_->AddSeparator();
-    add(ID_RUN, "Analyze (F5)", "Run the symbolic analysis");
+    toolbar_->ToggleTool(ID_IGNORE_NEG, true);
     toolbar_->Realize();
 
     toolbar_->Bind(wxEVT_TOOL, [this](wxCommandEvent& e) {
+        SchematicPage* pg = page();
         switch (e.GetId()) {
         case ID_SELECT_TOOL:
-            canvas_->set_tool(Tool::Select);
+            if (pg) pg->canvas->set_tool(Tool::Select);
             sync_palette();
             break;
         case ID_WIRE_TOOL:
-            canvas_->set_tool(Tool::Wire);
+            if (pg) pg->canvas->set_tool(Tool::Wire);
             sync_palette();
             SetStatusText("Wire: click to start, click again to finish; Space "
                           "swaps the route; Esc cancels.",
@@ -189,16 +199,10 @@ void MainFrame::build_toolbar() {
             prompt_net_labels();
             break;
         case ID_ZOOM_FIT:
-            canvas_->zoom_to_fit();
+            if (pg) pg->canvas->zoom_to_fit();
             break;
         case ID_IGNORE_NEG:
             set_ignore_negligible(e.IsChecked());
-            break;
-        case ID_DC_SETTINGS:
-            on_dc_settings(e);
-            break;
-        case ID_RUN:
-            run_analysis();
             break;
         default:
             break;
@@ -207,23 +211,29 @@ void MainFrame::build_toolbar() {
 }
 
 void MainFrame::on_zoom_fit(wxCommandEvent&) {
-    canvas_->zoom_to_fit();
+    if (page()) page()->canvas->zoom_to_fit();
     SetStatusText("Zoomed to fit the components.", 0);
 }
 
-void MainFrame::on_copy(wxCommandEvent&) { canvas_->copy_selection(); }
-void MainFrame::on_paste(wxCommandEvent&) { canvas_->paste_clipboard(); }
+void MainFrame::on_copy(wxCommandEvent&) {
+    if (page()) page()->canvas->copy_selection();
+}
+void MainFrame::on_paste(wxCommandEvent&) {
+    if (page()) page()->canvas->paste_clipboard();
+}
 
 // The "Ignore negligible terms" switch is shared by the View menu, the toolbar
-// and every analysis card, so keep them in sync.
+// and every analysis card of the active page, so keep them in sync.
 void MainFrame::set_ignore_negligible(bool on) {
-    doc_.req.prune = on;
+    SchematicPage* pg = page();
+    if (!pg) return;
+    pg->doc.req.prune = on;
     if (mi_ignore_) mi_ignore_->Check(on);
     if (toolbar_) toolbar_->ToggleTool(ID_IGNORE_NEG, on);
-    for (auto& c : analysis_->cards()) c.prune = on;
-    doc_.analysis_cards = analysis_->serialize();
-    analysis_->refresh(&doc_);
-    doc_.dirty = true;
+    for (auto& c : pg->analysis->cards()) c.prune = on;
+    pg->doc.analysis_cards = pg->analysis->serialize();
+    pg->analysis->refresh(&pg->doc);
+    pg->doc.dirty = true;
     update_title();
     SetStatusText(on ? "Negligible terms will be ignored (low entropy)."
                      : "Keeping every term (exact form).",
@@ -235,240 +245,153 @@ void MainFrame::on_ignore_neg(wxCommandEvent& e) {
 }
 
 void MainFrame::on_show_grid(wxCommandEvent& e) {
-    canvas_->set_show_grid(e.IsChecked());
+    if (page()) page()->canvas->set_show_grid(e.IsChecked());
 }
 
-// DC settings: process values for the large-signal DC analysis, and the model
-// mode (gm/Id symbolic, square-law symbolic, or numeric from SPICE models).
-void MainFrame::on_dc_settings(wxCommandEvent&) {
-    wxDialog dlg(this, wxID_ANY, "DC settings");
-    auto* top = new wxBoxSizer(wxVERTICAL);
-
-    auto* grid = new wxFlexGridSizer(2, 2, 6, 10);
-    auto add_row = [&](const wxString& label, wxWindow* w) {
-        grid->Add(new wxStaticText(&dlg, wxID_ANY, label), 0,
-                  wxALIGN_CENTER_VERTICAL);
-        grid->Add(w, 1, wxEXPAND);
-    };
-
-    auto* mode = new wxChoice(&dlg, wxID_ANY);
-    mode->Append("1. gm/Id symbolic (small-signal params)");
-    mode->Append("2. Square law symbolic (uCox, W/L symbols)");
-    mode->Append("3. Numeric (SPICE models)");
-    mode->SetSelection(doc_.tech.dc_mode == syms::DcMode::GmOverId
-                           ? 0
-                           : doc_.tech.dc_mode == syms::DcMode::SquareLaw ? 1 : 2);
-    add_row("Mode", mode);
-
-    auto* vth = new wxTextCtrl(&dlg, wxID_ANY,
-                               wxString::FromDouble(doc_.tech.vth, 6));
-    add_row("Vth (V)", vth);
-
-    auto* is = new wxTextCtrl(&dlg, wxID_ANY,
-                              wxString::FromDouble(doc_.tech.is, 6));
-    add_row("Is (A)", is);
-
-    auto* uncox = new wxTextCtrl(&dlg, wxID_ANY,
-                                 wxString::FromDouble(doc_.tech.uncox, 8));
-    add_row("uN*Cox (A/V^2)", uncox);
-    auto* upcox = new wxTextCtrl(&dlg, wxID_ANY,
-                                 wxString::FromDouble(doc_.tech.upcox, 8));
-    add_row("uP*Cox (A/V^2)", upcox);
-
-    // Model file: a text field plus a Browse button. After a file is chosen the
-    // NMOS/PMOS dropdowns are repopulated with every .model name the file
-    // contains (so it is obvious that, e.g., "N_1u" is a model).
-    auto* mfile = new wxTextCtrl(&dlg, wxID_ANY,
-                                 wxString::FromUTF8(doc_.tech.model_file));
-    add_row("Model file (.lib)", mfile);
-    auto* nmname = new wxComboBox(&dlg, wxID_ANY,
-                                  wxString::FromUTF8(doc_.tech.nmos_model),
-                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
-                                  wxCB_DROPDOWN);
-    add_row("NMOS model", nmname);
-    auto* pmname = new wxComboBox(&dlg, wxID_ANY,
-                                  wxString::FromUTF8(doc_.tech.pmos_model),
-                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
-                                  wxCB_DROPDOWN);
-    add_row("PMOS model", pmname);
-    auto* browse = new wxButton(&dlg, wxID_ANY, "Browse... / reload models");
-    grid->AddSpacer(1);
-    grid->Add(browse, 1, wxEXPAND);
-
-    // Split the file's models by polarity into the two dropdowns.
-    std::vector<std::string> nm_names, pm_names;
-    auto load_models = [&]() {
-        // Remember the current selection: Clear() would otherwise blank the
-        // field after the items are repopulated.
-        wxString cur_nm = nmname->GetValue();
-        wxString cur_pm = pmname->GetValue();
-        if (cur_nm.IsEmpty())
-            cur_nm = wxString::FromUTF8(doc_.tech.nmos_model);
-        if (cur_pm.IsEmpty())
-            cur_pm = wxString::FromUTF8(doc_.tech.pmos_model);
-        nm_names.clear();
-        pm_names.clear();
-        std::string err;
-        std::vector<syms::MosModel> ms =
-            syms::parse_spice_models(mfile->GetValue().ToStdString(), err);
-        for (const auto& m : ms)
-            (m.pmos ? pm_names : nm_names).push_back(m.name);
-        nmname->Clear();
-        pmname->Clear();
-        for (const auto& n : nm_names) nmname->Append(wxString::FromUTF8(n));
-        for (const auto& n : pm_names) pmname->Append(wxString::FromUTF8(n));
-        // Restore the selection; if it is not among the file's models, keep the
-        // typed name so the user's choice is never silently lost.
-        nmname->SetValue(cur_nm);
-        pmname->SetValue(cur_pm);
-        if (!ms.empty())
-            SetStatusText(
-                wxString::Format("Loaded %zu models (%zu NMOS, %zu PMOS).",
-                                 ms.size(), nm_names.size(), pm_names.size()),
-                0);
-        else if (!err.empty())
-            SetStatusText(wxString::FromUTF8(err), 0);
-    };
-    load_models();
-    mfile->Bind(wxEVT_TEXT, [&](wxCommandEvent&) { load_models(); });
-    browse->Bind(wxEVT_BUTTON, [&](wxCommandEvent&) {
-        wxFileDialog fd(&dlg, "Choose a SPICE model file", "", "",
-                        "SPICE models (*.lib;*.mod;*.sp;*.cir)|*.lib;*.mod;*.sp;*.cir|All files (*.*)|*.*",
-                        wxFD_OPEN | wxFD_FILE_MUST_EXIST);
-        if (fd.ShowModal() == wxID_OK) {
-            mfile->ChangeValue(fd.GetPath());
-            load_models();
-        }
-    });
-
-    auto* ovr = new wxCheckBox(&dlg, wxID_ANY,
-                               "Override small-signal params from numeric DC");
-    ovr->SetValue(doc_.tech.override_small_signal);
-    grid->AddSpacer(1);
-    grid->Add(ovr, 1, wxEXPAND);
-
-    top->Add(grid, 0, wxEXPAND | wxALL, 12);
-    top->Add(new wxStaticText(
-                 &dlg, wxID_ANY,
-                 "Mode 1 uses gm per device. Mode 2 uses uCox and symbolic W/L.\n"
-                 "Mode 3 reads a SPICE .lib/.mod (level 1 or 3) for a numeric\n"
-                 "operating point; W/L are per-device numbers."),
-             0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
-    auto* buttons = new wxStdDialogButtonSizer();
-    auto* ok = new wxButton(&dlg, wxID_OK);
-    auto* cancel = new wxButton(&dlg, wxID_CANCEL);
-    buttons->AddButton(ok);
-    buttons->AddButton(cancel);
-    buttons->Realize();
-    top->Add(buttons, 0, wxALIGN_RIGHT | wxALL, 10);
-    dlg.SetSizerAndFit(top);
-
-    if (dlg.ShowModal() != wxID_OK) return;
-    doc_.tech.dc_mode =
-        mode->GetSelection() == 0 ? syms::DcMode::GmOverId
-        : mode->GetSelection() == 1 ? syms::DcMode::SquareLaw
-                                    : syms::DcMode::Numeric;
-    double v = 0.0;
-    if (vth->GetValue().ToDouble(&v)) doc_.tech.vth = v;
-    if (is->GetValue().ToDouble(&v)) doc_.tech.is = v;
-    if (uncox->GetValue().ToDouble(&v)) doc_.tech.uncox = v;
-    if (upcox->GetValue().ToDouble(&v)) doc_.tech.upcox = v;
-    doc_.tech.model_file = mfile->GetValue().ToStdString();
-    doc_.tech.nmos_model = nmname->GetValue().ToStdString();
-    doc_.tech.pmos_model = pmname->GetValue().ToStdString();
-    doc_.tech.override_small_signal = ovr->GetValue();
-    // W/L visibility depends on the mode, so rebuild the properties panel.
-    props_->refresh(&doc_, canvas_->selection());
-    SetStatusText("DC settings updated.", 0);
-}
-
+// ---------------------------------------------------------------------------
+// Tabbed layout: the palette and the analysis column are shared; the middle
+// pane is a notebook with one tab per open schematic. Each page owns its
+// canvas, properties strip, splitters and analysis cards.
+// ---------------------------------------------------------------------------
 void MainFrame::build_layout() {
-    // Three nested splitters, giving a draggable sash between every pane:
-    //   sp_main:   palette  | sp_right            (vertical sash)
-    //   sp_right:  sp_bottom | analysis           (vertical sash)
-    //   sp_bottom: canvas   | props               (horizontal sash)
-    // Sash gravity routes the frame's resize to the canvas: palette and the
-    // analysis column keep their width, the props strip keeps its height, and
-    // the canvas soaks up the rest.
     sp_main_ = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition,
                                     wxDefaultSize,
                                     wxSP_LIVE_UPDATE);
     sp_main_->SetMinimumPaneSize(FromDIP(60));
-    // gravity 0.0: the sash stays put, so the RIGHT pane (everything but the
-    // fixed-width palette) absorbs the frame resize.
     sp_main_->SetSashGravity(0.0);
 
-    palette_ = new PalettePanel(sp_main_, &doc_);
+    // The palette is shared by every tab, so it binds to the active page's
+    // document lazily (it only needs the document when a tile is clicked).
+    palette_ = new PalettePanel(sp_main_, nullptr);
 
-    sp_right_ = new wxSplitterWindow(sp_main_, wxID_ANY, wxDefaultPosition,
-                                     wxDefaultSize,
-                                     wxSP_LIVE_UPDATE);
-    sp_right_->SetMinimumPaneSize(FromDIP(120));
-    // gravity 1.0: the sash moves with the edge, so the LEFT pane (the canvas
-    // centre) absorbs the resize while the analysis column keeps its width.
-    sp_right_->SetSashGravity(1.0);
+    book_ = new wxAuiNotebook(sp_main_, wxID_ANY, wxDefaultPosition,
+                              wxDefaultSize,
+                              wxAUI_NB_TOP | wxAUI_NB_TAB_MOVE |
+                                  wxAUI_NB_CLOSE_ON_ALL_TABS |
+                                  wxAUI_NB_SCROLL_BUTTONS);
+    book_->SetBackgroundColour(theme::surface_muted);
 
-    sp_bottom_ = new wxSplitterWindow(sp_right_, wxID_ANY, wxDefaultPosition,
-                                      wxDefaultSize,
-                                      wxSP_LIVE_UPDATE);
-    sp_bottom_->SetMinimumPaneSize(FromDIP(80));
-    // gravity 1.0: the TOP pane (canvas) absorbs the resize; the props strip
-    // keeps its height.
-    sp_bottom_->SetSashGravity(1.0);
+    sp_main_->SplitVertically(palette_, book_);
 
-    canvas_ = new SchematicCanvas(sp_bottom_, &doc_);
-    props_ = new PropertiesPanel(sp_bottom_);
-    sp_bottom_->SplitHorizontally(canvas_, props_);
-
-    analysis_ = new AnalysisPanel(sp_right_);
-    sp_right_->SplitVertically(sp_bottom_, analysis_);
-
-    sp_main_->SplitVertically(palette_, sp_right_);
-
-    // Put the outer splitter in a sizer so it always fills the frame and
-    // resizes with it (otherwise a resize can leave the panes mis-laid-out).
     auto* frame_sizer = new wxBoxSizer(wxVERTICAL);
     frame_sizer->Add(sp_main_, 1, wxEXPAND);
     SetSizer(frame_sizer);
 
-    // A minimum frame size keeps all three panes usable: below it the analysis
-    // column and the value strip would be squeezed to nothing.
     SetMinSize(FromDIP(wxSize(900, 600)));
-    CallAfter([this] {
-        wxSize cs = GetClientSize();
-        Layout();
-        sp_main_->SetSashPosition(FromDIP(200));
-        sp_right_->SetSashPosition(
-            std::max(FromDIP(160), cs.x - FromDIP(200) - FromDIP(360)));
-        sp_bottom_->SetSashPosition(std::max(FromDIP(120), cs.y - FromDIP(210)));
-        Layout();
-        Refresh();
+
+    // Switching tabs re-points the palette and toolbar at the new document.
+    book_->Bind(wxEVT_AUINOTEBOOK_PAGE_CHANGED, [this](wxAuiNotebookEvent& e) {
+        int sel = e.GetSelection();
+        if (sel >= 0 && sel < int(pages_.size()) && sel != active_) {
+            active_ = sel;
+            if (page()) {
+                palette_->SetDocument(&page()->doc);
+                if (toolbar_)
+                    toolbar_->ToggleTool(ID_IGNORE_NEG, page()->doc.req.prune);
+                if (mi_ignore_) mi_ignore_->Check(page()->doc.req.prune);
+                page()->props->refresh(&page()->doc, "");
+                page()->canvas->Refresh();
+            }
+            update_title();
+        }
+        e.Skip();
+    });
+    book_->Bind(wxEVT_AUINOTEBOOK_PAGE_CLOSE, [this](wxAuiNotebookEvent& e) {
+        // Take over deletion entirely: veto wxAuiNotebook's default and let
+        // close_page() decide (it also refuses to leave zero tabs).
+        e.Veto();
+        close_page(e.GetSelection());
     });
 
-    // ---- plumbing ----
+    // ---- palette / shared plumbing ----
     palette_->on_tool_changed = [this] {
-        // Clicking a component glyph starts placement of that kind.
-        canvas_->begin_place(palette_->place_kind(), 0);
+        if (!page()) return;
+        page()->canvas->begin_place(palette_->place_kind(), 0);
         SetStatusText("Click the canvas to place. Space rotates, Esc leaves.",
                       0);
     };
 
-    canvas_->on_document_changed = [this] { document_changed(); };
-    canvas_->on_selection_changed = [this](const std::string& s) {
+    CallAfter([this] {
+        wxSize cs = GetClientSize();
+        Layout();
+        sp_main_->SetSashPosition(FromDIP(200));
+        if (page()) {
+            page()->sp_right->SetSashPosition(
+                std::max(FromDIP(160), cs.x - FromDIP(200) - FromDIP(360)));
+            page()->sp_bottom->SetSashPosition(
+                std::max(FromDIP(120), cs.y - FromDIP(210)));
+        }
+        Layout();
+        Refresh();
+    });
+}
+
+// Create a page (schematic + panes) and its notebook tab. `insert_at` is the
+// tab index; -1 appends. Returns the new page.
+SchematicPage* MainFrame::make_page(int insert_at) {
+    auto* pg = new SchematicPage();
+    // sensible defaults before any panel reads the request
+    pg->doc.req.input_ref = "V1";
+    pg->doc.req.output = "V(out)";
+    pg->doc.req.prune = true;
+
+    auto* host = new wxWindow(book_, wxID_ANY);
+    host->SetBackgroundColour(theme::surface_muted);
+    auto* hs = new wxBoxSizer(wxVERTICAL);
+
+    pg->sp_right = new wxSplitterWindow(host, wxID_ANY, wxDefaultPosition,
+                                        wxDefaultSize, wxSP_LIVE_UPDATE);
+    pg->sp_right->SetMinimumPaneSize(FromDIP(120));
+    pg->sp_right->SetSashGravity(1.0);
+
+    pg->sp_bottom = new wxSplitterWindow(pg->sp_right, wxID_ANY,
+                                         wxDefaultPosition, wxDefaultSize,
+                                         wxSP_LIVE_UPDATE);
+    pg->sp_bottom->SetMinimumPaneSize(FromDIP(80));
+    pg->sp_bottom->SetSashGravity(1.0);
+
+    pg->canvas = new SchematicCanvas(pg->sp_bottom, &pg->doc);
+    pg->props = new PropertiesPanel(pg->sp_bottom);
+    pg->sp_bottom->SplitHorizontally(pg->canvas, pg->props);
+
+    pg->analysis = new AnalysisPanel(pg->sp_right);
+    pg->sp_right->SplitVertically(pg->sp_bottom, pg->analysis);
+
+    hs->Add(pg->sp_right, 1, wxEXPAND);
+    host->SetSizer(hs);
+
+    int idx = insert_at < 0 ? int(pages_.size()) : insert_at;
+    pages_.insert(pages_.begin() + idx, std::unique_ptr<SchematicPage>(pg));
+    // Indices shifted: adjust the active tab if it was after the insertion.
+    if (active_ >= idx) ++active_;
+    book_->InsertPage(idx, host, "untitled", true);
+
+    bind_page(pg);
+    active_ = idx;
+    book_->SetSelection(idx);
+    palette_->SetDocument(&pg->doc);
+    update_title();
+    // Defer the fit until the host has a real client size.
+    CallAfter([pg] { pg->canvas->zoom_to_fit(); });
+    return pg;
+}
+
+void MainFrame::bind_page(SchematicPage* pg) {
+    pg->canvas->on_document_changed = [this] { document_changed(); };
+    pg->canvas->on_selection_changed = [this](const std::string& s) {
         selection_changed(s);
     };
-    canvas_->on_status = [this](const std::string& s) {
+    pg->canvas->on_status = [this](const std::string& s) {
         SetStatusText(wxString::FromUTF8(s), 0);
     };
-    canvas_->on_view_changed = [this](double z, double vx, double vy) {
+    pg->canvas->on_view_changed = [this](double z, double vx, double vy) {
         SetStatusText(wxString::Format("zoom=%.2f  view=(%.0f, %.0f)", z, vx,
                                        vy),
                       1);
     };
-    canvas_->on_push_undo = [this] { doc_.push_undo(); };
-    canvas_->on_wire_selected = [this](int wi, std::string name) {
-        // Selecting a wire lets the properties panel name its net (#9).
-        props_->refresh(&doc_, "#wire" + std::to_string(wi));
+    pg->canvas->on_push_undo = [pg] { pg->doc.push_undo(); };
+    pg->canvas->on_wire_selected = [this, pg](int wi, std::string name) {
+        pg->props->refresh(&pg->doc, "#wire" + std::to_string(wi));
         if (name.empty())
             SetStatusText("Wire selected -- name its net on the right (a "
                           "label is created above it).",
@@ -477,44 +400,85 @@ void MainFrame::build_layout() {
             SetStatusText("Net: " + name, 0);
     };
 
-    props_->on_edited = [this] {
-        canvas_->invalidate_nets(); // the props-panel delete button can
-                                    // remove wires without going through the
-                                    // canvas's notify_doc()
-        canvas_->Refresh(false); // deferred: coalesce a fast typist's keystrokes
-        SetStatusText("Settings changed -- press F5 to (re)analyze.", 0);
+    pg->props->on_edited = [this, pg] {
+        pg->canvas->invalidate_nets();
+        pg->canvas->Refresh(false);
+        SetStatusText("Circuit changed -- press Run on an analysis card.", 0);
     };
-    props_->on_selection_changed = [this](const std::string& s) {
-        canvas_->set_selection(s);
+    pg->props->on_selection_changed = [this, pg](const std::string& s) {
+        pg->canvas->set_selection(s);
         selection_changed(s);
     };
-    props_->on_wire_name = [this](int wi, const std::string& name) {
-        canvas_->set_wire_net_name(wi, name);
+    pg->props->on_wire_name = [this, pg](int wi, const std::string& name) {
+        pg->canvas->set_wire_net_name(wi, name);
     };
-    props_->on_label_font = [this](int li, int size) {
-        canvas_->set_label_font_size(li, size);
+    pg->props->on_label_font = [this, pg](int li, int size) {
+        pg->canvas->set_label_font_size(li, size);
     };
 
-    // ---- analysis cards ----
-    analysis_->refresh(&doc_);
-    analysis_->on_changed = [this] {
-        doc_.analysis_cards = analysis_->serialize();
-        doc_.dirty = true;
+    pg->analysis->refresh(&pg->doc);
+    pg->analysis->on_changed = [this, pg] {
+        pg->doc.analysis_cards = pg->analysis->serialize();
+        pg->doc.dirty = true;
         update_title();
     };
-    analysis_->on_run_all = [this](int) { run_card(-1); };
-    analysis_->on_run_one = [this](int i) { run_card(i); };
-    analysis_->on_results = [this] {
+    pg->analysis->on_run_one = [this](int i) { run_card(i); };
+    pg->analysis->on_results = [this] {
         if (auto* f = ensure_results_frame()) {
             f->popup();
             f->select_page(0);
         }
     };
+    pg->analysis->on_tech_changed = [this, pg] {
+        // W/L visibility depends on the mode, so rebuild the properties panel.
+        pg->props->refresh(&pg->doc, pg->canvas->selection());
+    };
 
-    props_->refresh(&doc_, canvas_->selection());
-    // prime the status-bar view readout (zoom/view origin) before the first
-    // paint, so it appears even if the user never pans or zooms.
-    canvas_->report_view();
+    pg->props->refresh(&pg->doc, pg->canvas->selection());
+    pg->canvas->report_view();
+}
+
+void MainFrame::activate_page(int i) {
+    if (i < 0 || i >= int(pages_.size())) return;
+    book_->SetSelection(i);
+    active_ = i;
+    if (page()) page()->canvas->SetFocus();
+    update_title();
+}
+
+void MainFrame::close_page(int i) {
+    if (i < 0 || i >= int(pages_.size())) return;
+    if (pages_.size() == 1) {
+        // Never leave zero tabs: clear the last one instead of closing it.
+        SchematicPage* pg = pages_[0].get();
+        pg->doc = Document();
+        pg->doc.req.input_ref = "V1";
+        pg->doc.req.output = "V(out)";
+        pg->doc.dirty = false;
+        pg->result.reset();
+        pg->canvas->set_selection("");
+        pg->canvas->invalidate_nets();
+        pg->analysis->deserialize("");
+        pg->analysis->refresh(&pg->doc);
+        pg->props->refresh(&pg->doc, "");
+        pg->canvas->Refresh();
+        book_->SetPageText(0, "untitled");
+        update_title();
+        return;
+    }
+    // Drop the page object first so the canvas's callbacks (fired during
+    // destruction) cannot reach a half-deleted page.
+    pages_.erase(pages_.begin() + i);
+    book_->DeletePage(i);
+    active_ = book_->GetSelection();
+    if (active_ < 0) active_ = 0;
+    if (page()) {
+        palette_->SetDocument(&page()->doc);
+        if (toolbar_)
+            toolbar_->ToggleTool(ID_IGNORE_NEG, page()->doc.req.prune);
+        if (mi_ignore_) mi_ignore_->Check(page()->doc.req.prune);
+    }
+    update_title();
 }
 
 // ---------------------------------------------------------------------------
@@ -542,7 +506,7 @@ void MainFrame::on_char_hook(wxKeyEvent& e) {
 
     // Otherwise the canvas owns Space / Escape / single-letter keys while a
     // ghost or wire is in progress, and the app shortcuts run everywhere else.
-    if (canvas_->handle_key(e)) return;
+    if (page() && page()->canvas->handle_key(e)) return;
     if (handle_shortcut(e)) return;
 
     // Let menu accelerators (Ctrl+N / F5 / Del ...) run.
@@ -553,35 +517,42 @@ void MainFrame::on_char_hook(wxKeyEvent& e) {
 // Keyboard placement map + quick transform keys.
 // ---------------------------------------------------------------------------
 bool MainFrame::handle_shortcut(wxKeyEvent& e) {
+    SchematicPage* pg = page();
+    if (!pg) return false;
+    SchematicCanvas* cv = pg->canvas;
     const int code = e.GetKeyCode();
     const bool shift = e.ShiftDown();
     const bool ctrl = e.ControlDown();
     const bool alt = e.AltDown();
 
-    // undo / redo: Ctrl+Z/Y plus Virtuoso-style U / Shift+U
-    if (ctrl && !alt && code == 'Z') { on_undo_cmd(); return true; }
-    if (ctrl && !alt && code == 'Y') { on_redo_cmd(); return true; }
-    // copy / paste
-    if (ctrl && !alt && code == 'C') { canvas_->copy_selection(); return true; }
-    if (ctrl && !alt && code == 'V') { canvas_->paste_clipboard(); return true; }
-    if (!ctrl && !alt && (code == 'U' || code == 'u')) {
+    // undo / redo: Virtuoso-style U / Shift+U only (Ctrl+Z/Ctrl+Y are
+    // deliberately not bound -- the user asked for a single scheme).
+    if (!ctrl && !alt && (code == 'u' || code == 'U')) {
         if (shift) on_redo_cmd();
         else on_undo_cmd();
         return true;
     }
+    if (code == WXK_F1) {
+        wxCommandEvent dummy;
+        on_howto(dummy);
+        return true;
+    }
+    // copy / paste
+    if (ctrl && !alt && code == 'C') { cv->copy_selection(); return true; }
+    if (ctrl && !alt && code == 'V') { cv->paste_clipboard(); return true; }
 
     // Space: while wiring, swap the route orientation; while placing or with a
     // selection, rotate / flip.
     if (code == WXK_SPACE) {
-        if (canvas_->wiring()) {
-            canvas_->toggle_wire_orient();
+        if (cv->wiring()) {
+            cv->toggle_wire_orient();
             SetStatusText("Wire route: press Space again to swap.", 0);
         } else if (ctrl) {
-            canvas_->flip_ghost(false);
+            cv->flip_ghost(false);
         } else if (shift) {
-            canvas_->flip_ghost(true);
+            cv->flip_ghost(true);
         } else {
-            canvas_->rotate_ghost(90);
+            cv->rotate_ghost(90);
         }
         sync_palette();
         return true;
@@ -589,7 +560,7 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     if (ctrl || alt) return false; // leave Ctrl/Alt combos to menus
 
     auto place = [&](syms::Kind k) {
-        canvas_->begin_place(k, 0);
+        cv->begin_place(k, 0);
         sync_palette();
         SetStatusText("Placing -- click to drop another, Space rotates, Esc stops.",
                       0);
@@ -609,7 +580,7 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     case 'Y': return place(syms::Kind::D); // common alternate for diode
     case 'O': case 'o': return place(syms::Kind::OPAMP);
     case 'W': case 'w':
-        canvas_->set_tool(Tool::Wire);
+        cv->set_tool(Tool::Wire);
         sync_palette();
         SetStatusText("Wire: click to place a segment; click a pin to "
                       "terminate; Enter ends, Esc cancels.",
@@ -620,14 +591,14 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
         return true;
     case 'F': case 'f':
         // F frames all components (repeated F toggles fit / back).
-        canvas_->zoom_to_fit();
+        cv->zoom_to_fit();
         SetStatusText("Zoomed to fit the components.", 0);
         return true;
     case 'M': {
         // M selects the NMOS first; pressing M again (while placing) toggles
         // to the PMOS.
-        syms::Kind cur = canvas_->tool() == Tool::Place
-                             ? canvas_->place_kind()
+        syms::Kind cur = cv->tool() == Tool::Place
+                             ? cv->place_kind()
                              : syms::Kind::PMOS; // first press -> NMOS
         syms::Kind nxt = (cur == syms::Kind::NMOS) ? syms::Kind::PMOS
                                                    : syms::Kind::NMOS;
@@ -636,8 +607,8 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
     case 'Q': case 'q': {
         // Q selects the NPN BJT first; pressing Q again (while placing)
         // toggles to the PNP, mirroring the M / NMOS-PMOS behaviour.
-        syms::Kind cur = canvas_->tool() == Tool::Place
-                             ? canvas_->place_kind()
+        syms::Kind cur = cv->tool() == Tool::Place
+                             ? cv->place_kind()
                              : syms::Kind::PNP; // first press -> NPN
         syms::Kind nxt = (cur == syms::Kind::NPN) ? syms::Kind::PNP
                                                    : syms::Kind::NPN;
@@ -652,23 +623,27 @@ bool MainFrame::handle_shortcut(wxKeyEvent& e) {
 
 // Ask for one or more net names; each is placed on the next clicked net.
 void MainFrame::prompt_net_labels() {
+    SchematicPage* pg = page();
+    if (!pg) return;
     wxTextEntryDialog dlg(this,
                           "Net name(s) to place, separated by spaces:",
                           "Place net label(s)");
     if (dlg.ShowModal() != wxID_OK) return;
     std::string names = dlg.GetValue().ToStdString();
-    canvas_->begin_label(names);
-    canvas_->SetFocus();
+    pg->canvas->begin_label(names);
+    pg->canvas->SetFocus();
     sync_palette();
     SetStatusText("Net label: click a net to place the next name; Esc stops.", 0);
 }
 
 void MainFrame::sync_palette() {
-    palette_->set_active(canvas_->tool(), canvas_->place_kind());
+    SchematicPage* pg = page();
+    if (!pg) return;
+    palette_->set_active(pg->canvas->tool(), pg->canvas->place_kind());
     // Keep the toolbar radio buttons in step with the canvas tool (e.g. after
     // the W / S keys), the way the reference's draw-tools reflect the mode.
     if (toolbar_) {
-        Tool t = canvas_->tool();
+        Tool t = pg->canvas->tool();
         toolbar_->ToggleTool(ID_SELECT_TOOL, t == Tool::Select);
         toolbar_->ToggleTool(ID_WIRE_TOOL, t == Tool::Wire);
         toolbar_->Refresh();
@@ -713,7 +688,8 @@ void MainFrame::show_instance_menu() {
     menu.Bind(wxEVT_MENU, [this, ents, n](wxCommandEvent& ev) {
         int i = ev.GetId() - ID_PLACE_BASE;
         if (i < 0 || i >= n) return;
-        canvas_->begin_place(ents[i].kind, 0);
+        if (!page()) return;
+        page()->canvas->begin_place(ents[i].kind, 0);
         sync_palette();
         SetStatusText("Placing -- click to drop another, Space rotates, Esc stops.",
                       0);
@@ -723,13 +699,18 @@ void MainFrame::show_instance_menu() {
 
 // ---------------------------------------------------------------------------
 void MainFrame::update_title() {
-    wxString name = doc_.path.empty()
+    const SchematicPage* pg = page();
+    wxString name = (!pg || pg->doc.path.empty())
                         ? wxString("untitled")
-                        : wxString::FromUTF8(doc_.path)
+                        : wxString::FromUTF8(pg->doc.path)
                               .AfterLast('\\')
                               .AfterLast('/');
+    bool dirty = pg && pg->doc.dirty;
     SetTitle(wxString::Format("SymCirc -- %s%s", name,
-                              doc_.dirty ? wxString(" *") : wxString("")));
+                              dirty ? wxString(" *") : wxString("")));
+    // Keep the tab label in step with the dirty marker.
+    if (book_ && active_ >= 0 && active_ < int(book_->GetPageCount()))
+        book_->SetPageText(active_, name + (dirty ? " *" : ""));
 }
 
 // Document changed via the canvas (component moved, wire/label placed, etc.).
@@ -740,19 +721,22 @@ void MainFrame::update_title() {
 // what it actually depends on; this handler only updates the title and status.
 void MainFrame::document_changed() {
     update_title();
-    SetStatusText("Circuit changed -- press F5 to (re)analyze.", 0);
+    SetStatusText("Circuit changed -- press Run on an analysis card.", 0);
 }
 
 void MainFrame::selection_changed(const std::string& sel) {
-    props_->refresh(&doc_, sel);
-    canvas_->Refresh(false); // deferred repaint
+    SchematicPage* pg = page();
+    if (!pg) return;
+    pg->props->refresh(&pg->doc, sel);
+    pg->canvas->Refresh(false); // deferred repaint
 }
 
 // ---------------------------------------------------------------------------
 bool MainFrame::maybe_save() {
-    if (!doc_.dirty) return true;
+    SchematicPage* pg = page();
+    if (!pg || !pg->doc.dirty) return true;
     wxMessageDialog dlg(this,
-                        "The schematic has unsaved changes. Save them?",
+                        "This schematic has unsaved changes. Save them?",
                         "Unsaved changes",
                         wxYES_NO | wxCANCEL | wxICON_QUESTION);
     int r = dlg.ShowModal();
@@ -764,35 +748,16 @@ bool MainFrame::maybe_save() {
     return true;
 }
 
-void MainFrame::on_new(wxCommandEvent&) {
-    if (!maybe_save()) return;
-    doc_ = Document();
-    doc_.req.input_ref = "V1";
-    doc_.req.output = "V(out)";
-    doc_.dirty = false;
-    result_.reset();
-    if (results_frame_) {
-        results_frame_->bode()->set_result(nullptr);
-        if (results_frame_->lua()) results_frame_->lua()->set_result(nullptr);
-        results_frame_->results()->clear();
-    }
-    canvas_->set_selection("");
-    canvas_->invalidate_nets();
-    // Defer the fit until after the layout has settled (this event finishes
-    // first), so the canvas has its real client size.
-    CallAfter([this] { canvas_->zoom_to_fit(); });
-    canvas_->Refresh();
-    props_->refresh(&doc_, "");
-    update_title();
-}
+void MainFrame::on_new(wxCommandEvent&) { make_page(-1); }
 
 void MainFrame::on_open(wxCommandEvent&) {
-    if (!maybe_save()) return;
     wxFileDialog dlg(this, "Open schematic", "", "",
                      "SymCirc circuits (*.scx)|*.scx|All files (*.*)|*.*",
-                     wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+                     wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
     if (dlg.ShowModal() != wxID_OK) return;
-    open_path(dlg.GetPath());
+    wxArrayString paths;
+    dlg.GetPaths(paths);
+    for (const auto& p : paths) open_path(p);
 }
 
 void MainFrame::open_path(const wxString& p) {
@@ -802,59 +767,67 @@ void MainFrame::open_path(const wxString& p) {
         wxMessageBox(wxString::FromUTF8(err), "Open failed", wxICON_ERROR, this);
         return;
     }
-    doc_ = std::move(nd);
-    result_.reset();
-    if (results_frame_) {
-        results_frame_->bode()->set_result(nullptr);
-        if (results_frame_->lua()) results_frame_->lua()->set_result(nullptr);
-        results_frame_->results()->clear();
+    // Reuse the current tab if it is an untouched, untitled, empty schematic;
+    // otherwise open a fresh tab so the user can compare schematics.
+    SchematicPage* pg = page();
+    bool reuse = pg && pg->doc.path.empty() && !pg->doc.dirty &&
+                 pg->doc.circuit.comps.empty() && pages_.size() == 1;
+    if (!reuse) {
+        pg = make_page(-1);
     }
-    canvas_->set_selection("");
-    canvas_->invalidate_nets();
-    // Defer the fit until after the sash positions from build_layout have been
-    // applied (CallAfter order is FIFO, so this runs after the parking block
-    // that was queued first) and after any pending frame resize.
-    CallAfter([this] { canvas_->zoom_to_fit(); });
-    canvas_->Refresh();
-    props_->refresh(&doc_, "");
-    if (analysis_) {
-        analysis_->deserialize(doc_.analysis_cards);
-        analysis_->refresh(&doc_);
-    }
+    pg->doc = std::move(nd);
+    pg->result.reset();
+    pg->canvas->set_selection("");
+    pg->canvas->invalidate_nets();
+    pg->analysis->deserialize(pg->doc.analysis_cards);
+    pg->analysis->refresh(&pg->doc);
+    pg->props->refresh(&pg->doc, "");
+    CallAfter([this, pg] { pg->canvas->zoom_to_fit(); });
+    pg->canvas->Refresh();
+    // Tab label = file name.
+    wxString name = p.AfterLast('\\').AfterLast('/');
+    book_->SetPageText(active_, name);
     update_title();
     SetStatusText("Loaded " + p, 0);
 }
 
 void MainFrame::on_save(wxCommandEvent&) {
-    if (doc_.path.empty()) {
+    SchematicPage* pg = page();
+    if (!pg) return;
+    if (pg->doc.path.empty()) {
         do_save_as();
         return;
     }
     std::string err;
-    if (!doc_.save(doc_.path, err)) {
+    if (!pg->doc.save(pg->doc.path, err)) {
         wxMessageBox(wxString::FromUTF8(err), "Save failed", wxICON_ERROR, this);
         return;
     }
     update_title();
-    SetStatusText("Saved " + wxString::FromUTF8(doc_.path), 0);
+    SetStatusText("Saved " + wxString::FromUTF8(pg->doc.path), 0);
 }
 
 bool MainFrame::do_save_as() {
+    SchematicPage* pg = page();
+    if (!pg) return false;
     wxFileDialog dlg(this, "Save schematic", "", "",
                      "SymCirc circuits (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
     if (dlg.ShowModal() != wxID_OK) return false;
     std::string err;
-    if (!doc_.save(dlg.GetPath().ToStdString(), err)) {
+    if (!pg->doc.save(dlg.GetPath().ToStdString(), err)) {
         wxMessageBox(wxString::FromUTF8(err), "Save failed", wxICON_ERROR, this);
         return false;
     }
+    book_->SetPageText(active_, dlg.GetPath().AfterLast('\\').AfterLast('/'));
     update_title();
     SetStatusText("Saved " + dlg.GetPath(), 0);
     return true;
 }
 
 void MainFrame::on_save_as(wxCommandEvent&) { do_save_as(); }
+
+void MainFrame::on_tab_close(wxCommandEvent&) { close_page(active_); }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -867,134 +840,97 @@ void MainFrame::on_undo(wxCommandEvent&) { on_undo_cmd(); }
 void MainFrame::on_redo(wxCommandEvent&) { on_redo_cmd(); }
 
 void MainFrame::on_undo_cmd() {
-    if (!doc_.can_undo()) {
+    SchematicPage* pg = page();
+    if (!pg) return;
+    if (!pg->doc.can_undo()) {
         SetStatusText("Nothing to undo.", 0);
         return;
     }
-    doc_.undo();
+    pg->doc.undo();
     after_undo_redo();
     SetStatusText("Undo.", 0);
 }
 
 void MainFrame::on_redo_cmd() {
-    if (!doc_.can_redo()) {
+    SchematicPage* pg = page();
+    if (!pg) return;
+    if (!pg->doc.can_redo()) {
         SetStatusText("Nothing to redo.", 0);
         return;
     }
-    doc_.redo();
+    pg->doc.redo();
     after_undo_redo();
     SetStatusText("Redo.", 0);
 }
 
 void MainFrame::after_undo_redo() {
+    SchematicPage* pg = page();
+    if (!pg) return;
     // the selection may point at something that no longer exists
-    canvas_->set_selection("");
-    canvas_->invalidate_nets(); // Document::undo/redo bypass the canvas
-    canvas_->Refresh();
-    props_->refresh(&doc_, "");
+    pg->canvas->set_selection("");
+    pg->canvas->invalidate_nets(); // Document::undo/redo bypass the canvas
+    pg->canvas->Refresh();
+    pg->props->refresh(&pg->doc, "");
     update_title();
 }
 
-void MainFrame::on_rotate(wxCommandEvent&) { canvas_->rotate_selection(); }
-void MainFrame::on_delete(wxCommandEvent&) { canvas_->delete_selection(); }
+void MainFrame::on_delete(wxCommandEvent&) {
+    if (page()) page()->canvas->delete_selection();
+}
 
-// ---------------------------------------------------------------------------
-void MainFrame::on_run(wxCommandEvent&) { run_analysis(); }
-
-void MainFrame::run_analysis() { run_card(-1); }
-
-// Run one analysis card (index >= 0) or every enabled card (index < 0).
+// Run one analysis card. (There is no "run all": use Run on each card.)
 void MainFrame::run_card(int index) {
+    SchematicPage* pg = page();
+    if (!pg) return;
     std::string err;
-    syms::Circuit c = doc_.resolved(err);
+    syms::Circuit c = pg->doc.resolved(err);
     if (!err.empty()) {
         wxMessageBox(wxString::FromUTF8(err), "Cannot analyze",
                      wxICON_ERROR, this);
         return;
     }
 
-    auto& cards = analysis_->cards();
+    auto& cards = pg->analysis->cards();
     if (cards.empty()) {
         // no cards configured: fall back to one transfer-function run
         AnalysisCard def;
-        def.input_ref = doc_.req.input_ref;
-        def.output = doc_.req.output;
-        def.sweep = doc_.req.sweep;
-        def.prune = doc_.req.prune;
-        def.use_parallel = doc_.req.use_parallel;
-        def.approx_factor = doc_.req.approx_factor;
+        def.input_ref = pg->doc.req.input_ref;
+        def.output = pg->doc.req.output;
+        def.sweep = pg->doc.req.sweep;
+        def.prune = pg->doc.req.prune;
+        def.use_parallel = pg->doc.req.use_parallel;
+        def.approx_factor = pg->doc.req.approx_factor;
         cards.push_back(def);
-        analysis_->refresh(&doc_);
+        pg->analysis->refresh(&pg->doc);
+    }
+    if (index < 0 || index >= int(cards.size())) return;
+    if (!cards[index].enabled) {
+        wxMessageBox("This analysis step is disabled.", "Nothing to run",
+                     wxICON_INFORMATION, this);
+        return;
     }
 
-    std::string report;
-    std::string latex;
-    std::string latex_report;
-    std::unique_ptr<syms::AnalysisResult> keep;
+    const AnalysisCard& card = cards[index];
+    syms::AnalysisSpec sp;
+    sp.kind = card.kind;
+    sp.input_ref = card.input_ref.empty() ? pg->doc.req.input_ref
+                                          : card.input_ref;
+    sp.output = card.output.empty() ? pg->doc.req.output : card.output;
+    sp.probe_ref = card.probe_ref;
+    sp.input_port_p = card.in_port_p;
+    sp.input_port_n = card.in_port_n;
+    sp.sweep = card.sweep;
+    sp.f0_hz = card.sweep.f_start_hz;
+    sp.threshold_db = card.threshold_db;
+    sp.global_ref = card.global_ref;
+    sp.prune = card.prune;
+    sp.use_parallel = card.use_parallel;
+    sp.approx_factor = card.approx_factor;
+    sp.tech = pg->doc.tech;
 
-    auto run_one = [&](int i) {
-        const AnalysisCard& card = cards[i];
-        syms::AnalysisSpec sp;
-        sp.kind = card.kind;
-        sp.input_ref = card.input_ref.empty() ? doc_.req.input_ref
-                                              : card.input_ref;
-        sp.output = card.output.empty() ? doc_.req.output : card.output;
-        sp.probe_ref = card.probe_ref;
-        sp.input_port_p = card.in_port_p;
-        sp.input_port_n = card.in_port_n;
-        sp.sweep = card.sweep;
-        sp.f0_hz = card.sweep.f_start_hz;
-        sp.threshold_db = card.threshold_db;
-        sp.global_ref = card.global_ref;
-        sp.prune = card.prune;
-        sp.use_parallel = card.use_parallel;
-        sp.approx_factor = card.approx_factor;
-        sp.tech = doc_.tech;
-
-        syms::CardResult cr = syms::run_analysis(c, sp);
-        // A numeric DC card can export small-signal overrides extracted from
-        // its operating point (Mode 3 + the override checkbox). Apply them to
-        // the working circuit so the FOLLOWING cards reflect the real bias
-        // (e.g. a device's Cds shrinks and the threshold rule prunes it).
-        for (const auto& kv : cr.ss_overrides) {
-            for (auto& comp : c.comps) {
-                if (comp.ref != kv.first) continue;
-                for (const auto& pv : kv.second) {
-                    comp.param_text[pv.first] =
-                        syms::eng::format_eng(pv.second, 4);
-                    comp.param_on[pv.first] = true;
-                }
-            }
-        }
-        report += cr.title + "\n";
-        report += std::string(cr.title.size() + 8, '-') + "\n";
-        report += cr.report;
-        report += "\n";
-        if (!cr.latex.empty()) latex = cr.latex;
-        if (!cr.latex_report.empty()) latex_report = cr.latex_report;
-        if (cr.has_transfer) {
-            keep = std::make_unique<syms::AnalysisResult>(cr.transfer);
-        }
-        return cr;
-    };
-
+    syms::CardResult cr;
     try {
-        if (index >= 0) {
-            if (index >= int(cards.size())) return;
-            run_one(index);
-        } else {
-            int n = 0;
-            for (int i = 0; i < int(cards.size()); ++i) {
-                if (!cards[i].enabled) continue;
-                run_one(i);
-                ++n;
-            }
-            if (n == 0 && !cards.empty()) {
-                wxMessageBox("No analysis step is enabled.", "Nothing to run",
-                             wxICON_INFORMATION, this);
-                return;
-            }
-        }
+        cr = syms::run_analysis(c, sp);
     } catch (const std::exception& e) {
         wxMessageBox(wxString::FromUTF8(e.what()), "Analysis failed",
                      wxICON_ERROR, this);
@@ -1002,31 +938,17 @@ void MainFrame::run_card(int index) {
     }
 
     auto* rf = ensure_results_frame();
+    std::string report = cr.title + "\n" +
+                         std::string(cr.title.size() + 8, '-') + "\n" +
+                         cr.report + "\n";
     rf->results()->set_text(report);
-    rf->results()->set_latex(latex);
-    // Results tab = the plain-text report. Math tab = the same report
-    // typeset (the transfer function as real stacked fractions with proper
-    // subscripts, the poles/zeros as a formatted list).
-    rf->set_report(latex, latex_report);
-    result_ = std::move(keep);
-    // The bode tab shows the most recent card's title so the user can tell
-    // what each plot represents when they switch back to it. Run-all uses
-    // the last enabled card so the title matches whatever transfer function
-    // is sitting in `keep`.
-    std::string last_title;
-    if (index >= 0 && index < int(cards.size())) {
-        last_title = cards[index].title;
-    } else {
-        for (int i = int(cards.size()) - 1; i >= 0; --i) {
-            if (cards[i].enabled && !cards[i].title.empty()) {
-                last_title = cards[i].title;
-                break;
-            }
-        }
-    }
-    rf->bode()->set_title(last_title);
-    rf->bode()->set_result(result_.get());
-    if (rf->lua()) rf->lua()->set_result(result_.get());
+    rf->results()->set_latex(cr.latex);
+    rf->set_report(cr.latex, cr.latex_report);
+    if (cr.has_transfer)
+        pg->result = std::make_unique<syms::AnalysisResult>(cr.transfer);
+    rf->bode()->set_title(card.title);
+    rf->bode()->set_result(pg->result.get());
+    if (rf->lua()) rf->lua()->set_result(pg->result.get());
     rf->popup();
     rf->select_page(0); // land on the "Results" (typeset) tab
     SetStatusText("Analysis OK -- see the results window.", 0);
@@ -1036,10 +958,72 @@ void MainFrame::run_card(int index) {
 void MainFrame::on_about(wxCommandEvent&) {
     wxMessageBox(
         "SymCirc -- symbolic circuit analysis with low-entropy forms.\n\n"
-        "Draw a schematic, pick an input and output, press F5.\n"
+        "Draw a schematic, add an analysis card, then press its Run button.\n"
         "Ranks terms by order-of-magnitude estimates and prunes the\n"
         "negligible ones so the transfer function stays readable.",
         "About SymCirc", wxICON_INFORMATION, this);
+}
+
+void MainFrame::on_shortcuts(wxCommandEvent&) {
+    wxMessageBox(
+        "Canvas\n"
+        "  R / C / L / V / B      place resistor / cap / inductor /\n"
+        "                         voltage source / current source\n"
+        "  M (again)              N-MOSFET, then P-MOSFET\n"
+        "  Q (again)              NPN, then PNP\n"
+        "  D / Y                  diode\n"
+        "  O                      op-amp\n"
+        "  G / Shift+G            ground / supply rail (VDD)\n"
+        "  T / K                  transformer / coupled inductors\n"
+        "  W                      wire tool\n"
+        "  N                      place net label(s)\n"
+        "  I                      component menu (all parts)\n\n"
+        "  Space                  rotate the ghost / selection\n"
+        "  Shift+Space            flip horizontally (wire: swap route)\n"
+        "  Ctrl+Space             flip vertically\n"
+        "  F                      fit components to view\n"
+        "  F7                     toggle the grid\n"
+        "  Del                    delete the selection\n"
+        "  Ctrl+C / Ctrl+V        copy / paste\n"
+        "  Esc                    cancel the current action\n\n"
+        "Editing\n"
+        "  U                      undo\n"
+        "  Shift+U                redo\n\n"
+        "File / tabs\n"
+        "  Ctrl+N                 new schematic tab\n"
+        "  Ctrl+O                 open schematic(s)\n"
+        "  Ctrl+S / Ctrl+Shift+S  save / save as\n"
+        "  Ctrl+W                 close the current tab\n"
+        "  F1                     how to use (analysis help)",
+        "Keyboard shortcuts", wxICON_INFORMATION, this);
+}
+
+void MainFrame::on_howto(wxCommandEvent&) {
+    wxMessageBox(
+        "Add analysis cards with the + Add picker on the right; each card has\n"
+        "its own Run button. Pick the input source (in) and the output\n"
+        "expression (out, e.g. V(out) or V(a)-V(b)).\n\n"
+        "Transfer function (H(s))     V(out)/V(in): the small-signal gain.\n"
+        "AC (small-signal)            Drives every source; no 'in' field.\n"
+        "PSR / PSRR                   Supply rejection; set the supply.\n"
+        "Loop gain (return ratio)     Rosenstark return ratio; name the\n"
+        "                             amplifier in 'probe'.\n"
+        "Short-circuit current        Output current into a short.\n"
+        "Input impedance              Zin seen at the input port.\n"
+        "Output impedance             Zout; all sources are turned off (no\n"
+        "                             'in' field).\n"
+        "Noise                        Output/input noise density and the\n"
+        "                             integrated value over the sweep band.\n\n"
+        "Experimental (output may change between versions):\n"
+        "DC operating point           Large-signal bias. Its card holds the\n"
+        "                             DC process/model settings (mode, Vth,\n"
+        "                             Is, uCox, SPICE model file, W/L).\n"
+        "Differential (Adm/Acm/CMRR)  Differential / common-mode gain; set\n"
+        "                             the in+ and in- port nodes.\n"
+        "Plot (in the results window) Frequency response; experimental.\n\n"
+        "Tip: 'ignore negligible' (toolbar or per card) drops terms far\n"
+        "below the dominant one so the result stays readable.",
+        "How to use", wxICON_INFORMATION, this);
 }
 
 } // namespace symcirc

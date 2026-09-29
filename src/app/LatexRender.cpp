@@ -177,7 +177,7 @@ private:
         return w;
     }
 
-    std::string render_command() {
+        std::string render_command() {
         size_t save = i_;
         std::string w = read_control_word();
         if (w.empty()) {
@@ -401,6 +401,29 @@ std::string latex_render_line(const std::string& latex) {
     // Same per-line output as latex_to_html_fragment, without the
     // surrounding <div class="math"> wrapper and without newline splitting.
     return Renderer(latex_normalize(latex)).run();
+}
+
+bool latex_is_plain_heading(const std::string& s) {
+    if (s.empty() || s.size() >= 40 || s.back() != ':') return false;
+    return s.find('\\') == std::string::npos &&
+           s.find('_') == std::string::npos &&
+           s.find('^') == std::string::npos &&
+           s.find('{') == std::string::npos &&
+           s.find('}') == std::string::npos;
+}
+
+bool latex_heading_from_mathrm(const std::string& s, std::string& out) {
+    const std::string pre = "\\mathrm{";
+    if (s.rfind(pre, 0) != 0 || s.size() <= pre.size() + 1 || s.back() != '}')
+        return false;
+    std::string inner = s.substr(pre.size(), s.size() - pre.size() - 1);
+    if (inner.empty() || inner.back() != ':') return false;
+    if (inner.find('\\') != std::string::npos ||
+        inner.find('{') != std::string::npos ||
+        inner.find('}') != std::string::npos)
+        return false;
+    out = inner;
+    return true;
 }
 
 std::string latex_to_html(const std::string& latex) {

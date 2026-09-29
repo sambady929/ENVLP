@@ -3,9 +3,11 @@
 #include "core/Engine.h"
 
 #include <wx/wx.h>
+#include <wx/aui/auibook.h>
 #include <wx/splitter.h>
 
 #include <memory>
+#include <vector>
 
 namespace symcirc {
 
@@ -15,11 +17,25 @@ class PropertiesPanel;
 class AnalysisPanel;
 class AnalysisResultsFrame;
 
+// One open schematic: the document, its three panes and its analysis panel.
+// Each tab in the main notebook owns one of these, so every schematic keeps
+// its own cards, results and view state (LTSpice-style multi-schematic).
+struct SchematicPage {
+    Document doc;
+    std::unique_ptr<syms::AnalysisResult> result;
+    SchematicCanvas* canvas = nullptr;
+    PropertiesPanel* props = nullptr;
+    AnalysisPanel* analysis = nullptr;
+    // Per-page splitters, so each tab resizes independently.
+    wxSplitterWindow* sp_right = nullptr;
+    wxSplitterWindow* sp_bottom = nullptr;
+};
+
 class MainFrame : public wxFrame {
 public:
     MainFrame();
 
-    void open_path(const wxString& p); // open a .scx (command line / recent)
+    void open_path(const wxString& p); // open a .scx in a new tab
 
 protected:
     // Application-wide key handling: runs before the focused child so that
@@ -28,29 +44,28 @@ protected:
     void on_char_hook(wxKeyEvent& e);
 
 private:
-    Document doc_;
-    std::unique_ptr<syms::AnalysisResult> result_;
+    // All open schematics. pages_[active_] is the current tab.
+    std::vector<std::unique_ptr<SchematicPage>> pages_;
+    int active_ = -1;
 
-    SchematicCanvas* canvas_ = nullptr;
     PalettePanel* palette_ = nullptr;
-    PropertiesPanel* props_ = nullptr;
-    AnalysisPanel* analysis_ = nullptr;
     AnalysisResultsFrame* results_frame_ = nullptr;
     wxToolBar* toolbar_ = nullptr;
     wxMenuItem* mi_ignore_ = nullptr;
-
-    // Resizable layout: three nested splitters.
-    //  sp_main:   palette (left)  | sp_right (rest)
-    //  sp_right:  sp_bottom (canvas+props) | analysis (right, fixed width)
-    //  sp_bottom: canvas (top) | props (bottom)
+    wxAuiNotebook* book_ = nullptr;
     wxSplitterWindow* sp_main_ = nullptr;
-    wxSplitterWindow* sp_right_ = nullptr;
-    wxSplitterWindow* sp_bottom_ = nullptr;
+
+    SchematicPage* page();
+    const SchematicPage* page() const;
+    SchematicPage* make_page(int insert_at);
+    void bind_page(SchematicPage* pg);
+    void activate_page(int i);
+    void close_page(int i);
+    void load_into(SchematicPage* pg, const wxString& path);
 
     void build_menu();
     void build_toolbar();
     void build_layout();
-
     void update_title();
 
     // file ops
@@ -58,11 +73,10 @@ private:
     void on_open(wxCommandEvent&);
     void on_save(wxCommandEvent&);
     void on_save_as(wxCommandEvent&);
-    bool maybe_save(); // false = user cancelled
+    bool maybe_save();
     bool do_save_as();
 
     // editing
-    void on_rotate(wxCommandEvent&);
     void on_delete(wxCommandEvent&);
     void on_undo(wxCommandEvent&);
     void on_redo(wxCommandEvent&);
@@ -71,11 +85,8 @@ private:
     void after_undo_redo();
 
     // analysis
-    void on_run(wxCommandEvent&);
-    void run_analysis();
-    void run_card(int index); // -1 = all enabled cards
+    void run_card(int index); // run one card
     void set_ignore_negligible(bool on);
-    void on_dc_settings(wxCommandEvent&);
 
     // keyboard placement map / instance menu
     bool handle_shortcut(wxKeyEvent& e);
@@ -84,11 +95,14 @@ private:
     void prompt_net_labels();
 
     void on_about(wxCommandEvent&);
+    void on_shortcuts(wxCommandEvent&);
+    void on_howto(wxCommandEvent&);
     void on_ignore_neg(wxCommandEvent&);
     void on_show_grid(wxCommandEvent&);
     void on_zoom_fit(wxCommandEvent&);
     void on_copy(wxCommandEvent&);
     void on_paste(wxCommandEvent&);
+    void on_tab_close(wxCommandEvent&);
 
     // plumbing
     void document_changed();
@@ -97,8 +111,7 @@ private:
     // Is the focused control a text-entry widget (so shortcuts must not fire)?
     bool focus_is_text_entry() const;
 
-    // Lazily build the floating analysis-results window the first time an
-    // analysis runs (and re-show it if the user closed it).
+    // Lazily build the floating analysis-results window.
     AnalysisResultsFrame* ensure_results_frame();
 
     wxDECLARE_EVENT_TABLE();
