@@ -234,6 +234,13 @@ void SchematicCanvas::cancel_current() {
     label_queue_.clear();
     box_selecting_ = false;
     tool_ = Tool::Select;
+    // Esc also clears a selection, which brings the analysis cards back in the
+    // right-hand column (an empty selection means "no properties").
+    if (!sel_.empty()) {
+        sel_.clear();
+        sel_set_.clear();
+        notify_sel();
+    }
     Refresh();
 }
 

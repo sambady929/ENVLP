@@ -17,18 +17,24 @@ class PropertiesPanel;
 class AnalysisPanel;
 class AnalysisResultsFrame;
 
-// One open schematic: the document, its three panes and its analysis panel.
+// One open schematic: the document, its panes and its right-hand column.
 // Each tab in the main notebook owns one of these, so every schematic keeps
 // its own cards, results and view state (LTSpice-style multi-schematic).
+//
+// The right-hand column is ONE pane that swaps between the analysis cards and
+// the properties editor: clicking a component brings up that component's
+// editor in place of the analysis cards, so everything is visible at once.
 struct SchematicPage {
     Document doc;
     std::unique_ptr<syms::AnalysisResult> result;
     SchematicCanvas* canvas = nullptr;
     PropertiesPanel* props = nullptr;
     AnalysisPanel* analysis = nullptr;
-    // Per-page splitters, so each tab resizes independently.
+    // One splitter for the right-hand column; it holds a container that swaps
+    // between the analysis cards and the properties editor.
     wxSplitterWindow* sp_right = nullptr;
-    wxSplitterWindow* sp_bottom = nullptr;
+    wxPanel* right_host = nullptr;
+    bool props_shown = false; // right column currently shows the properties
 };
 
 class MainFrame : public wxFrame {
@@ -61,7 +67,11 @@ private:
     void bind_page(SchematicPage* pg);
     void activate_page(int i);
     void close_page(int i);
-    void load_into(SchematicPage* pg, const wxString& path);
+    // Swap the right-hand column between the analysis cards and the
+    // properties editor. show_props(true) reveals the properties editor for
+    // the current selection; the analysis cards come back when the selection
+    // is cleared.
+    void show_props(SchematicPage* pg, bool on);
 
     void build_menu();
     void build_toolbar();

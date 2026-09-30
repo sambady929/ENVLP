@@ -421,7 +421,9 @@ void MainFrame::build_layout() {
                 if (toolbar_)
                     toolbar_->ToggleTool(ID_IGNORE_NEG, page()->doc.req.prune);
                 if (mi_ignore_) mi_ignore_->Check(page()->doc.req.prune);
-                page()->props->refresh(&page()->doc, "");
+                page()->props->refresh(&page()->doc, page()->canvas->selection());
+                show_props(page(), page()->props_shown &&
+                                       !page()->canvas->selection().empty());
                 page()->canvas->Refresh();
             }
             update_title();
@@ -449,9 +451,7 @@ void MainFrame::build_layout() {
         sp_main_->SetSashPosition(FromDIP(200));
         if (page()) {
             page()->sp_right->SetSashPosition(
-                std::max(FromDIP(160), cs.x - FromDIP(200) - FromDIP(360)));
-            page()->sp_bottom->SetSashPosition(
-                std::max(FromDIP(120), cs.y - FromDIP(210)));
+                std::max(FromDIP(160), cs.x - FromDIP(200) - FromDIP(400)));
         }
         Layout();
         Refresh();
@@ -476,18 +476,20 @@ SchematicPage* MainFrame::make_page(int insert_at) {
     pg->sp_right->SetMinimumPaneSize(FromDIP(120));
     pg->sp_right->SetSashGravity(1.0);
 
-    pg->sp_bottom = new wxSplitterWindow(pg->sp_right, wxID_ANY,
-                                         wxDefaultPosition, wxDefaultSize,
-                                         wxSP_LIVE_UPDATE);
-    pg->sp_bottom->SetMinimumPaneSize(FromDIP(80));
-    pg->sp_bottom->SetSashGravity(1.0);
-
-    pg->canvas = new SchematicCanvas(pg->sp_bottom, &pg->doc);
-    pg->props = new PropertiesPanel(pg->sp_bottom);
-    pg->sp_bottom->SplitHorizontally(pg->canvas, pg->props);
-
-    pg->analysis = new AnalysisPanel(pg->sp_right);
-    pg->sp_right->SplitVertically(pg->sp_bottom, pg->analysis);
+    // The right column hosts both the analysis cards and the properties
+    // editor in one container; toggling which child is shown swaps the column
+    // instantly without disturbing the canvas.
+    pg->canvas = new SchematicCanvas(pg->sp_right, &pg->doc);
+    pg->right_host = new wxPanel(pg->sp_right);
+    pg->right_host->SetBackgroundColour(theme::chrome_bg);
+    auto* rs = new wxBoxSizer(wxVERTICAL);
+    pg->analysis = new AnalysisPanel(pg->right_host);
+    pg->props = new PropertiesPanel(pg->right_host);
+    rs->Add(pg->analysis, 1, wxEXPAND);
+    rs->Add(pg->props, 1, wxEXPAND);
+    pg->right_host->SetSizer(rs);
+    pg->props->Hide();
+    pg->sp_right->SplitVertically(pg->canvas, pg->right_host);
 
     hs->Add(pg->sp_right, 1, wxEXPAND);
     host->SetSizer(hs);
@@ -508,9 +510,29 @@ SchematicPage* MainFrame::make_page(int insert_at) {
     return pg;
 }
 
+// Swap the right-hand column between the analysis cards and the properties
+// editor. Both are children of the same splitter, so we only toggle which one
+// wxSizer/the splitter shows.
+void MainFrame::show_props(SchematicPage* pg, bool on) {
+    if (!pg || pg->props_shown == on) return;
+    pg->props_shown = on;
+    if (on) {
+        pg->analysis->Hide();
+        pg->props->Show();
+        pg->props->Layout();
+    } else {
+        pg->props->Hide();
+        pg->analysis->Show();
+        pg->analysis->Layout();
+    }
+    if (pg->right_host) {
+        pg->right_host->Layout();
+        pg->right_host->Refresh();
+    }
+}
+
 void MainFrame::bind_page(SchematicPage* pg) {
-    pg->canvas->on_document_changed = [this] { document_changed(); };
-    pg->canvas->on_selection_changed = [this](const std::string& s) {
+    pg->canvas->on_document_changed = [this] { document_changed(); };    pg->canvas->on_selection_changed = [this](const std::string& s) {
         selection_changed(s);
     };
     pg->canvas->on_status = [this](const std::string& s) {
@@ -524,6 +546,7 @@ void MainFrame::bind_page(SchematicPage* pg) {
     pg->canvas->on_push_undo = [pg] { pg->doc.push_undo(); };
     pg->canvas->on_wire_selected = [this, pg](int wi, std::string name) {
         pg->props->refresh(&pg->doc, "#wire" + std::to_string(wi));
+        show_props(pg, true);
         if (name.empty())
             SetStatusText("Wire selected -- name its net on the right (a "
                           "label is created above it).",
@@ -593,6 +616,7 @@ void MainFrame::close_page(int i) {
         pg->analysis->deserialize("");
         pg->analysis->refresh(&pg->doc);
         pg->props->refresh(&pg->doc, "");
+        show_props(pg, false);
         pg->canvas->Refresh();
         book_->SetPageText(0, "untitled");
         update_title();
@@ -860,6 +884,10 @@ void MainFrame::selection_changed(const std::string& sel) {
     SchematicPage* pg = page();
     if (!pg) return;
     pg->props->refresh(&pg->doc, sel);
+    // Clicking a component (or wire/label) swaps the right column to the
+    // properties editor; clearing the selection brings the analysis cards
+    // back.
+    show_props(pg, !sel.empty());
     pg->canvas->Refresh(false); // deferred repaint
 }
 
