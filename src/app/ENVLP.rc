@@ -3,5 +3,11 @@
  * The manifest is what makes Windows load Common-Controls 6.0, which
  * wxWidgets 3.3 requires (GetWindowSubclass & friends are exported by
  * name only from comctl32 v6). Resource id 1 with type 24 (RT_MANIFEST)
- * is the process manifest. */
+ * is the process manifest.
+ *
+ * The icon is resource id 1 of type 3 (RT_ICON) via the ICON statement;
+ * Windows uses the lowest-numbered icon as the executable's icon in
+ * Explorer and the taskbar. ENVLP.ico is built from ENVLP.svg by
+ * tools/make_icon.ps1. */
 1 24 "ENVLP.manifest"
+1 ICON "ENVLP.ico"

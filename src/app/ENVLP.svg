@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ENVLP application icon: an envelope carrying an op-amp negative-feedback
+     emblem (a textbook inverting amplifier: an op-amp triangle whose output
+     loops back over the top to the inverting input).
+     Kept deliberately bold so it stays readable down to 16 px.
+     Rendered to ENVLP.ico by tools/make_icon.ps1. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
+     viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3f9bf0"/>
+      <stop offset="1" stop-color="#1b6ecd"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded app tile -->
+  <rect x="0" y="0" width="256" height="256" rx="58" fill="url(#bg)"/>
+
+  <!-- envelope -->
+  <rect x="26" y="52" width="204" height="152" rx="16" fill="#ffffff"/>
+  <!-- flap: the classic V from the top corners down to the centre -->
+  <path d="M34 61 L128 118 L222 61" fill="none" stroke="#1b6ecd"
+        stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- op-amp emblem, lower half of the envelope -->
+  <!-- feedback loop: output up and over to the inverting input -->
+  <path d="M176 176 L176 134 L86 134 M176 176 L198 176"
+        fill="none" stroke="#1b6ecd" stroke-width="13"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- amplifier triangle -->
+  <path d="M86 146 L86 206 L152 176 Z" fill="#ffffff" stroke="#1b6ecd"
+        stroke-width="13" stroke-linejoin="round"/>
+  <!-- inverting (-) input: the feedback lands here -->
+  <path d="M96 158 L114 158" fill="none" stroke="#1b6ecd" stroke-width="9"
+        stroke-linecap="round"/>
+  <!-- non-inverting (+) input -->
+  <path d="M96 194 L114 194 M105 185 L105 203" fill="none"
+        stroke="#1b6ecd" stroke-width="9" stroke-linecap="round"/>
+</svg>

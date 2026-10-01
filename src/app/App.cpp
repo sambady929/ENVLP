@@ -1,9 +1,10 @@
-// envlp application entry point.
+// ENVLP application entry point.
 #include "MainFrame.h"
 
 #include <wx/wx.h>
 
 #include <wx/cmdline.h>
+#include <wx/icon.h>
 
 #include <vector>
 
@@ -26,6 +27,12 @@ public:
         if (!wxApp::OnInit()) return false;
         wxInitAllImageHandlers(); // needed for PNG plot export
         auto* frame = new envlp::MainFrame();
+        // Window / taskbar icon: load the multi-size .ico compiled into the
+        // executable (resource id 1). The executable's own icon (Explorer,
+        // shortcuts) comes from the ICON statement in ENVLP.rc.
+        wxIcon ico;
+        if (ico.LoadFile(wxT("ENVLP.ico"), wxBITMAP_TYPE_ICO_RESOURCE))
+            frame->SetIcon(ico);
         frame->Show(true);
         for (const auto& f : files_) {
             try {
