@@ -105,6 +105,7 @@ target_link_libraries(envlpscript PUBLIC envlpcore ${ENVLP_LUA_TARGET})
 # ---------------------------------------------------------------------------
 add_executable(ENVLP WIN32
   src/app/ENVLP.rc
+  src/app/ENVLP.ico
   src/app/App.cpp
   src/app/MainFrame.cpp
   src/app/Document.cpp
