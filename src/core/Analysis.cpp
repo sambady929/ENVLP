@@ -23,8 +23,13 @@ namespace {
 PruneOptions opts_of(const AnalysisSpec& s) {
     PruneOptions o;
     o.f0_hz = s.f0_hz;
+    o.component_threshold_ratio = s.component_threshold_ratio;
+    o.pole_zero_threshold_ratio = s.pole_zero_threshold_ratio;
     o.threshold_db = s.threshold_db;
     o.pole_zero_threshold_db = s.pole_zero_threshold_db;
+    o.pole_ref = (s.pole_ref == AnalysisSpec::PoleRef::UgBw)
+                     ? PruneOptions::PoleRef::UgBw
+                     : PruneOptions::PoleRef::Dominant;
     o.global_ref = s.global_ref;
     o.prune = s.prune;
     // Parallelizing terms (R1||R2) is hardcoded on for now (#6).
@@ -49,8 +54,13 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     r.input_ref = in;
     r.output = out;
     r.f0_hz = s.f0_hz;
+    r.component_threshold_ratio = s.component_threshold_ratio;
+    r.pole_zero_threshold_ratio = s.pole_zero_threshold_ratio;
     r.threshold_db = s.threshold_db;
     r.pole_zero_threshold_db = s.pole_zero_threshold_db;
+    r.pole_ref = (s.pole_ref == AnalysisSpec::PoleRef::UgBw)
+                     ? AnalysisRequest::PoleRef::UgBw
+                     : AnalysisRequest::PoleRef::Dominant;
     r.global_ref = s.global_ref;
     r.prune = s.prune;
     r.use_parallel = s.use_parallel;
@@ -1213,45 +1223,83 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
 // input source's first terminal sits on.
 // ---------------------------------------------------------------------------
 CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
-    // Find the input node from the configured source.
-    const Component* in = c.find(s.input_ref);
-    std::string node;
-    if (in && !in->nodes.empty()) node = in->nodes[0];
+    // Input impedance = the input source's OWN response, exactly the way the
+    // EET treats an impedance: the "transfer function" is defined as the
+    // source's own output, so there is nothing to specify beyond the source.
+    //
+    //   * current source  -> Zin = V(source)/1A : the node voltage it sees.
+    //   * voltage source  -> Zin = V(source)/I(source) = 1/(I/V) : the current
+    //     it must deliver. (I(source)/V(source) is the driving-point
+    //     admittance, so the impedance is its reciprocal.)
+    //
+    // Both come out of one ordinary solve: drive the source with a unit
+    // excitation and read the *other* quantity. No test source is added, the
+    // output is not asked for, and the result is in low-entropy form.
+    const Component* src = c.find(s.input_ref);
+    if (!src || !is_independent_source(src->kind) || src->nodes.empty()) {
+        CardResult cr;
+        cr.kind = AnalysisKind::InputImpedance;
+        cr.title = "Input impedance";
+        cr.summary = "set the input source (a V or I source) whose impedance "
+                     "to measure";
+        cr.report = cr.summary + "\n";
+        return cr;
+    }
+    const std::string node = src->nodes[0];
+    const bool is_current = (src->kind == Kind::I);
 
-    // Zero every independent source, inject 1 A into the input node, and read
-    // the node voltage: Zin = V(node)/1A. With the SPICE convention
-    // ({n+,n-}: current flows n+ -> n- through the source), a source that
-    // pushes 1 A *into* `node` has its n- terminal there, so order it {0, node}.
-    Circuit cs = c;
-    for (auto& cc : cs.comps)
-        if (is_independent_source(cc.kind)) cc.value_text = "0";
-    Component it;
-    it.kind = Kind::I;
-    it.ref = "__ITEST__";
-    it.nodes = {"0", node.empty() ? std::string("0") : node};
-    it.value_text = "1";
-    cs.comps.push_back(it);
+    // Drive the source with 1 (the other sources are zeroed by the solver, as
+    // for every transfer function) and read the quantity that shares its
+    // terminal. V(node) is a node voltage; I(ref) is the branch current, which
+    // the solver already exposes for a voltage source.
+    const std::string probe =
+        is_current ? ("V(" + node + ")") : ("I(" + s.input_ref + ")");
+    RawTF rt = raw_tf(c, s.input_ref, probe);
+    ex driven = (rt.num / rt.den).normal(); // V(node) per A, or I(src) per V
 
-    AnalysisSpec s2 = s;
-    s2.input_ref = "__ITEST__";
-    s2.output = "V(" + node + ")";
-    CardResult isrc = analyze_tf(cs, s2);
+    // Zin is the voltage-per-amp in both cases. The engine's source convention
+    // is that the source's value is the current flowing + to - *through* the
+    // source, which is the reverse of the current delivered to the network at
+    // the + terminal. So for both source kinds the impedance is the negative
+    // of the raw response: V(node)/I(src) for a current source, and
+    // I(src)/V(src) -> reciprocal (also negated) for a voltage source.
+    bool infinite = false;
+    ex Z;
+    if (is_current) {
+        Z = driven.is_zero() ? ex(0) : (-driven).normal();
+    } else if (driven.is_zero()) {
+        infinite = true;
+        Z = ex(0);
+    } else {
+        Z = (ex(-1) / driven).normal();
+    }
 
     PruneOptions o = opts_of(s);
-    ParamTable pt = isrc.transfer.params;
-    // Zin = V/I with a 1 A drive is the node voltage itself.
-    ex Z = (isrc.transfer.num_raw / isrc.transfer.den_raw).normal();
-    Pruned p = prune_low_entropy(Z.numer(), Z.denom(), pt, o);
+    o.octc = rt.octc;
+    ParamTable pt = rt.params;
 
     CardResult cr;
     cr.kind = AnalysisKind::InputImpedance;
     cr.title = "Input impedance";
+    if (infinite) {
+        cr.text = "Zin = infinite (the source drives an open circuit)";
+        cr.latex = "Z_{in}(s) = \\infty";
+        cr.summary = cr.text;
+        cr.report = "Input impedance seen by " + s.input_ref + " (at " + node +
+                    ")\n----------------------------------------\n  " + cr.text +
+                    "\n";
+        cr.latex_report = "Input impedance:\n" + cr.latex + "\n";
+        return cr;
+    }
+    Pruned p = prune_low_entropy(Z.numer(), Z.denom(), pt, o);
+
     cr.text = "Zin = " + p.text;
     std::string zl = p.latex;
     if (zl.rfind("H(s) = ", 0) == 0) zl = zl.substr(7);
     cr.latex = "Z_{in}(s) = " + zl;
     cr.summary = cr.text;
-    std::string rep = "Input impedance seen by " + s.input_ref + "\n";
+    std::string rep = "Input impedance seen by " + s.input_ref + " (at " +
+                      node + ")\n";
     rep += "----------------------------------------\n";
     rep += "  Zin(s) = " + p.text + "\n";
     cr.report = rep;
@@ -1260,7 +1308,7 @@ CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
     cr.has_transfer = true;
     {
         AnalysisResult res;
-        res.input_desc = "I(test)";
+        res.input_desc = s.input_ref;
         res.output_desc = "Zin";
         res.sweep = s.sweep;
         res.num_raw = Z.numer();

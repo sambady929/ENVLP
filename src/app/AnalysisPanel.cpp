@@ -339,8 +339,13 @@ void AnalysisPanel::refresh(Document* doc) {
             add_field("in-", wxString::FromUTF8(c.in_port_n),
                       [&c](const wxString& v) { c.in_port_n = v.ToStdString(); });
         }
-        add_field("out", wxString::FromUTF8(c.output),
-                  [&c](const wxString& v) { c.output = v.ToStdString(); });
+        // Input impedance is the input source's own response, so it needs the
+        // source but not an output. Output impedance needs the output node but
+        // no input. Everything else needs both.
+        bool needs_output = c.kind != AnalysisKind::InputImpedance;
+        if (needs_output)
+            add_field("out", wxString::FromUTF8(c.output),
+                      [&c](const wxString& v) { c.output = v.ToStdString(); });
         if (c.kind == AnalysisKind::LoopGain)
             add_field("probe", wxString::FromUTF8(c.probe_ref),
                       [&c](const wxString& v) { c.probe_ref = v.ToStdString(); });
@@ -499,7 +504,12 @@ std::string AnalysisPanel::serialize() const {
           << (c.prune ? 1 : 0) << " " << (c.use_parallel ? 1 : 0) << " "
           << (c.enabled ? 1 : 0) << " " << q(title)
           << " " << (c.approx_factor ? 1 : 0) << " " << q(c.in_port_p) << " "
-          << q(c.in_port_n) << "\n";
+          << q(c.in_port_n)
+          // Appended pruning thresholds (absent in older files).
+          << " " << c.component_threshold_ratio << " "
+          << c.pole_zero_threshold_ratio << " "
+          << (c.pole_ref == syms::AnalysisRequest::PoleRef::UgBw ? 1 : 0)
+          << "\n";
     }
     return o.str();
 }
@@ -552,6 +562,22 @@ bool AnalysisPanel::deserialize(const std::string& data) {
         if (ls.peek() == '"') c.in_port_p = unq(ls);
         ls >> std::ws;
         if (ls.peek() == '"') c.in_port_n = unq(ls);
+        // Appended pruning thresholds (absent in older files). Parse with
+        // peek() so a file that stops after the port nodes still loads.
+        ls >> std::ws;
+        if (ls.peek() != EOF && ls.peek() != '\n') {
+            double ctr = 10.0, pzr = 1000.0;
+            int poleref = 0;
+            if (ls >> ctr) {
+                if (ctr > 1.0) c.component_threshold_ratio = ctr;
+                if (ls >> pzr) {
+                    if (pzr > 1.0) c.pole_zero_threshold_ratio = pzr;
+                    if (ls >> poleref)
+                        c.pole_ref = poleref ? syms::AnalysisRequest::PoleRef::UgBw
+                                             : syms::AnalysisRequest::PoleRef::Dominant;
+                }
+            }
+        }
         c.kind = analysis_kind_from_name(kind);
         c.sweep.f_start_hz = fs > 0 ? fs : 1.0;
         c.sweep.f_stop_hz = fe > c.sweep.f_start_hz ? fe : c.sweep.f_start_hz * 1e3;

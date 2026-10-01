@@ -183,8 +183,8 @@ struct Entry {
 // configured, otherwise at the single frequency f0. The ranking reference can
 // be global (whole polynomial) or per s-coefficient.
 void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
-                const LowEntropyOptions& o, const std::string& what,
-                std::vector<Dropped>& dropped) {
+                const LowEntropyOptions& o, double pz_threshold_db,
+                const std::string& what, std::vector<Dropped>& dropped) {
     ex pe = poly.expand();
     int deg = 0;
     if (pe.has(s)) {
@@ -249,7 +249,7 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
         for (size_t i = 0; i < entries.size(); ++i) {
             refs[i] = ref;
             if (std::isnan(entries[i].db)) continue;
-            if (entries[i].db <= ref - o.pole_zero_threshold_db + eps) keep[i] = 0;
+            if (entries[i].db <= ref - pz_threshold_db + eps) keep[i] = 0;
         }
     } else {
         for (size_t i = 0; i < entries.size(); ++i) {
@@ -259,7 +259,7 @@ void prune_poly(ex& poly, const ex& s, const ParamTable& pt,
             double ref = finite_max(group);
             refs[i] = ref;
             if (std::isnan(entries[i].db)) continue;
-            if (entries[i].db <= ref - o.pole_zero_threshold_db + eps) keep[i] = 0;
+            if (entries[i].db <= ref - pz_threshold_db + eps) keep[i] = 0;
         }
     }
     bool any = false;
@@ -733,6 +733,43 @@ static double dominant_tau(const std::vector<Factor>& den, ParamTable& pt,
     return mt;
 }
 
+// Unity-gain angular frequency (rad/s) of the assembled response: the smallest
+// omega where |H| crosses 0 dB, found by scanning on a log grid and refining by
+// bisection. 0 when the response never crosses (e.g. a differentiator or an
+// impedance that is always above/below unity). Used as the pole/zero pruning
+// reference when the user selects "from UGBW".
+static double ugbw_rads_of(const LowEntropy& R, ParamTable& pt, const ex& s) {
+    auto mag_db = [&](double w) {
+        ex H = R.gain;
+        for (const auto& f : R.num_factors) H = H * f.expr;
+        for (const auto& f : R.den_factors) H = H / f.expr;
+        return eval_mag_db(H, pt, w);
+    };
+    // Scan 1 rad/s .. 1 Grad/s (10 decades), 40 points per decade.
+    double prev_w = 1.0, prev_db = mag_db(prev_w);
+    if (!std::isfinite(prev_db)) return 0.0;
+    for (int i = 1; i <= 400; ++i) {
+        double w = std::pow(10.0, i / 40.0); // 10^(i/40)
+        double db = mag_db(w);
+        if (!std::isfinite(db)) { prev_w = w; prev_db = db; continue; }
+        if ((prev_db > 0.0) != (db > 0.0)) {
+            // Bisect between prev_w and w for the 0 dB crossing.
+            double lo = prev_w, hi = w, lo_db = prev_db;
+            for (int k = 0; k < 60; ++k) {
+                double mid = std::sqrt(lo * hi);
+                double md = mag_db(mid);
+                if (!std::isfinite(md)) break;
+                if ((lo_db > 0.0) == (md > 0.0)) { lo = mid; lo_db = md; }
+                else hi = mid;
+            }
+            return std::sqrt(lo * hi);
+        }
+        prev_w = w;
+        prev_db = db;
+    }
+    return 0.0;
+}
+
 // Rebuild a factor from only its *near* roots, dropping the far ones. Used for
 // a degree>=2 factor (a quadratic that did not factor symbolically): without
 // this the whole quadratic is opaque to the dominant-pole rule, so a fast pole
@@ -939,11 +976,12 @@ ex prune_parallel(const ex& e, const ParamTable& pt, double threshold_db) {
             double lim = std::pow(10.0, threshold_db / 20.0);
             if (ma > 0.0 && mb > 0.0) {
                 // par(a,b) = a*b/(a+b): the SMALLER resistance carries the
-                // current, so the bigger one is negligible. When b >> a the
-                // combination tends to a; when a >> b it tends to b.
-                if (mb > ma * lim)
+                // current, so the bigger one is negligible. When b is at least
+                // `lim` times a the combination tends to a (the threshold is
+                // inclusive: "10x and above"), and vice versa.
+                if (mb >= ma * lim * (1.0 - 1e-12))
                     return prune_parallel(args[0], pt, threshold_db);
-                if (ma > mb * lim)
+                if (ma >= mb * lim * (1.0 - 1e-12))
                     return prune_parallel(args[1], pt, threshold_db);
             }
         }
@@ -1323,7 +1361,10 @@ std::string to_latex(const ex& e) { return to_latex_cdot(e); }
 // gain uses H_inf, T, beta, H).
 std::string low_entropy_latex_rhs(const LowEntropy& le) {
     std::ostringstream os;
-    std::string K = to_latex_cdot(le.gain);
+    // A gain of exactly 1 is not printed at all: emitting it as "1\cdot ..."
+    // in the numerator is noise (the text path already special-cases it).
+    bool unit_gain = le.gain.is_equal(GiNaC::ex(1));
+    std::string K = unit_gain ? std::string() : to_latex_cdot(le.gain);
     // A factor is wrapped in \left(...\right) when it's a sum (so an additive
     // group stays visually distinct from the product around it). Products get
     // an explicit \cdot between factors (to_latex_cdot) so `Cds_M1 ro_M1`
@@ -1348,8 +1389,7 @@ std::string low_entropy_latex_rhs(const LowEntropy& le) {
     }
     std::string num = K;
     if (!N.empty()) num += (num.empty() ? "" : "\\cdot ") + N;
-    if (num.empty()) num = "1";
-    if (D.empty())
+    if (num.empty()) num = "1";    if (D.empty())
         os << num;
     else
         os << "\\frac{" << num << "}{" << D << "}";
@@ -1368,6 +1408,21 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     LowEntropy R;
     ex s = params.get("s");
     R.gain = ex(1);
+
+    // Resolve the pruning thresholds. The public interface expresses them as
+    // *ratios* (10 = "10x and above"), but the engine works in dB. The
+    // component ratio collapses series/parallel pairs; the pole/zero ratio
+    // bounds which poles and zeros survive. A ratio of 0 falls back to the
+    // legacy dB field so old callers keep working.
+    const double comp_db =
+        opts.component_threshold_ratio > 0.0
+            ? 20.0 * std::log10(opts.component_threshold_ratio)
+            : opts.threshold_db;
+    const double pz_ratio = opts.pole_zero_threshold_ratio > 0.0
+                                ? opts.pole_zero_threshold_ratio
+                                : std::pow(10.0,
+                                           opts.pole_zero_threshold_db / 20.0);
+    const double pz_db = 20.0 * std::log10(pz_ratio);
 
     // Normalise the *ratio* into one reduced fraction (num and den from MNA
     // carry arbitrary common factors; reducing cancels them).
@@ -1396,12 +1451,23 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         kd -= common;
     }
     int s_zeros = 0, s_poles = 0;
+    bool den_origin_pole = false;
+    // The coefficient left on the denominator's s^k term (the C1 in 1/(s*C1)).
+    // It is carried into the origin factor so the constant is never lost: the
+    // factor prints as `s*C1` and the whole thing as 1/(s*C1).
+    ex origin_scale = ex(1);
     if (kn > 0) {
         s_zeros = kn;
         n = (n / GiNaC::pow(s, kn)).normal();
     }
     if (kd > 0) {
         s_poles = kd;
+        den_origin_pole = true;
+        ex cs = d.coeff(s, kd);
+        if (!cs.is_zero() && !cs.is_equal(ex(1))) {
+            origin_scale = cs;
+            d = (d / cs).normal();
+        }
         d = (d / GiNaC::pow(s, kd)).normal();
     }
 
@@ -1413,7 +1479,15 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     ex c0d = d.coeff(s, 0);
     if (c0d.is_zero()) c0d = d.coeff(s, std::min(kd, 1));
     if (c0d.is_zero()) c0d = ex(1);
-    if (opts.normalize && !c0d.is_equal(ex(1))) {
+    // A denominator with a pole at the origin is an impedance / admittance,
+    // not a DC-scaled transfer function: the residual constant is the
+    // coefficient of the s^k term (e.g. the C1 in 1/(s*C1)) and dividing
+    // through by it would drag that constant up into the numerator, turning
+    //     (1 + s*C1*R1) / (s*C1)
+    // into the nested-fraction mess
+    //     1/C1*(1 + s*C1*R1) / s
+    // So leave the constant where it belongs when an origin pole was pulled.
+    if (opts.normalize && !den_origin_pole && !c0d.is_equal(ex(1))) {
         n = (n / c0d).normal();
         d = (d / c0d).normal();
     }
@@ -1475,8 +1549,8 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         n = poly_par(n);
         d = poly_par(d);
         if (opts.prune) {
-            n = prune_parallel(n, params, opts.threshold_db);
-            d = prune_parallel(d, params, opts.threshold_db);
+            n = prune_parallel(n, params, comp_db);
+            d = prune_parallel(d, params, comp_db);
             // series reduction is per s-coefficient: the DC "1" term otherwise
             // blocks factoring the common C out of R1*C + R2*C.
             auto poly_series = [&](const ex& poly) -> ex {
@@ -1487,7 +1561,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                 for (int k = 0; k <= deg; ++k) {
                     ex c = poly.coeff(s, k);
                     if (c.is_zero()) continue;
-                    c = prune_series(c, params, opts.threshold_db);
+                    c = prune_series(c, params, comp_db);
                     acc += c * GiNaC::pow(s, k);
                 }
                 return acc;
@@ -1503,8 +1577,8 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     //    constants (drop_far_factors), so a genuine pole 40 dB away survives.
     if (opts.prune) {
         ex np = n, dp = d;
-        prune_poly(np, s, params, opts, "numerator", R.dropped);
-        prune_poly(dp, s, params, opts, "denominator", R.dropped);
+        prune_poly(np, s, params, opts, pz_db, "numerator", R.dropped);
+        prune_poly(dp, s, params, opts, pz_db, "denominator", R.dropped);
         if (!dp.expand().is_zero()) {
             n = np;
             d = dp;
@@ -1512,7 +1586,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     }
 
     // 5. normalize the denominator again (the rewrite can reintroduce a scale)
-    if (opts.normalize) {
+    if (opts.normalize && !den_origin_pole) {
         ex c0 = d.coeff(s, 0);
         if (!c0.is_zero() && !c0.is_equal(ex(1))) {
             n = (n / c0).normal();
@@ -1536,7 +1610,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
             n = nr;
             d = dr;
         }
-        if (opts.normalize) {
+        if (opts.normalize && !den_origin_pole) {
             ex c0 = d.coeff(s, 0);
             if (!c0.is_zero() && !c0.is_equal(ex(1))) {
                 n = (n / c0).normal();
@@ -1560,7 +1634,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         for (int k = 0; k <= deg; ++k) {
             ex c = poly.coeff(s, k);
             if (c.is_zero()) continue;
-            c = simplify_coeff(c, params, opts.threshold_db);
+            c = simplify_coeff(c, params, comp_db);
             acc += c * GiNaC::pow(s, k);
         }
         return acc;
@@ -1613,20 +1687,23 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // Reduce the gain's own sums with the structural threshold: A/(A+1) with
     // A = 1e9 becomes 1, but A/(A+1) with A = 1 stays exact.
     if (opts.prune && !K.is_zero())
-        K = simplify_gain(K, params, opts.threshold_db);
+        K = simplify_gain(K, params, comp_db);
     // Recover parallel structure in the gain too: -R1*R2*A/(A*(R1+R2)) is
     // -(R1||R2). This is what makes a TIA's gain read -(R1||R2) rather than
     // an expanded resistor ratio.
     if (opts.use_parallel && !K.is_zero()) K = to_parallel(K.normal());
     R.gain = K;
 
-    // 7. origin factors
+    // 7. origin factors. A denominator origin pole carries the numeric scale
+    //    that was factored out (the C1 in 1/(s*C1)) so it prints as `s*C1`
+    //    and the constant is never lost.
     if (s_zeros > 0)
         R.num_factors.push_back({GiNaC::pow(s, s_zeros),
                                  pretty(GiNaC::pow(s, s_zeros)), true});
-    if (s_poles > 0)
-        R.den_factors.push_back({GiNaC::pow(s, s_poles),
-                                 pretty(GiNaC::pow(s, s_poles)), true});
+    if (s_poles > 0) {
+        ex of = GiNaC::pow(s, s_poles) * origin_scale;
+        R.den_factors.push_back({of, pretty(of), true});
+    }
 
     // 8. factor extraction by time-constant matching (TTC style). The
     //    zero-value (open-circuit) time constants computed from the topology
@@ -1653,16 +1730,24 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     //     an inconsistent polynomial whose numeric re-factoring mis-attributes
     //     the surviving pole (Cgs*R2 -> C1*R2).
     if (opts.prune) {
-        // The dominant pole is the reference for both the poles and the zeros:
-        // a zero is only negligible relative to the slowest pole, not relative
-        // to the other zeros.
-        double ref_tau = dominant_tau(R.den_factors, params, s);
-        drop_far_factors(R.den_factors, params, s, ref_tau,
-                         opts.pole_zero_threshold_db, cands, "denominator",
-                         R.dropped);
-        drop_far_factors(R.num_factors, params, s, ref_tau,
-                         opts.pole_zero_threshold_db, cands, "numerator",
-                         R.dropped);
+        // Poles are judged against the reference (the dominant pole, or the
+        // unity-gain bandwidth); zeros against the dominant *zero*, so a fast
+        // zero survives when it is near the slowest zero. With the UGBW
+        // reference both are judged against omega_ug.
+        double pole_ref_tau = dominant_tau(R.den_factors, params, s);
+        double zero_ref_tau = dominant_tau(R.num_factors, params, s);
+        if (opts.pole_ref == LowEntropyOptions::PoleRef::UgBw) {
+            double wug = opts.ugbw_rads;
+            if (!(wug > 0.0)) wug = ugbw_rads_of(R, params, s);
+            if (wug > 0.0) pole_ref_tau = zero_ref_tau = 1.0 / wug;
+        }
+        // A constant numerator has no zero to reference: fall back to the pole
+        // reference so the numerator is not kept wholesale.
+        if (!(zero_ref_tau > 0.0)) zero_ref_tau = pole_ref_tau;
+        drop_far_factors(R.den_factors, params, s, pole_ref_tau, pz_db, cands,
+                         "denominator", R.dropped);
+        drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, cands,
+                         "numerator", R.dropped);
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);

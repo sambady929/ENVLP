@@ -14,8 +14,14 @@ Pruned prune_low_entropy(const ex& num, const ex& den, ParamTable& params,
     LowEntropyOptions lo;
     lo.prune = opts.prune;
     lo.f0_hz = opts.f0_hz;
+    lo.component_threshold_ratio = opts.component_threshold_ratio;
+    lo.pole_zero_threshold_ratio = opts.pole_zero_threshold_ratio;
     lo.threshold_db = opts.threshold_db;
     lo.pole_zero_threshold_db = opts.pole_zero_threshold_db;
+    lo.pole_ref = (opts.pole_ref == PruneOptions::PoleRef::UgBw)
+                      ? LowEntropyOptions::PoleRef::UgBw
+                      : LowEntropyOptions::PoleRef::Dominant;
+    lo.ugbw_rads = opts.ugbw_rads;
     lo.global_ref = opts.global_ref;
     lo.use_parallel = opts.use_parallel;
     lo.approx_factor = opts.approx_factor;

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 # RC is required: the GUI embeds a manifest (Common-Controls 6.0) without
 # which the wxWidgets DLLs fail to load on Windows.
-project(ENVLP VERSION 0.1.0 LANGUAGES CXX)
+project(ENVLP VERSION 0.2.0 LANGUAGES CXX)
 
 if(WIN32)
   enable_language(RC)

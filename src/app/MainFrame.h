@@ -57,7 +57,6 @@ private:
     PalettePanel* palette_ = nullptr;
     AnalysisResultsFrame* results_frame_ = nullptr;
     wxToolBar* toolbar_ = nullptr;
-    wxMenuItem* mi_ignore_ = nullptr;
     wxAuiNotebook* book_ = nullptr;
     wxSplitterWindow* sp_main_ = nullptr;
 
@@ -96,7 +95,7 @@ private:
 
     // analysis
     void run_card(int index); // run one card
-    void set_ignore_negligible(bool on);
+    void on_ignore_neg(wxCommandEvent&);   // opens the "Negligible terms" dialog
 
     // keyboard placement map / instance menu
     bool handle_shortcut(wxKeyEvent& e);
@@ -108,7 +107,6 @@ private:
     void on_shortcuts(wxCommandEvent&);
     void on_howto(wxCommandEvent&);
     void on_experimental(wxCommandEvent&);
-    void on_ignore_neg(wxCommandEvent&);
     void on_show_grid(wxCommandEvent&);
     void on_zoom_fit(wxCommandEvent&);
     void on_copy(wxCommandEvent&);

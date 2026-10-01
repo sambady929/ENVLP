@@ -65,18 +65,26 @@ struct LowEntropyOptions {
     // parallel combinations are collapsed into || form.
     bool prune = true;
     double f0_hz = 1e3;
-    // Series/parallel component reduction threshold: collapse R1||R2 and
-    // R1+R2 when one argument is more than this far (dB) below the other in
-    // magnitude. This is a *structural* rule that only ever fires on genuine
-    // parallel/series resistor pairs, so a small (20 dB) margin is right.
+    // Series/parallel component reduction threshold *ratio*: collapse R1||R2
+    // and R1+R2 when one argument is more than this many times the other in
+    // magnitude. 10 means "10x and above", which is 20 dB.
+    double component_threshold_ratio = 10.0;
+    // Pole/zero reduction threshold *ratio* along the frequency axis: a pole
+    // (or zero) at more than this many times the reference frequency is
+    // dropped. 100 drops poles 100x faster than the reference.
+    double pole_zero_threshold_ratio = 1000.0;
+    // Deprecated dB forms, kept so existing callers/tests still compile and
+    // behave; the ratio forms above take precedence when set (> 0).
     double threshold_db = 20.0;
-    // Pole/zero reduction threshold: a pole (or zero) is dropped only when it
-    // lies more than this far (dB) along the frequency axis from the dominant
-    // one. 60 dB == a 1000x frequency ratio, so a 100 kHz pole dominates a
-    // 100 MHz pole, but a 10 MHz pole (100x, 40 dB) is still kept. This is
-    // the threshold used by magnitude pruning of the s-polynomial terms that
-    // determine the poles/zeros.
     double pole_zero_threshold_db = 60.0;
+    // Reference for the pole/zero reduction: the dominant (slowest) pole and
+    // the dominant zero, or the unity-gain bandwidth (where |H| = 1). The
+    // latter drops anything beyond a multiple of the crossover frequency.
+    enum class PoleRef { Dominant, UgBw };
+    PoleRef pole_ref = PoleRef::Dominant;
+    // Unity-gain (rad/s) frequency used when pole_ref == UgBw. 0 = compute it
+    // numerically from the low-entropy expression during pruning.
+    double ugbw_rads = 0.0;
     bool global_ref = false; // rank against the whole polynomial at f0
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2
     // When the exact denominator/ numerator does not factor symbolically,

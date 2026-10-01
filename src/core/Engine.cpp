@@ -22,8 +22,13 @@ AnalysisResult analyze(const Circuit& c, const AnalysisRequest& req) {
     r.den_raw = sv.den;
     r.params = std::move(sv.params);
     r.opts.f0_hz = req.f0_hz;
+    r.opts.component_threshold_ratio = req.component_threshold_ratio;
+    r.opts.pole_zero_threshold_ratio = req.pole_zero_threshold_ratio;
     r.opts.threshold_db = req.threshold_db;
     r.opts.pole_zero_threshold_db = req.pole_zero_threshold_db;
+    r.opts.pole_ref = (req.pole_ref == AnalysisRequest::PoleRef::UgBw)
+                          ? PruneOptions::PoleRef::UgBw
+                          : PruneOptions::PoleRef::Dominant;
     r.opts.global_ref = req.global_ref;
     r.opts.prune = req.prune;
     r.opts.use_parallel = true; // hardcoded on (#6)

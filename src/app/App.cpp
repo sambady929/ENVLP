@@ -5,6 +5,7 @@
 
 #include <wx/cmdline.h>
 #include <wx/icon.h>
+#include <wx/iconbndl.h>
 
 #include <vector>
 
@@ -27,12 +28,23 @@ public:
         if (!wxApp::OnInit()) return false;
         wxInitAllImageHandlers(); // needed for PNG plot export
         auto* frame = new envlp::MainFrame();
-        // Window / taskbar icon: load the multi-size .ico compiled into the
-        // executable (resource id 1). The executable's own icon (Explorer,
-        // shortcuts) comes from the ICON statement in ENVLP.rc.
+        // Window / taskbar icon: load the icon resource compiled into the
+        // executable. The resource is declared under the *name* ENVLP_APP in
+        // ENVLP.rc (wxWidgets looks icons up by name); the same file is also
+        // declared with integer id 1, which is what Explorer uses for the
+        // .exe. A bundle lets the title bar (16 px) and the taskbar / alt-tab
+        // (32 px+) each get a frame of the right size.
+        // Window / taskbar icon: load the icon resource compiled into the
+        // executable. It is declared under the *name* ENVLP_APP in ENVLP.rc
+        // (wxWidgets looks icons up by name, not id); the same file is also
+        // declared with integer id 1, which is what Explorer shows for the
+        // .exe. Windows picks the right frame size from the multi-size .ico.
+        wxIconBundle icons;
         wxIcon ico;
-        if (ico.LoadFile(wxT("ENVLP.ico"), wxBITMAP_TYPE_ICO_RESOURCE))
-            frame->SetIcon(ico);
+        if (ico.LoadFile(wxT("ENVLP_APP"), wxBITMAP_TYPE_ICO_RESOURCE))
+            icons.AddIcon(ico);
+        if (!icons.IsEmpty())
+            frame->SetIcons(icons);
         frame->Show(true);
         for (const auto& f : files_) {
             try {

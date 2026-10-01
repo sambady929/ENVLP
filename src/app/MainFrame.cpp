@@ -264,10 +264,9 @@ void MainFrame::build_menu() {
                           "Toggle the 10-unit dot grid");
     view->Check(ID_SHOW_GRID, true);
     view->AppendSeparator();
-    mi_ignore_ = view->AppendCheckItem(
-        ID_IGNORE_NEG, "&Ignore negligible terms",
-        "Drop terms that are far below the dominant one (low entropy)");
-    mi_ignore_->Check(true);
+    view->Append(
+        ID_IGNORE_NEG, "&Negligible terms...",
+        "Set the thresholds below which terms are dropped (low entropy)");
 
     auto* help = new wxMenu;
     help->Append(ID_HOWTO, "&How to use...\tF1",
@@ -307,10 +306,7 @@ void MainFrame::build_toolbar() {
     add(ID_NET_LABEL, "Net label (N)", "Name one or more nets");
     add(ID_ZOOM_FIT, "Fit (F)", "Zoom to frame every component");
     toolbar_->AddSeparator();
-    toolbar_->AddCheckTool(ID_IGNORE_NEG, "Ignore negligible",
-                           wxBitmapBundle(), wxBitmapBundle(),
-                           "Drop terms far below the dominant one");
-    toolbar_->ToggleTool(ID_IGNORE_NEG, true);
+    add(ID_IGNORE_NEG, "Negligible...", "Set the negligible-term thresholds");
     toolbar_->Realize();
 
     toolbar_->Bind(wxEVT_TOOL, [this](wxCommandEvent& e) {
@@ -334,7 +330,7 @@ void MainFrame::build_toolbar() {
             if (pg) pg->canvas->zoom_to_fit();
             break;
         case ID_IGNORE_NEG:
-            set_ignore_negligible(e.IsChecked());
+            on_ignore_neg(e);
             break;
         default:
             break;
@@ -356,24 +352,92 @@ void MainFrame::on_paste(wxCommandEvent&) {
 
 // The "Ignore negligible terms" switch is shared by the View menu, the toolbar
 // and every analysis card of the active page, so keep them in sync.
-void MainFrame::set_ignore_negligible(bool on) {
+// The "Negligible terms..." item opens a settings dialog rather than toggling
+// anything: the user sets the absolute thresholds (as ratios) below which terms
+// are dropped. Applies to the active page's request and every card.
+void MainFrame::on_ignore_neg(wxCommandEvent&) {
     SchematicPage* pg = page();
     if (!pg) return;
-    pg->doc.req.prune = on;
-    if (mi_ignore_) mi_ignore_->Check(on);
-    if (toolbar_) toolbar_->ToggleTool(ID_IGNORE_NEG, on);
-    for (auto& c : pg->analysis->cards()) c.prune = on;
+
+    wxDialog dlg(this, wxID_ANY, "Negligible terms");
+    auto* top = new wxBoxSizer(wxVERTICAL);
+
+    auto* grid = new wxFlexGridSizer(2, 6, 8);
+    grid->AddGrowableCol(1, 1);
+    auto add_row = [&](const wxString& label, wxWindow* w) {
+        grid->Add(new wxStaticText(&dlg, wxID_ANY, label), 0,
+                  wxALIGN_CENTER_VERTICAL);
+        grid->Add(w, 1, wxEXPAND);
+    };
+
+    auto* comp = new wxTextCtrl(
+        &dlg, wxID_ANY,
+        wxString::FromDouble(pg->doc.req.component_threshold_ratio, 6));
+    add_row("Component value threshold (x):", comp);
+
+    auto* pz = new wxTextCtrl(
+        &dlg, wxID_ANY,
+        wxString::FromDouble(pg->doc.req.pole_zero_threshold_ratio, 6));
+    add_row("Pole / zero threshold (x):", pz);
+
+    auto* ref = new wxChoice(&dlg, wxID_ANY);
+    ref->Append("dominant pole / zero");
+    ref->Append("unity-gain bandwidth (UGBW)");
+    ref->SetSelection(pg->doc.req.pole_ref == syms::AnalysisRequest::PoleRef::UgBw ? 1
+                                                                         : 0);
+    add_row("Reference for poles / zeros:", ref);
+
+    auto* prune = new wxCheckBox(
+        &dlg, wxID_ANY, "Drop negligible terms (turn pruning on)");
+    prune->SetValue(pg->doc.req.prune);
+    grid->AddSpacer(1);
+    grid->Add(prune, 1, wxEXPAND);
+
+    top->Add(grid, 0, wxEXPAND | wxALL, 12);
+    top->Add(new wxStaticText(
+                 &dlg, wxID_ANY,
+                 "A component pair collapses when one is at least this many\n"
+                 "times the other (10x = 20 dB): a 10k in parallel with a 1k\n"
+                 "collapses to the 1k. A pole/zero is dropped when it is more\n"
+                 "than this many times the reference frequency."),
+             0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    auto* buttons = new wxStdDialogButtonSizer();
+    buttons->AddButton(new wxButton(&dlg, wxID_OK));
+    buttons->AddButton(new wxButton(&dlg, wxID_CANCEL));
+    buttons->Realize();
+    top->Add(buttons, 0, wxALIGN_RIGHT | wxALL, 10);
+    dlg.SetSizerAndFit(top);
+
+    if (dlg.ShowModal() != wxID_OK) return;
+
+    double v = pg->doc.req.component_threshold_ratio;
+    if (comp->GetValue().ToDouble(&v) && v > 1.0)
+        pg->doc.req.component_threshold_ratio = v;
+    if (pz->GetValue().ToDouble(&v) && v > 1.0)
+        pg->doc.req.pole_zero_threshold_ratio = v;
+    pg->doc.req.pole_ref = ref->GetSelection() == 1
+                               ? syms::AnalysisRequest::PoleRef::UgBw
+                               : syms::AnalysisRequest::PoleRef::Dominant;
+    pg->doc.req.prune = prune->GetValue();
+
+    // Apply to every card on this page and rebuild.
+    for (auto& c : pg->analysis->cards()) {
+        c.component_threshold_ratio = pg->doc.req.component_threshold_ratio;
+        c.pole_zero_threshold_ratio = pg->doc.req.pole_zero_threshold_ratio;
+        c.pole_ref = pg->doc.req.pole_ref;
+        c.prune = pg->doc.req.prune;
+    }
     pg->doc.analysis_cards = pg->analysis->serialize();
     pg->analysis->refresh(&pg->doc);
     pg->doc.dirty = true;
     update_title();
-    SetStatusText(on ? "Negligible terms will be ignored (low entropy)."
-                     : "Keeping every term (exact form).",
-                  0);
-}
-
-void MainFrame::on_ignore_neg(wxCommandEvent& e) {
-    set_ignore_negligible(e.IsChecked());
+    SetStatusText(
+        wxString::Format(
+            "Negligible: component %.6gx, pole/zero %.6gx, reference %s.",
+            pg->doc.req.component_threshold_ratio,
+            pg->doc.req.pole_zero_threshold_ratio,
+            ref->GetSelection() == 1 ? "UGBW" : "dominant"),
+        0);
 }
 
 void MainFrame::on_show_grid(wxCommandEvent& e) {
@@ -418,9 +482,6 @@ void MainFrame::build_layout() {
             active_ = sel;
             if (page()) {
                 palette_->SetDocument(&page()->doc);
-                if (toolbar_)
-                    toolbar_->ToggleTool(ID_IGNORE_NEG, page()->doc.req.prune);
-                if (mi_ignore_) mi_ignore_->Check(page()->doc.req.prune);
                 page()->props->refresh(&page()->doc, page()->canvas->selection());
                 show_props(page(), page()->props_shown &&
                                        !page()->canvas->selection().empty());
@@ -630,9 +691,6 @@ void MainFrame::close_page(int i) {
     if (active_ < 0) active_ = 0;
     if (page()) {
         palette_->SetDocument(&page()->doc);
-        if (toolbar_)
-            toolbar_->ToggleTool(ID_IGNORE_NEG, page()->doc.req.prune);
-        if (mi_ignore_) mi_ignore_->Check(page()->doc.req.prune);
     }
     update_title();
 }
@@ -1082,6 +1140,11 @@ void MainFrame::run_card(int index) {
     sp.sweep = card.sweep;
     sp.f0_hz = card.sweep.f_start_hz;
     sp.threshold_db = card.threshold_db;
+    sp.component_threshold_ratio = card.component_threshold_ratio;
+    sp.pole_zero_threshold_ratio = card.pole_zero_threshold_ratio;
+    sp.pole_ref = (card.pole_ref == syms::AnalysisRequest::PoleRef::UgBw)
+                      ? syms::AnalysisSpec::PoleRef::UgBw
+                      : syms::AnalysisSpec::PoleRef::Dominant;
     sp.global_ref = card.global_ref;
     sp.prune = card.prune;
     sp.use_parallel = card.use_parallel;

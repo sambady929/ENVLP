@@ -56,8 +56,21 @@ struct Pruned {
 
 struct PruneOptions {
     double f0_hz = 1e3;
-    double threshold_db = 20.0; // series/parallel component reduction (dB)
-    double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
+    // Thresholds expressed as *ratios* (10 = "10x and above", i.e. 20 dB):
+    // component_threshold_ratio collapses series/parallel component pairs,
+    // pole_zero_threshold_ratio drops poles/zeros beyond a multiple of the
+    // reference frequency.
+    double component_threshold_ratio = 10.0;
+    double pole_zero_threshold_ratio = 1000.0;
+    // Deprecated dB forms (kept for compatibility; derived from the ratios
+    // when the ratio form is left at its default).
+    double threshold_db = 20.0;
+    double pole_zero_threshold_db = 60.0;
+    // Pole/zero reference frequency: the dominant pole/zero, or the
+    // unity-gain bandwidth.
+    enum class PoleRef { Dominant, UgBw };
+    PoleRef pole_ref = PoleRef::Dominant;
+    double ugbw_rads = 0.0;
     bool global_ref = false; // true => rank against the whole polynomial at f0
     bool prune = true;       // false => keep every symbolic term (exact)
     bool use_parallel = true; // rewrite R1*R2/(R1+R2) as R1||R2

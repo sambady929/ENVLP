@@ -5,9 +5,10 @@
  * name only from comctl32 v6). Resource id 1 with type 24 (RT_MANIFEST)
  * is the process manifest.
  *
- * The icon is resource id 1 of type 3 (RT_ICON) via the ICON statement;
- * Windows uses the lowest-numbered icon as the executable's icon in
- * Explorer and the taskbar. ENVLP.ico is built from ENVLP.svg by
- * tools/make_icon.ps1. */
+ * The icon is declared twice from the same file: once with the integer id 1
+ * (which is what Explorer and the taskbar use for the .exe) and once with a
+ * *name*, because wxWidgets loads an icon resource by name, not by id.
+ * ENVLP.ico is built from ENVLP.svg by tools/make_icon.ps1. */
 1 24 "ENVLP.manifest"
 1 ICON "ENVLP.ico"
+ENVLP_APP ICON "ENVLP.ico"

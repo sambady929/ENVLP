@@ -27,6 +27,11 @@ struct AnalysisCard {
     syms::SweepSpec sweep;
     // "Ignore negligible terms": when off the exact (unpruned) form is shown.
     bool prune = true;
+    // Pruning thresholds as *ratios* (10 = "10x and above" = 20 dB), matching
+    // the "Negligible terms" dialog.
+    double component_threshold_ratio = 10.0;
+    double pole_zero_threshold_ratio = 1000.0;
+    syms::AnalysisRequest::PoleRef pole_ref = syms::AnalysisRequest::PoleRef::Dominant;
     // dB below the dominant term at which a term is considered negligible.
     double threshold_db = 20.0;
     bool global_ref = false;

@@ -42,8 +42,19 @@ struct AnalysisSpec {
     std::string input_port_n;
     std::string probe_ref;   // reference element for loop gain
     double f0_hz = 1e3;      // legacy tuning frequency (kept for compatibility)
-    double threshold_db = 20.0; // series/parallel component reduction (dB)
-    double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
+    // Pruning thresholds as *ratios* (10 = "10x and above" = 20 dB).
+    // component_threshold_ratio: collapse series/parallel component pairs
+    //   (a 10k in parallel with a 1k collapses to the 1k at 10x).
+    // pole_zero_threshold_ratio: drop poles/zeros beyond this multiple of the
+    //   reference frequency.
+    double component_threshold_ratio = 10.0;
+    double pole_zero_threshold_ratio = 1000.0;
+    // Deprecated dB mirrors (kept for the .scx round-trip / old callers).
+    double threshold_db = 20.0;
+    double pole_zero_threshold_db = 60.0;
+    // Pole/zero reference: the dominant pole/zero, or the unity-gain bandwidth.
+    enum class PoleRef { Dominant, UgBw };
+    PoleRef pole_ref = PoleRef::Dominant;
     bool global_ref = false;
     bool prune = true;
     bool use_parallel = true;

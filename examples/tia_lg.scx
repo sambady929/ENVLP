@@ -1,23 +1,30 @@
-symcirc 1
+envlp 1
 req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+tech 0 0.6 1e-16 0.0002 0.0001 "" "nmos" "pmos" 0
 comp "U1" "OPAMP" 370 300 0 0 1 0 "1k"
-param "U1" "GBW" 0 "1G" 0
+param "U1" "GBW" 0 "100M" 0
+param "U1" "en_flicker" 0 "10p" 0
 comp "GND1" "GND" 300 340 0 0 0 0 ""
-comp "I1" "I" 170 330 0 0 0 0 ""
-comp "GND2" "GND" 170 360 0 0 0 0 ""
-comp "R1" "R" 390 230 0 0 0 0 "1k"
+comp "R1" "R" 390 230 0 0 0 0 "10k"
 comp "C1" "C" 240 330 90 0 0 0 "1n"
 comp "GND3" "GND" 240 360 0 0 0 0 ""
-wire 240,300 240,290 170,290 170,300 pin:C1:1 pin:I1:0
+comp "R2" "R" 360 170 0 0 0 0 "3.3k" mirror=R1 mult=1
+comp "R3" "R" 430 170 0 0 0 0 "3.3k" mirror=R1 mult=1
+comp "I1" "I" 170 330 0 0 0 0 ""
+comp "GND2" "GND" 170 360 0 0 0 0 ""
 wire 300,340 300,310 330,310 pin:GND1:0 pin:U1:0
 wire 360,230 320,230 320,290 pin:R1:0 free
 wire 330,290 320,290 pin:U1:1 free
 wire 320,290 240,290 free free
-wire 470,300 470,300 470,230 420,230 pin:R2:1 pin:R1:1
 wire 470,300 410,300 free pin:U1:2
-netlabel 461.534,230 473.904,219.25 "out" 9
-card "Output impedance" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Output impedance" 0
-card "Transfer function (H(s))" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0
-card "Short-circuit current" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1
-card "Loop gain (return ratio)" "I1" "V(out)" "U1" 1 1e+09 0 10 1 1 1 "Loop gain (return ratio)" 1
-card "Noise" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Noise" 1
+wire 330,170 320,170 320,230 pin:R2:0 free
+wire 420,230 470,230 470,300 pin:R1:1 free
+wire 460,170 470,170 470,230 pin:R3:1 free
+wire 400,170 390,170 pin:R3:0 pin:R2:1
+wire 240,300 240,290 pin:C1:1 free
+wire 170,300 170,290 240,290 pin:I1:0 free
+netlabel 458.385,230 450,220 "out" 9 0
+card "Transfer function (H(s))" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0 "" ""
+card "Loop gain (return ratio)" "I1" "V(out)" "U1" 1 1e+09 0 10 1 1 1 "Loop gain (return ratio)" 0 "" ""
+card "Noise" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Noise" 1 "" ""
+card "Input impedance" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Input impedance" 0 "" ""

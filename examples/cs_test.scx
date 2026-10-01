@@ -1,28 +1,28 @@
-symcirc 1
-req "V1" "V(out)" 1 1e+09 0 10 1 1 1 1
-comp "M1" "NMOS" 360 270 0 0 0 0 ""
-param "M1" "Cds" 0 "" 0
-param "M1" "Cgd" 1 "1000f" 0
-param "M1" "Cgs" 1 "100f" 0
-param "M1" "ro" 0 "100k" 0
-comp "V1" "V" 190 320 0 0 0 0 ""
-comp "GND1" "GND" 190 360 0 0 0 0 ""
-comp "R1" "R" 360 150 90 0 0 0 "100k"
-comp "VDD" "VDD" 360 110 0 0 0 0 ""
+envlp 1
+req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+tech 0 0.6 1e-16 0.0002 0.0001 "" "nmos" "pmos" 0
+comp "V1" "V" 290 300 0 0 0 0 "" dc=1
+comp "R1" "R" 360 190 90 0 0 0 "1k"
+comp "VDD" "VDD" 360 140 0 0 0 0 "10" dc=5
 comp "GND2" "GND" 360 330 0 0 0 0 ""
-comp "C1" "C" 440 270 90 0 0 0 "1000f"
-comp "GND3" "GND" 440 300 0 0 0 0 ""
-comp "R2" "R" 240 270 180 0 0 0 "1k"
-wire 360,230 360,180 pin:M1:0 pin:R1:0
-wire 360,110 360,120 pin:VDD:0 pin:R1:1
+comp "GND3" "GND" 440 320 0 0 0 0 ""
+comp "M1" "NMOS" 360 270 0 0 0 0 ""
+param "M1" "Cds" 1 "200f" 0
+param "M1" "Cgd" 0 "" 0
+comp "C1" "C" 440 260 90 0 0 0 "1p"
+comp "GND1" "GND" 290 350 0 0 0 0 ""
+wire 360,140 360,160 pin:VDD:0 pin:R1:1
 wire 360,330 360,310 pin:GND2:0 pin:M1:2
-wire 440,240 440,230 360,230 pin:C1:1 pin:M1:0
-wire 190,360 190,350 pin:GND1:0 pin:V1:1
-wire 270,270 310,270 320,270 pin:R2:0 pin:M1:1
-wire 190,290 190,270 210,270 pin:V1:0 pin:R2:1
-netlabel 360,209.7 380,200 "out" 9
-netlabel 190,275.266 199.58,264.516 "in" 9
-netlabel 302.671,270 302.671,259.25 "vg" 9
-card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Output impedance" 0
-card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 0 1 1 1 "Transfer function (H(s))" 0
-card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 1 "Short-circuit current" 1
+wire 360,230 360,230 pin:M1:0 pin:M1:0
+wire 360,230 360,220 pin:M1:0 pin:R1:0
+wire 440,320 440,290 pin:GND3:0 pin:C1:0
+wire 440,230 360,230 360,220 pin:C1:1 pin:R1:0
+wire 290,350 290,330 pin:GND1:0 pin:V1:1
+wire 290,270 320,270 pin:V1:0 pin:M1:1
+netlabel 294.008,270 303.588,259.25 "in" 9 0 bind=7:0.133604
+netlabel 425.549,230 425.549,219.25 "out" 9 0 bind=5:0.160563
+card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Output impedance" 0 "" "" 10 1000 0
+card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0 "" "" 10 1000 0
+card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1 "" "" 10 1000 0
+card "Noise" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Noise" 0 "" "" 10 1000 0
+card "PSR / PSRR" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "PSR / PSRR" 1 "" "" 10 1000 0

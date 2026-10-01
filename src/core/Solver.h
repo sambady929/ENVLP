@@ -77,8 +77,18 @@ struct AnalysisRequest {
     // the DC analysis runs.
     TechParams tech;
     double f0_hz = 1000.0;  // frequency the low-entropy form is tuned to
+    // Pruning thresholds as *ratios* (10 = "10x and above" = 20 dB):
+    // component_threshold_ratio collapses series/parallel pairs;
+    // pole_zero_threshold_ratio drops poles/zeros beyond a multiple of the
+    // reference frequency. 0 falls back to the legacy dB fields below.
+    double component_threshold_ratio = 10.0;
+    double pole_zero_threshold_ratio = 1000.0;
+    // Deprecated dB forms (kept for compatibility).
     double threshold_db = 20.0; // series/parallel component reduction (dB)
     double pole_zero_threshold_db = 60.0; // pole/zero frequency reduction (dB)
+    // Pole/zero reference: the dominant pole/zero, or the unity-gain bandwidth.
+    enum class PoleRef { Dominant, UgBw };
+    PoleRef pole_ref = PoleRef::Dominant;
     bool global_ref = false; // false => rank within each s-coefficient
                              // true => rank against whole polynomial
     bool prune = true;       // false => keep every symbolic term (exact)
