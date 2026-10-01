@@ -132,7 +132,9 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests (optional: the tests directory is not part of the public source tree)
 # ---------------------------------------------------------------------------
-enable_testing()
-add_subdirectory(tests)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

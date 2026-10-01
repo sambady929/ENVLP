@@ -73,9 +73,21 @@ Configure and build ENVLP:
 cd /d/Projects/Programming/ENVLP
 cmake -B build -G Ninja
 cmake --build build
-ctest --test-dir build --output-on-failure   # run the engine tests
 ./build/bin/ENVLP.exe                      # launch the GUI
 ```
+
+### Portable release (no install)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/make_portable.ps1
+```
+
+This builds and assembles `dist/ENVLP-<version>-win64/` — `ENVLP.exe`, every
+runtime DLL it needs (found transitively, then stripped), and the example
+circuits. Copy that folder anywhere and run `ENVLP.exe`; nothing needs to be
+installed. Tagging a commit `v*` runs the same script in CI and attaches
+`ENVLP-win64.zip` to the GitHub Release.
+
 
 ## Usage
 
@@ -166,6 +178,5 @@ analysis stack and round-trip verbatim.
   (static lib `envlpcore`, no GUI deps)
 - `src/script/` — Lua VM wrapper (`envlpscript`)
 - `src/app/` — wxWidgets GUI (`ENVLP`)
-- `tests/` — engine tests (`test_core`, run by CTest)
 - `examples/` — sample circuits
-- `docs/design.md` — design notes
+- `tools/` — icon + portable-packaging scripts
