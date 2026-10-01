@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 // One analysis "card": a kind, an input/output, and per-card options. The
 // analysis panel stacks these so several analyses can be configured and run
@@ -74,4 +74,4 @@ private:
 const char* analysis_kind_name(syms::AnalysisKind k);
 syms::AnalysisKind analysis_kind_from_name(const std::string& n);
 
-} // namespace symcirc
+} // namespace envlp

@@ -1,4 +1,4 @@
-// SymCirc integration harness: runs the full analysis suite on the
+// envlp integration harness: runs the full analysis suite on the
 // common-source amplifier example and dumps text / LaTeX, verifying that every
 // analysis produces a valid, non-empty result. Built as test_integration and
 // run by CTest.

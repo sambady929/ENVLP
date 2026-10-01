@@ -4,7 +4,7 @@
 #include <functional>
 #include <string>
 
-namespace symcirc {
+namespace envlp {
 
 // Bottom-panel tab: the human-readable analysis report + copy/clear, plus a
 // button to copy just the LaTeX form.
@@ -22,4 +22,4 @@ private:
     std::string latex_;
 };
 
-} // namespace symcirc
+} // namespace envlp

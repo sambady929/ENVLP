@@ -11,7 +11,7 @@
 #include <wx/combobox.h>
 #include <wx/spinctrl.h>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::Kind;
 
@@ -768,4 +768,4 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
 
 void PropertiesPanel::on_analysis_changed(wxCommandEvent&) {}
 
-} // namespace symcirc
+} // namespace envlp

@@ -6,7 +6,7 @@
 #include <cmath>
 #include <wx/dcmemory.h>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::Kind;
 
@@ -568,4 +568,4 @@ wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     return bmp;
 }
 
-} // namespace symcirc
+} // namespace envlp

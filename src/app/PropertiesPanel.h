@@ -8,7 +8,7 @@
 #include <functional>
 #include <string>
 
-namespace symcirc {
+namespace envlp {
 
 // Right-side property editor for the current selection:
 //  - component: value, K links, size offset (dB)
@@ -67,4 +67,4 @@ private:
     wxDECLARE_EVENT_TABLE();
 };
 
-} // namespace symcirc
+} // namespace envlp

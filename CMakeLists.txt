@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 # RC is required: the GUI embeds a manifest (Common-Controls 6.0) without
 # which the wxWidgets DLLs fail to load on Windows.
-project(SymCirc VERSION 0.1.0 LANGUAGES CXX)
+project(ENVLP VERSION 0.1.0 LANGUAGES CXX)
 
 if(WIN32)
   enable_language(RC)
@@ -31,25 +31,25 @@ pkg_check_modules(GINAC REQUIRED IMPORTED_TARGET ginac)
 # pkg-config --static -- so add GMP to the link explicitly.
 pkg_check_modules(GMP QUIET IMPORTED_TARGET gmp)
 if(TARGET PkgConfig::GMP)
-  set(SYM_GMP_TARGET PkgConfig::GMP)
+  set(ENVLP_GMP_TARGET PkgConfig::GMP)
 else()
-  set(SYM_GMP_TARGET gmp)
+  set(ENVLP_GMP_TARGET gmp)
 endif()
 
 pkg_search_module(LUA QUIET IMPORTED_TARGET lua lua5.4 lua-5.4 lua54 lua5.3 lua53)
 if(LUA_FOUND)
-  set(SYM_LUA_TARGET PkgConfig::LUA)
+  set(ENVLP_LUA_TARGET PkgConfig::LUA)
 else()
   find_path(LUA_INCLUDE_DIR NAMES lua.h PATH_SUFFIXES lua5.4 lua54 lua5.3 lua53 lua)
   find_library(LUA_LIBRARY NAMES lua54 lua5.4 lua53 lua5.3 lua)
   if(NOT LUA_INCLUDE_DIR OR NOT LUA_LIBRARY)
     message(FATAL_ERROR "Lua not found. Install mingw-w64-ucrt-x86_64-lua.")
   endif()
-  add_library(sym_lua UNKNOWN IMPORTED)
-  set_target_properties(sym_lua PROPERTIES
+  add_library(ENVLP_lua UNKNOWN IMPORTED)
+  set_target_properties(ENVLP_lua PROPERTIES
     IMPORTED_LOCATION "${LUA_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${LUA_INCLUDE_DIR}")
-  set(SYM_LUA_TARGET sym_lua)
+  set(ENVLP_LUA_TARGET ENVLP_lua)
 endif()
 
 # wxWidgets: MSYS2 ships a CMake config package (wx::core, ...) alongside a
@@ -67,13 +67,13 @@ endif()
 # Some wx builds expose the webview target only via the config package; link
 # it explicitly when present so the Math tab's wxWebView resolves.
 if(TARGET wx::webview)
-  list(APPEND SYM_WX_WEBVIEW wx::webview)
+  list(APPEND ENVLP_WX_WEBVIEW wx::webview)
 endif()
 
 # ---------------------------------------------------------------------------
-# symcore: GiNaC symbolic engine (no GUI dependencies)
+# envlpcore: GiNaC symbolic engine (no GUI dependencies)
 # ---------------------------------------------------------------------------
-add_library(symcore STATIC
+add_library(envlpcore STATIC
   src/core/Eng.cpp
   src/core/Netlist.cpp
   src/core/Par.cpp
@@ -87,24 +87,24 @@ add_library(symcore STATIC
   src/core/SpiceModel.cpp
   src/core/DcNumeric.cpp
 )
-target_include_directories(symcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(symcore PUBLIC PkgConfig::GINAC ${SYM_GMP_TARGET})
-target_compile_options(symcore PRIVATE -Wall -Wextra)
+target_include_directories(envlpcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(envlpcore PUBLIC PkgConfig::GINAC ${ENVLP_GMP_TARGET})
+target_compile_options(envlpcore PRIVATE -Wall -Wextra)
 
 # ---------------------------------------------------------------------------
-# symscript: Lua VM + analysis/plot API
+# envlpscript: Lua VM + analysis/plot API
 # ---------------------------------------------------------------------------
-add_library(symscript STATIC
+add_library(envlpscript STATIC
   src/script/LuaVm.cpp
 )
-target_include_directories(symscript PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(symscript PUBLIC symcore ${SYM_LUA_TARGET})
+target_include_directories(envlpscript PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(envlpscript PUBLIC envlpcore ${ENVLP_LUA_TARGET})
 
 # ---------------------------------------------------------------------------
-# SymCirc: wxWidgets GUI application
+# ENVLP: wxWidgets GUI application
 # ---------------------------------------------------------------------------
-add_executable(SymCirc WIN32
-  src/app/SymCirc.rc
+add_executable(ENVLP WIN32
+  src/app/ENVLP.rc
   src/app/App.cpp
   src/app/MainFrame.cpp
   src/app/Document.cpp
@@ -121,13 +121,13 @@ add_executable(SymCirc WIN32
   src/app/BodePanel.cpp
   src/app/LuaConsole.cpp
 )
-target_include_directories(SymCirc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(ENVLP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(NOT TARGET wx::core)
-  target_link_libraries(SymCirc PRIVATE symcore symscript
-                        ${wxWidgets_LIBRARIES} ${SYM_WX_WEBVIEW})
+  target_link_libraries(ENVLP PRIVATE envlpcore envlpscript
+                        ${wxWidgets_LIBRARIES} ${ENVLP_WX_WEBVIEW})
 else()
-  target_link_libraries(SymCirc PRIVATE symcore symscript wx::core wx::base
-                         wx::aui wx::adv ${SYM_WX_WEBVIEW})
+  target_link_libraries(ENVLP PRIVATE envlpcore envlpscript wx::core wx::base
+                         wx::aui wx::adv ${ENVLP_WX_WEBVIEW})
 endif()
 
 # ---------------------------------------------------------------------------

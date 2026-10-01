@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 namespace {
 
 // --- command/delimiter tables ---------------------------------------------
@@ -438,4 +438,4 @@ std::string latex_to_html(const std::string& latex) {
     return html;
 }
 
-} // namespace symcirc
+} // namespace envlp

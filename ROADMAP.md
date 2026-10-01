@@ -1,13 +1,13 @@
-# SymCirc Roadmap
+# ENVLP Roadmap
 
 Symbolic circuit analysis with schematic capture and "low-entropy" (factored,
 design-useful) expression output. C++ / GiNaC / wxWidgets. Toolchain: MSYS2
-UCRT64 (`C:\msys64`), project root `D:\Projects\Programming\SymCirc`.
+UCRT64 (`C:\msys64`), project root `D:\Projects\Programming\ENVLP`.
 
 Architecture (current):
-- `src/core` — `symcore` static lib: Netlist/ParamTable, MNA + Bareiss solve,
+- `src/core` — `envlpcore` static lib: Netlist/ParamTable, MNA + Bareiss solve,
   low-entropy pruning (`Prune.cpp`), pretty/LaTeX printing, report formatting.
-- `src/symscript` — Lua extension layer (post-processing, plots).
+- `src/envlpscript` — Lua extension layer (post-processing, plots).
 - `src/app` — wxWidgets GUI (schematic canvas, docked panels, Bode panel).
 - `tests/test_core.cpp` — CTest suite (13 tests).
 
@@ -210,7 +210,7 @@ surface. Listed here so a future session has a clear handoff.
 Expose the analysis output (the same `AnalysisResult` struct the GUI uses) to
 scripting clients. Two angles:
 
-- **Lua** (in-tree, see `src/symscript`): the `LuaConsole` already evaluates
+- **Lua** (in-tree, see `src/envlpscript`): the `LuaConsole` already evaluates
   expressions interactively, but doesn't yet publish the result tree. Add
   `result = run_analysis(spec)` / `result.transfer.num`, `result.transfer.den`,
   `result.values`, `result.poles`, `result.zeros`, etc., so a script can do

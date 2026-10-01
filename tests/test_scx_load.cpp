@@ -9,10 +9,12 @@
 #include <cstdio>
 
 int main(int argc, char** argv) {
-    const char* path = argc > 1 ? argv[1]
-                                : "D:/Projects/Programming/SymCirc/examples/"
-                                  "cs_test.scx";
-    symcirc::Document d;
+    // CMake passes the examples directory as argv[1] so the test does not
+    // depend on the checkout's folder name.
+    const char* path =
+        argc > 1 ? argv[1]
+                 : "D:/Projects/Programming/ENVLP/examples/cs_test.scx";
+    envlp::Document d;
     std::string err;
     if (!d.load(path, err)) {
         std::printf("load failed: %s\n", err.c_str());
@@ -90,7 +92,7 @@ int main(int argc, char** argv) {
         std::printf("LaTeX length=%zu head='%.80s...'\n", cr.latex.size(),
                     cr.latex.c_str());
         // Round-trip through the offline renderer used by the Math tab.
-        std::string html = symcirc::latex_to_html(cr.latex);
+        std::string html = envlp::latex_to_html(cr.latex);
         if (html.find("class=\"frac\"") == std::string::npos &&
             cr.latex.find("\\frac") != std::string::npos) {
             std::printf("renderer dropped \\frac!\n");

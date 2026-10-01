@@ -1,7 +1,7 @@
-/* SymCirc Windows resources.
+/* ENVLP Windows resources.
  *
  * The manifest is what makes Windows load Common-Controls 6.0, which
  * wxWidgets 3.3 requires (GetWindowSubclass & friends are exported by
  * name only from comctl32 v6). Resource id 1 with type 24 (RT_MANIFEST)
  * is the process manifest. */
-1 24 "SymCirc.manifest"
+1 24 "ENVLP.manifest"

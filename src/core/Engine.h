@@ -36,7 +36,7 @@ struct AnalysisResult {
     std::string ugf_hz;       // formatted unity-gain frequency
     double pm_deg = 0.0;
     std::string pm_sym;       // text form, e.g. "180 - atan(w_ug/w_p0) ..."
-    std::string pm_sym_latex; // LaTeX form
+    std::string pm_ENVLP_latex; // LaTeX form
 
     // Noise extras (present only for the noise analysis): the output-referred
     // voltage noise density spectrum (Hz -> V/sqrt(Hz)), plus the input-referred
@@ -47,10 +47,10 @@ struct AnalysisResult {
     double noise_vout_total = 0.0;    // integrated over the band (V rms)
     bool noise_input_is_current = false;
     double noise_iin_total = 0.0;     // input-referred current noise (A rms)
-    // Symbolic (low-entropy) forms. `noise_sym_text` holds the per-source and
-    // total PSD expressions (V^2/Hz), `noise_sym_latex` their LaTeX; the
+    // Symbolic (low-entropy) forms. `noise_ENVLP_text` holds the per-source and
+    // total PSD expressions (V^2/Hz), `noise_ENVLP_latex` their LaTeX; the
     // integrated forms are in `noise_int_text` / `noise_int_latex`.
-    std::string noise_sym_text, noise_sym_latex;
+    std::string noise_ENVLP_text, noise_ENVLP_latex;
     std::string noise_int_text, noise_int_latex;
 };
 

@@ -9,9 +9,9 @@
 #include <cmath>
 #include <cstdio>
 
-using symcirc::Document;
-using symcirc::Pt;
-using symcirc::Wire;
+using envlp::Document;
+using envlp::Pt;
+using envlp::Wire;
 
 static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { ++g_fail; std::printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -40,9 +40,9 @@ int main() {
     d.wires.push_back(w);
 
     // The wire's far end should be bound to R1:0.
-    CHECK(d.wires[0].a.kind == symcirc::WireEnd::Kind::Pin);
+    CHECK(d.wires[0].a.kind == envlp::WireEnd::Kind::Pin);
     CHECK(d.wires[0].a.ref == "V1");
-    CHECK(d.wires[0].b.kind == symcirc::WireEnd::Kind::Pin);
+    CHECK(d.wires[0].b.kind == envlp::WireEnd::Kind::Pin);
     CHECK(d.wires[0].b.ref == "R1");
     CHECK(d.wires[0].b.pin == 0);
 

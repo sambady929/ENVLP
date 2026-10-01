@@ -1,4 +1,4 @@
-// SymCirc application entry point.
+// envlp application entry point.
 #include "MainFrame.h"
 
 #include <wx/wx.h>
@@ -7,7 +7,7 @@
 
 #include <vector>
 
-class SymCircApp : public wxApp {
+class envlpApp : public wxApp {
 public:
     void OnInitCmdLine(wxCmdLineParser& p) override {
         wxApp::OnInitCmdLine(p);
@@ -25,7 +25,7 @@ public:
     bool OnInit() override {
         if (!wxApp::OnInit()) return false;
         wxInitAllImageHandlers(); // needed for PNG plot export
-        auto* frame = new symcirc::MainFrame();
+        auto* frame = new envlp::MainFrame();
         frame->Show(true);
         for (const auto& f : files_) {
             try {
@@ -41,4 +41,4 @@ private:
     std::vector<wxString> files_;
 };
 
-wxIMPLEMENT_APP(SymCircApp);
+wxIMPLEMENT_APP(envlpApp);

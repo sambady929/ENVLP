@@ -226,10 +226,10 @@ struct Metrics {
     std::string dc_db, dc_sym;         // DC gain (numeric dB, symbolic)
     std::string bw3, bw3_sym;          // -3 dB bandwidth
     std::string ugbw, ugbw_sym;        // unity-gain bandwidth
-    std::string dc_sym_latex, bw3_sym_latex, ugbw_sym_latex;
+    std::string dc_ENVLP_latex, bw3_ENVLP_latex, ugbw_ENVLP_latex;
     // Loop gain only: phase margin (numeric + symbolic).
     bool has_pm = false;
-    std::string pm, pm_sym, pm_sym_latex;
+    std::string pm, pm_sym, pm_ENVLP_latex;
 };
 
 Metrics compute_metrics(const AnalysisResult& r) {
@@ -252,7 +252,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
     }
     ex K = r.pruned.gain;
     m.dc_sym = "K = " + pretty(K);
-    m.dc_sym_latex = "K = " + to_latex(K);
+    m.dc_ENVLP_latex = "K = " + to_latex(K);
 
     // ---- log-spaced magnitude scan for the numeric crossings ----
     double f0 = r.sweep.f_start_hz > 0 ? r.sweep.f_start_hz : 1.0;
@@ -291,7 +291,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
         if (!p0.omega_expr.is_zero()) {
             m.bw3_sym = W + "_(-3dB) = " + W + "_p0 = " +
                         pretty(p0.omega_expr);
-            m.bw3_sym_latex = "\\omega_{-3\\mathrm{dB}} = \\omega_{p0} = " +
+            m.bw3_ENVLP_latex = "\\omega_{-3\\mathrm{dB}} = \\omega_{p0} = " +
                               to_latex(p0.omega_expr);
         }
     }
@@ -302,7 +302,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
         const RootInfo& p0 = r.pruned.poles.front();
         m.ugbw_sym = W + "_0dB = K*" + W + "_p0 = (" + pretty(K) + ")*(" +
                      pretty(p0.omega_expr) + ")";
-        m.ugbw_sym_latex = "\\omega_{0\\mathrm{dB}} = K\\,\\omega_{p0} = " +
+        m.ugbw_ENVLP_latex = "\\omega_{0\\mathrm{dB}} = K\\,\\omega_{p0} = " +
                            to_latex(K) + "\\cdot " +
                            to_latex(p0.omega_expr);
     }
@@ -314,7 +314,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
         std::snprintf(pb, sizeof(pb), "%.1f deg", r.pm_deg);
         m.pm = pb;
         m.pm_sym = r.pm_sym;
-        m.pm_sym_latex = r.pm_sym_latex;
+        m.pm_ENVLP_latex = r.pm_ENVLP_latex;
     }
     return m;
 }
@@ -350,22 +350,22 @@ std::string metrics_latex(const AnalysisResult& r) {
     Metrics m = compute_metrics(r);
     std::string out;
     out += "Gain / Bandwidth:\n";
-    out += "\\mathrm{DC\\ Gain} = " + (m.dc_sym_latex.empty()
+    out += "\\mathrm{DC\\ Gain} = " + (m.dc_ENVLP_latex.empty()
                                           ? "\\mathrm{" + m.dc_db + "}"
-                                          : m.dc_sym_latex) +
+                                          : m.dc_ENVLP_latex) +
            "\\quad = \\mathrm{" + m.dc_db + "}\n";
     out += "\\mathrm{-3\\ dB\\ Bandwidth} = " +
-           (m.bw3_sym_latex.empty() ? "\\mathrm{" + m.bw3 + "}"
-                                    : m.bw3_sym_latex) +
+           (m.bw3_ENVLP_latex.empty() ? "\\mathrm{" + m.bw3 + "}"
+                                    : m.bw3_ENVLP_latex) +
            "\\quad = \\mathrm{" + m.bw3 + "}\n";
     out += "\\mathrm{Unity-Gain\\ Bandwidth} = " +
-           (m.ugbw_sym_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
-                                     : m.ugbw_sym_latex) +
+           (m.ugbw_ENVLP_latex.empty() ? "\\mathrm{" + m.ugbw + "}"
+                                     : m.ugbw_ENVLP_latex) +
            "\\quad = \\mathrm{" + m.ugbw + "}\n";
     if (m.has_pm) {
         out += "\\mathrm{Phase\\ Margin} = " +
-               (m.pm_sym_latex.empty() ? "\\mathrm{" + m.pm + "}"
-                                       : m.pm_sym_latex) +
+               (m.pm_ENVLP_latex.empty() ? "\\mathrm{" + m.pm + "}"
+                                       : m.pm_ENVLP_latex) +
                "\\quad = \\mathrm{" + m.pm + "}\n";
     }
     std::vector<std::string> ptxt, ptex;

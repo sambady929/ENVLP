@@ -2,7 +2,7 @@
 
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 LuaConsole::LuaConsole(wxWindow* parent) : wxPanel(parent) {
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -33,7 +33,7 @@ LuaConsole::LuaConsole(wxWindow* parent) : wxPanel(parent) {
     in_->Bind(wxEVT_CHAR_HOOK, &LuaConsole::on_key, this);
 
     out_->AppendText(wxString::FromUTF8(
-        "SymCirc Lua console. Example:\n"
+        "envlp Lua console. Example:\n"
         "  > for f=10,1e6,10*3 do print(f, mag(f)) end\n"
         "  > for _,p in ipairs(roots()) do print(p.w, p.label) end\n\n"));
 
@@ -96,4 +96,4 @@ void LuaConsole::on_key(wxKeyEvent& e) {
     e.Skip();
 }
 
-} // namespace symcirc
+} // namespace envlp

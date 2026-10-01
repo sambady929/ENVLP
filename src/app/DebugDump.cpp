@@ -6,7 +6,7 @@
 #include "core/Netlist.h"
 #include <cstdio>
 
-namespace symcirc {
+namespace envlp {
 
 #ifdef DEBUG_DUMP
 void dump_netmap(const Document& d) {
@@ -36,4 +36,4 @@ void dump_netmap(const Document& d) {
 void dump_netmap(const Document&) {}
 #endif
 
-} // namespace symcirc
+} // namespace envlp

@@ -2,7 +2,7 @@
 #include "Document.h"
 #include "core/Netlist.h"
 
-namespace symcirc {
+namespace envlp {
 
 // Pin geometry (relative to component origin, rotation 0), in canvas px.
 // Order matches pin_count()/pin_names() conventions in core/Netlist.h.
@@ -41,4 +41,4 @@ void symbol_body_bbox(const syms::Component& c, const Placement& pl,
                       double& x0, double& y0, double& x1, double& y1,
                       double pad = 0.0);
 
-} // namespace symcirc
+} // namespace envlp

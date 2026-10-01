@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 // Which curve family the plot canvas draws.
 enum class PlotMode { Bode, Nyquist, Nichols, Noise };
@@ -101,4 +101,4 @@ private:
     void sync_axis_controls();
 };
 
-} // namespace symcirc
+} // namespace envlp

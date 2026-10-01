@@ -4,7 +4,7 @@
 
 #include <wx/dcbuffer.h>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::Kind;
 
@@ -188,4 +188,4 @@ void PalettePanel::on_leave(wxMouseEvent&) {
     }
 }
 
-} // namespace symcirc
+} // namespace envlp

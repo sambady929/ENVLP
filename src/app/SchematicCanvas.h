@@ -10,7 +10,7 @@
 #include <tuple>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 // Tools available on the canvas (mirrors the palette).
 enum class Tool { Select, Wire, Delete, Place, Label };
@@ -231,4 +231,4 @@ private:
     wxDECLARE_EVENT_TABLE();
 };
 
-} // namespace symcirc
+} // namespace envlp

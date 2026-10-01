@@ -8,7 +8,7 @@
 #include <sstream>
 #include <unordered_map>
 
-namespace symcirc {
+namespace envlp {
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -830,7 +830,7 @@ bool Document::label_attached(int label_index, const NetMap& nm) const {
 // ---------------------------------------------------------------------------
 std::string Document::serialize() const {
     std::ostringstream o;
-    o << "symcirc 1\n";
+    o << "envlp 1\n";
     o << "req " << quote(req.input_ref) << " " << quote(req.output) << " "
       << req.sweep.f_start_hz << " " << req.sweep.f_stop_hz << " "
       << int(req.sweep.type) << " " << req.sweep.points_per_interval << " "
@@ -935,7 +935,9 @@ bool Document::deserialize(const std::string& data, std::string& err) {
         };
         auto need = [&](std::string& t) { return next_token(line, i, t); };
 
-        if (kw == "symcirc") {
+        if (kw == "envlp" || kw == "symcirc") {
+            // "envlp 1" is the current header; the legacy "symcirc 1" is
+            // accepted so circuits saved before the rename still load.
             saw_header = true;
         } else if (kw == "req") {
             std::string a, b;
@@ -1150,7 +1152,7 @@ bool Document::deserialize(const std::string& data, std::string& err) {
         }
     }
     if (!saw_header) {
-        err = "not a SymCirc file (missing header)";
+        err = "not an ENVLP file (missing header)";
         return false;
     }
     // Re-bind any wire end that wasn't explicitly tagged. Old .scx files
@@ -1239,4 +1241,4 @@ bool Document::redo() {
     return true;
 }
 
-} // namespace symcirc
+} // namespace envlp

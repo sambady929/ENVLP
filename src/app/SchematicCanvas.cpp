@@ -11,7 +11,7 @@
 #include <wx/dcbuffer.h>
 #include <wx/image.h>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::Component;
 using syms::Kind;
@@ -1931,4 +1931,4 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
     return false;
 }
 
-} // namespace symcirc
+} // namespace envlp

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="SymCirc.SymCirc" version="0.1.0.0"
+  <assemblyIdentity type="win32" name="ENVLP.ENVLP" version="0.1.0.0"
                     processorArchitecture="*"/>
-  <description>SymCirc symbolic circuit analyzer</description>
+  <description>ENVLP -- symbolic circuit analyzer</description>
 
   <!-- Comctl32 6.0: required by wxWidgets 3.3 (e.g. GetWindowSubclass is
        exported by name only in version 6). Without this dependency Windows

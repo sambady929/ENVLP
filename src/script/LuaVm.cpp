@@ -9,11 +9,11 @@ extern "C" {
 #include <lualib.h>
 }
 
-namespace symcirc {
+namespace envlp {
 
 // ---------------------------------------------------------------------------
 namespace {
-const char* kSelfKey = "symcirc.vm";
+const char* kSelfKey = "envlp.vm";
 
 int l_mag(lua_State* L) {
     auto* vm = LuaVm::self(L);
@@ -213,4 +213,4 @@ std::string LuaVm::take_output() {
     return s;
 }
 
-} // namespace symcirc
+} // namespace envlp

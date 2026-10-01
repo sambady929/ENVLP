@@ -1,4 +1,4 @@
-# SymCirc design notes
+# ENVLP design notes
 
 ## Goals
 

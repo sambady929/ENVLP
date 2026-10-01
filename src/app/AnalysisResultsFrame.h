@@ -7,7 +7,7 @@
 #include <wx/wx.h>
 #include <wx/notebook.h>
 
-namespace symcirc {
+namespace envlp {
 
 // Floating window that holds the analysis output (Results / Math / Bode /
 // Lua). Lives independently of the main frame so the user can keep it open
@@ -41,4 +41,4 @@ private:
     LuaConsole* lua_ = nullptr;
 };
 
-} // namespace symcirc
+} // namespace envlp

@@ -1,4 +1,4 @@
-// SymCirc Document tests: net-name resolution, label persistence (the new
+// envlp Document tests: net-name resolution, label persistence (the new
 // anchor / display-point model), and round-trip serialization. These are the
 // pieces that back the Cadence-style wire interaction in the GUI.
 //
@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <string>
 
-using namespace symcirc;
+using namespace envlp;
 using namespace syms;
 
 static int g_fail = 0;
@@ -198,7 +198,7 @@ static void test_serialize_round_trip() {
 // point token followed by a quoted name.
 static void test_serialize_legacy_loads() {
     std::string data =
-        "symcirc 1\n"
+        "envlp 1\n"
         "req \"V1\" \"V(out)\" 1 1e9 0 10 1 1 1 1\n"
         "comp \"V1\" \"V\" 0 0 0 0 0 0 \"1\"\n"
         "comp \"GND1\" \"GND\" 0 100 0 0 0 0 \"\"\n"

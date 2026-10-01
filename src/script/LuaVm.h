@@ -8,7 +8,7 @@ namespace syms {
 struct AnalysisResult;
 }
 
-namespace symcirc {
+namespace envlp {
 
 // Minimal Lua VM for the console tab and user scripting.
 // Registered API (all read the most recent AnalysisResult):
@@ -58,4 +58,4 @@ private:
     static int l_print(lua_State* L);
 };
 
-} // namespace symcirc
+} // namespace envlp

@@ -106,7 +106,7 @@ struct LowEntropyOptions {
     std::vector<TimeConstant> octc;
 };
 
-// The low-entropy engine. This is the heart of SymCirc: it turns a raw
+// The low-entropy engine. This is the heart of envlp: it turns a raw
 // numerator/denominator pair from MNA into a compact, factored,
 // design-readable form:
 //   1. (optional) magnitude pruning of negligible terms using estimates

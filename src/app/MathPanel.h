@@ -4,7 +4,7 @@
 
 #include <string>
 
-namespace symcirc {
+namespace envlp {
 
 // Renders the LaTeX produced by the engine as real typeset math, using an
 // embedded wxWebView and the offline LaTeX->HTML converter (no CDN/MathJax
@@ -41,4 +41,4 @@ private:
     bool ready_ = false;
 };
 
-} // namespace symcirc
+} // namespace envlp

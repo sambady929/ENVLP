@@ -18,7 +18,7 @@
 #include <wx/checkbox.h>
 #include <wx/choice.h>
 
-namespace symcirc {
+namespace envlp {
 
 namespace {
 
@@ -27,10 +27,10 @@ namespace {
 // monospaced text window with a copy button.
 
 const char* kAboutText =
-    "SymCirc -- symbolic circuit analysis with low-entropy forms.\n"
+    "ENVLP -- symbolic circuit analysis with low-entropy forms.\n"
     "\n"
     "Draw a schematic, add an analysis card, then press its Run button.\n"
-    "SymCirc ranks terms by order-of-magnitude estimates and prunes the\n"
+    "ENVLP ranks terms by order-of-magnitude estimates and prunes the\n"
     "negligible ones, so the transfer function stays as readable as the\n"
     "hand analysis you would do on a whiteboard.\n"
     "\n"
@@ -194,7 +194,7 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame()
-    : wxFrame(nullptr, wxID_ANY, "SymCirc", wxDefaultPosition,
+    : wxFrame(nullptr, wxID_ANY, "ENVLP", wxDefaultPosition,
               wxDefaultSize) {
     // Size in DIP so the window has the intended visual size at any display
     // scaling (a raw pixel size is applied as physical pixels and comes out
@@ -277,7 +277,7 @@ void MainFrame::build_menu() {
     help->Append(ID_EXPERIMENTAL, "&Experimental features...",
                  "Experimental features and the roadmap");
     help->AppendSeparator();
-    help->Append(ID_ABOUT_APP, "&About SymCirc");
+    help->Append(ID_ABOUT_APP, "&About ENVLP");
 
     auto* bar = new wxMenuBar;
     bar->Append(file, "&File");
@@ -862,7 +862,7 @@ void MainFrame::update_title() {
                               .AfterLast('\\')
                               .AfterLast('/');
     bool dirty = pg && pg->doc.dirty;
-    SetTitle(wxString::Format("SymCirc -- %s%s", name,
+    SetTitle(wxString::Format("ENVLP -- %s%s", name,
                               dirty ? wxString(" *") : wxString("")));
     // Keep the tab label in step with the dirty marker.
     if (book_ && active_ >= 0 && active_ < int(book_->GetPageCount()))
@@ -912,7 +912,7 @@ void MainFrame::on_new(wxCommandEvent&) { make_page(-1); }
 
 void MainFrame::on_open(wxCommandEvent&) {
     wxFileDialog dlg(this, "Open schematic", "", "",
-                     "SymCirc circuits (*.scx)|*.scx|All files (*.*)|*.*",
+                     "ENVLP circuits (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
     if (dlg.ShowModal() != wxID_OK) return;
     wxArrayString paths;
@@ -971,7 +971,7 @@ bool MainFrame::do_save_as() {
     SchematicPage* pg = page();
     if (!pg) return false;
     wxFileDialog dlg(this, "Save schematic", "", "",
-                     "SymCirc circuits (*.scx)|*.scx|All files (*.*)|*.*",
+                     "ENVLP circuits (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
     if (dlg.ShowModal() != wxID_OK) return false;
     std::string err;
@@ -1128,7 +1128,7 @@ void MainFrame::on_experimental(wxCommandEvent&) {
 }
 
 void MainFrame::on_about(wxCommandEvent&) {
-    show_text_window(this, "About SymCirc", kAboutText);
+    show_text_window(this, "About ENVLP", kAboutText);
 }
 
-} // namespace symcirc
+} // namespace envlp

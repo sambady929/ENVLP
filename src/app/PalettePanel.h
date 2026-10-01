@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 // Left-side component palette, styled after the analog-canvas shapes panel: a
 // wrapping grid of compact tiles (artwork + abbreviated label). The active tool
@@ -62,4 +62,4 @@ private:
     void on_size(wxSizeEvent&);
 };
 
-} // namespace symcirc
+} // namespace envlp

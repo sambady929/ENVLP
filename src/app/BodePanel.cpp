@@ -20,7 +20,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-namespace symcirc {
+namespace envlp {
 
 wxBEGIN_EVENT_TABLE(BodeCanvas, wxPanel)
     EVT_PAINT(BodeCanvas::on_paint)
@@ -1024,4 +1024,4 @@ void BodePanel::sync_axis_controls() {
     if (ymax_) ymax_->ChangeValue(fmt(plot_->y_hi()));
 }
 
-} // namespace symcirc
+} // namespace envlp

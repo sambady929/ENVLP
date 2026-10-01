@@ -3,7 +3,7 @@
 
 #include <wx/sizer.h>
 
-namespace symcirc {
+namespace envlp {
 
 AnalysisResultsFrame::AnalysisResultsFrame(wxWindow* parent)
     : wxFrame(parent, wxID_ANY, "Analysis results",
@@ -68,4 +68,4 @@ void AnalysisResultsFrame::set_report(const std::string& latex,
     if (math_) math_->set_report(latex, latex_report);
 }
 
-} // namespace symcirc
+} // namespace envlp

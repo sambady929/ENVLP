@@ -17,7 +17,7 @@
 //   hover                accent @ 22%, dashed
 //   marquee window       accent @ 10% fill, accent stroke
 //   marquee crossing     #3fa34d @ 10% fill, #3fa34d stroke
-namespace symcirc {
+namespace envlp {
 namespace theme {
 
 // --- canvas ---------------------------------------------------------------
@@ -73,4 +73,4 @@ constexpr int kRefFontPt = 9;
 constexpr int kValFontPt = 9;
 
 } // namespace theme
-} // namespace symcirc
+} // namespace envlp

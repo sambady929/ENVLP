@@ -2,7 +2,7 @@
 
 #include <wx/clipbrd.h>
 
-namespace symcirc {
+namespace envlp {
 
 namespace {
 void copy_to_clipboard(const wxString& s) {
@@ -63,4 +63,4 @@ void ResultsPanel::clear() {
     latex_.clear();
 }
 
-} // namespace symcirc
+} // namespace envlp

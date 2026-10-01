@@ -1201,11 +1201,11 @@ std::vector<TimeConstant> open_circuit_time_constants(
             else if (pd.name == "Cd") { a = n0; b = n1; }    // A-K
             else { a = n0; b = n1; }
             if (a == b) continue;
-            std::string sym_name = param_symbol(cc, pd.name);
+            std::string ENVLP_name = param_symbol(cc, pd.name);
             // reg_param returns mult*Cgs_unit for a mirrored device, so the
             // octc sum keeps the copy's capacitance expressed via the unit.
             ex sym = reg_param(params, cc, pd.name);
-            add_tc(sym_name, a, b, true, sym);
+            add_tc(ENVLP_name, a, b, true, sym);
         }
     }
     // Report the smallest (dominant) time constants first, matching the hand

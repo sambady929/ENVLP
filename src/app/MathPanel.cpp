@@ -5,7 +5,7 @@
 #include <wx/clipbrd.h>
 #include <wx/sizer.h>
 
-namespace symcirc {
+namespace envlp {
 
 namespace {
 // Two distinct empty pages so we can tell them apart in debug logs: one is
@@ -202,4 +202,4 @@ void MathPanel::render() {
     view_->SetPage(page, "");
 }
 
-} // namespace symcirc
+} // namespace envlp

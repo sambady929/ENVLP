@@ -1,9 +1,9 @@
 #pragma once
 #include <string>
 
-namespace symcirc {
+namespace envlp {
 
-// Convert the LaTeX subset emitted by the SymCirc engine into a standalone
+// Convert the LaTeX subset emitted by the envlp engine into a standalone
 // HTML document (with a small inline CSS stylesheet) that wxWebView can show
 // with real typeset math -- fractions stacked, proper sub/superscripts, the
 // parallel symbol, etc. Fully offline: no MathJax/CDN needed.
@@ -38,4 +38,4 @@ std::string latex_normalize(const std::string& latex);
 bool latex_is_plain_heading(const std::string& line);
 bool latex_heading_from_mathrm(const std::string& line, std::string& out);
 
-} // namespace symcirc
+} // namespace envlp

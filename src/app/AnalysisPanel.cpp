@@ -11,7 +11,7 @@
 
 #include <sstream>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::AnalysisKind;
 
@@ -569,4 +569,4 @@ bool AnalysisPanel::deserialize(const std::string& data) {
     return true;
 }
 
-} // namespace symcirc
+} // namespace envlp

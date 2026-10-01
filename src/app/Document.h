@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 using Pt = std::pair<double, double>;
 
@@ -184,4 +184,4 @@ private:
     std::vector<std::string> undo_, redo_;
 };
 
-} // namespace symcirc
+} // namespace envlp

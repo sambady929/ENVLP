@@ -5,9 +5,9 @@
 #include <cstdio>
 #include <string>
 
-using symcirc::latex_to_html;
-using symcirc::latex_to_html_fragment;
-using symcirc::latex_render_line;
+using envlp::latex_to_html;
+using envlp::latex_to_html_fragment;
+using envlp::latex_render_line;
 
 static int g_fail = 0;
 #define CHECK(c)                                                              \
@@ -26,14 +26,14 @@ static bool has(const std::string& s, const std::string& sub) {
 // line like "\mathrm{Density}\ S_{v}(f):" must NOT be treated as a heading
 // (that leaked the literal "\mathrm" to the user).
 static void test_heading_classification() {
-    CHECK(symcirc::latex_is_plain_heading("Output Noise:"));
-    CHECK(symcirc::latex_is_plain_heading("Poles:"));
-    CHECK(!symcirc::latex_is_plain_heading("\\mathrm{Density}\\ S_{v}(f):"));
-    CHECK(!symcirc::latex_is_plain_heading("\\omega_{p0}:"));
+    CHECK(envlp::latex_is_plain_heading("Output Noise:"));
+    CHECK(envlp::latex_is_plain_heading("Poles:"));
+    CHECK(!envlp::latex_is_plain_heading("\\mathrm{Density}\\ S_{v}(f):"));
+    CHECK(!envlp::latex_is_plain_heading("\\omega_{p0}:"));
     std::string h;
-    CHECK(symcirc::latex_heading_from_mathrm("\\mathrm{Contribution:}", h));
+    CHECK(envlp::latex_heading_from_mathrm("\\mathrm{Contribution:}", h));
     CHECK(h == "Contribution:");
-    CHECK(!symcirc::latex_heading_from_mathrm("\\mathrm{Density}\\ S:", h));
+    CHECK(!envlp::latex_heading_from_mathrm("\\mathrm{Density}\\ S:", h));
 }
 
 static void test_fraction() {
@@ -154,8 +154,7 @@ int main() {
     const char* sample_tex =
         "H(s) = \\frac{- Rd\\parallel ro_{M1}\\,\\frac{gm_{M1} - Cgd_{M1}\\,s}"
         "{gm_{M1}}}{\\left(1 + Cgd_{M1}\\,Rd\\parallel ro_{M1}\\,s\\right)}";
-    FILE* f = std::fopen("D:/Projects/Programming/SymCirc/build/bin/"
-                         "math_sample.html", "w");
+    FILE* f = std::fopen("math_sample.html", "w");
     if (f) {
         std::fputs(latex_to_html(sample_tex).c_str(), f);
         std::fclose(f);

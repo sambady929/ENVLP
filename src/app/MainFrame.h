@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 class SchematicCanvas;
 class PalettePanel;
@@ -128,4 +128,4 @@ private:
     wxDECLARE_EVENT_TABLE();
 };
 
-} // namespace symcirc
+} // namespace envlp

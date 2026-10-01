@@ -8,9 +8,12 @@
 #include <cmath>
 
 int main(int argc, char** argv) {
-    const char* path = argc > 1 ? argv[1]
-        : "D:/Projects/Programming/SymCirc/examples/cs_test.scx";
-    symcirc::Document d;
+    // The path to the fixture is passed by CMake so the test does not depend
+    // on the checkout's folder name.
+    const char* path =
+        argc > 1 ? argv[1]
+                 : "D:/Projects/Programming/ENVLP/examples/cs_test.scx";
+    envlp::Document d;
     std::string err;
     if (!d.load(path, err)) {
         std::printf("load failed: %s\n", err.c_str());
@@ -34,12 +37,12 @@ int main(int argc, char** argv) {
     std::printf("=== pins ===\n");
     for (size_t i = 0; i < d.circuit.comps.size(); ++i) {
         const auto& c = d.circuit.comps[i];
-        auto offs = symcirc::pin_offsets(c.kind);
+        auto offs = envlp::pin_offsets(c.kind);
         for (size_t p = 0; p < offs.size(); ++p) {
             auto plt = d.placements.find(c.ref);
-            symcirc::Placement pl{0,0,0,false,false};
+            envlp::Placement pl{0,0,0,false,false};
             if (plt != d.placements.end()) pl = plt->second;
-            auto wp = symcirc::pin_world(c, pl, int(p));
+            auto wp = envlp::pin_world(c, pl, int(p));
             // Find root: search pin_comp for a match
             int root = -1;
             for (size_t k = 0; k < nm.pin_comp.size(); ++k) {

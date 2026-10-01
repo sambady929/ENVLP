@@ -1,4 +1,4 @@
-# SymCirc
+# ENVLP
 
 Symbolic circuit analysis for schematics, with **low-entropy** transfer
 functions: terms that are orders of magnitude below the dominant behaviour at
@@ -67,14 +67,14 @@ cd .. && tar xf ginac-1.8.10.tar.bz2 && cd ginac-1.8.10
 ./configure --prefix=/ucrt64 && make -j$(nproc) && make install
 ```
 
-Configure and build SymCirc:
+Configure and build ENVLP:
 
 ```bash
-cd /d/Projects/Programming/SymCirc
+cd /d/Projects/Programming/ENVLP
 cmake -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure   # run the engine tests
-./build/bin/SymCirc.exe                      # launch the GUI
+./build/bin/ENVLP.exe                      # launch the GUI
 ```
 
 ## Usage
@@ -153,7 +153,7 @@ dropped()         -- { {location=, term=, db=}, ... }
 
 ## File format
 
-`.scx` files are a small line-based text format (`symcirc 1` header:
+`.scx` files are a small line-based text format (`envlp 1` header:
 `comp`, `param`, `wire`, `netlabel`, `req`, `card`). Net topology is derived
 from wire geometry at analyze time, so files stay geometry-based and diffable.
 The `req` line ends with the engine switches and the sweep
@@ -163,9 +163,9 @@ analysis stack and round-trip verbatim.
 ## Repository layout
 
 - `src/core/` — engine: netlist → MNA → Bareiss determinants → prune → print
-  (static lib `symcore`, no GUI deps)
-- `src/script/` — Lua VM wrapper (`symscript`)
-- `src/app/` — wxWidgets GUI (`SymCirc`)
+  (static lib `envlpcore`, no GUI deps)
+- `src/script/` — Lua VM wrapper (`envlpscript`)
+- `src/app/` — wxWidgets GUI (`ENVLP`)
 - `tests/` — engine tests (`test_core`, run by CTest)
 - `examples/` — sample circuits
 - `docs/design.md` — design notes

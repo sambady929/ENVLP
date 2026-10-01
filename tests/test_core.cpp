@@ -1,4 +1,4 @@
-// SymCirc core engine tests.
+// envlp core engine tests.
 // Assert-based mini framework; run via CTest (all tests) or
 //   test_core <substring>   to run a subset.
 

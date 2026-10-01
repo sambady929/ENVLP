@@ -10,19 +10,19 @@
 namespace {
 // Mirror the canvas' helper. The implementation is small enough that
 // duplicating it here keeps the test independent of wx.
-bool is_axis_aligned(symcirc::Pt a, symcirc::Pt b) {
+bool is_axis_aligned(envlp::Pt a, envlp::Pt b) {
     return std::fabs(a.first - b.first) < 1e-6 ||
            std::fabs(a.second - b.second) < 1e-6;
 }
 
-void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
-                    const std::vector<std::pair<symcirc::Pt, symcirc::Pt>>& other_segs = {}) {
+void ortho_fix_wire(std::vector<envlp::Pt>& pts,
+                    const std::vector<std::pair<envlp::Pt, envlp::Pt>>& other_segs = {}) {
     if (pts.size() < 2) return;
-    auto eq_pt = [](symcirc::Pt a, symcirc::Pt b) {
+    auto eq_pt = [](envlp::Pt a, envlp::Pt b) {
         return std::fabs(a.first - b.first) < 1e-6 &&
                std::fabs(a.second - b.second) < 1e-6;
     };
-    auto seg_hits = [&](symcirc::Pt p) {
+    auto seg_hits = [&](envlp::Pt p) {
         for (const auto& s : other_segs) {
             if (std::hypot(s.first.first - p.first, s.first.second - p.second) < 1.0 ||
                 std::hypot(s.second.first - p.first, s.second.second - p.second) < 1.0)
@@ -39,7 +39,7 @@ void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
         }
         return false;
     };
-    std::vector<symcirc::Pt> out;
+    std::vector<envlp::Pt> out;
     out.push_back(pts[0]);
     bool prev_was_horizontal = false;
     for (size_t i = 0; i + 1 < pts.size(); ++i) {
@@ -51,10 +51,10 @@ void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
             prev_was_horizontal = horiz;
             continue;
         }
-        symcirc::Pt c1{b.first, a.second};
-        symcirc::Pt c2{a.first, b.second};
-        symcirc::Pt next = (i + 2 < pts.size()) ? pts[i + 2] : b;
-        auto bad = [&](symcirc::Pt c) {
+        envlp::Pt c1{b.first, a.second};
+        envlp::Pt c2{a.first, b.second};
+        envlp::Pt next = (i + 2 < pts.size()) ? pts[i + 2] : b;
+        auto bad = [&](envlp::Pt c) {
             if (eq_pt(c, next)) return true;
             if (eq_pt(c, a)) return true;
             if (eq_pt(c, b)) return true;
@@ -71,7 +71,7 @@ void ortho_fix_wire(std::vector<symcirc::Pt>& pts,
                        : (c1_bad
                           ? false
                           : !prev_was_horizontal);
-        symcirc::Pt corner = h_first ? c1 : c2;
+        envlp::Pt corner = h_first ? c1 : c2;
         if (!eq_pt(out.back(), corner)) out.push_back(corner);
         out.push_back(b);
         prev_was_horizontal = !h_first;
@@ -83,7 +83,7 @@ int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { ++g_fail; std::printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); } } while (0)
 } // namespace
 
-static void check_all_axis_aligned(const std::vector<symcirc::Pt>& pts,
+static void check_all_axis_aligned(const std::vector<envlp::Pt>& pts,
                                    const char* tag) {
     for (size_t i = 0; i + 1 < pts.size(); ++i) {
         if (!is_axis_aligned(pts[i], pts[i + 1])) {
@@ -95,7 +95,7 @@ static void check_all_axis_aligned(const std::vector<symcirc::Pt>& pts,
     }
 }
 
-static void dump(const std::vector<symcirc::Pt>& pts, const char* tag) {
+static void dump(const std::vector<envlp::Pt>& pts, const char* tag) {
     std::printf("    %s pts (%zu):", tag, pts.size());
     for (auto& p : pts)
         std::printf(" (%.0f,%.0f)", p.first, p.second);
@@ -105,14 +105,14 @@ static void dump(const std::vector<symcirc::Pt>& pts, const char* tag) {
 int main() {
     // Already-orthogonal: must be unchanged.
     {
-        std::vector<symcirc::Pt> w = {{0,0},{10,0},{10,20},{0,20}};
+        std::vector<envlp::Pt> w = {{0,0},{10,0},{10,20},{0,20}};
         ortho_fix_wire(w);
         CHECK(w.size() == 4);
         check_all_axis_aligned(w, "already-ortho");
     }
     // Single diagonal segment between two pins: becomes an L (one corner).
     {
-        std::vector<symcirc::Pt> w = {{0,0},{10,10}};
+        std::vector<envlp::Pt> w = {{0,0},{10,10}};
         ortho_fix_wire(w);
         CHECK(w.size() == 3);
         check_all_axis_aligned(w, "single-diag");
@@ -122,14 +122,14 @@ int main() {
     // Three-point wire where the middle vertex moved off-axis: the whole
     // path becomes 3 axis-aligned legs, not a stair.
     {
-        std::vector<symcirc::Pt> w = {{0,0},{5,5},{10,5}};
+        std::vector<envlp::Pt> w = {{0,0},{5,5},{10,5}};
         ortho_fix_wire(w);
         CHECK(w.size() >= 3);
         check_all_axis_aligned(w, "three-point");
     }
     // Diagonal after each leg: alternating corners (no same-side stacking).
     {
-        std::vector<symcirc::Pt> w = {{0,0},{5,5},{10,0},{15,5},{20,0}};
+        std::vector<envlp::Pt> w = {{0,0},{5,5},{10,0},{15,5},{20,0}};
         ortho_fix_wire(w);
         check_all_axis_aligned(w, "alternating");
         // The total horizontal travel stays the same: 20.
@@ -137,14 +137,14 @@ int main() {
     }
     // Pathological: 1-vertex wire (single point) -- unchanged.
     {
-        std::vector<symcirc::Pt> w = {{0,0}};
+        std::vector<envlp::Pt> w = {{0,0}};
         ortho_fix_wire(w);
         CHECK(w.size() == 1);
     }
     // Already-ortho with a zero-length return in the middle: collinear point
     // gets removed, the result is still axis-aligned.
     {
-        std::vector<symcirc::Pt> w = {{0,0},{5,0},{5,0},{10,0}};
+        std::vector<envlp::Pt> w = {{0,0},{5,0},{5,0},{10,0}};
         ortho_fix_wire(w);
         check_all_axis_aligned(w, "degenerate-zero");
     }
@@ -158,7 +158,7 @@ int main() {
     // three-segment L: up from V1, then right to M1's x, then down to M1's
     // y -- NOT a hook through a stray corner.
     {
-        std::vector<symcirc::Pt> w = {{160,290},{160,240},{610,360}};
+        std::vector<envlp::Pt> w = {{160,290},{160,240},{610,360}};
         dump(w, "input");
         ortho_fix_wire(w);
         dump(w, "output");
@@ -183,7 +183,7 @@ int main() {
         // (610,240), (610,360)]. Now drag again: M1 gate moves to
         // (760, 480). The 4th vertex shifts to (760, 480) and the segment
         // (610,360)->(760,480) is diagonal. Reorthogonalise.
-        std::vector<symcirc::Pt> w = {{160,290},{160,240},{610,240},{760,480}};
+        std::vector<envlp::Pt> w = {{160,290},{160,240},{610,240},{760,480}};
         dump(w, "input2");
         ortho_fix_wire(w);
         dump(w, "output2");
@@ -199,8 +199,8 @@ int main() {
     // other wire's segments and the helper should pick the other corner
     // (160, 480) instead.
     {
-        std::vector<symcirc::Pt> w = {{160,240},{760,480}};
-        std::vector<std::pair<symcirc::Pt, symcirc::Pt>> others = {
+        std::vector<envlp::Pt> w = {{160,240},{760,480}};
+        std::vector<std::pair<envlp::Pt, envlp::Pt>> others = {
             {{600,240},{900,240}} // horizontal at y=240
         };
         ortho_fix_wire(w, others);
@@ -226,7 +226,7 @@ int main() {
         // backtrack over the (200,100)->(200,200) leg. Reject c1 and use
         // c2 = (100,100) instead -- but that equals the start point, so
         // reject c2 too and fall back to h_first=true (no insert).
-        std::vector<symcirc::Pt> w = {{100,200},{200,100},{200,200}};
+        std::vector<envlp::Pt> w = {{100,200},{200,100},{200,200}};
         dump(w, "backtrack-input");
         ortho_fix_wire(w);
         dump(w, "backtrack-output");
@@ -264,14 +264,14 @@ int main() {
     // segments, makes 3 collinear vertices -- collapse_collinear trims
     // them back to 2 so the polyline stays minimal.
     {
-        std::vector<symcirc::Pt> w = {{100,100},{150,100},{200,100},{200,200}};
-        auto collinear = [](symcirc::Pt a, symcirc::Pt b, symcirc::Pt c) {
+        std::vector<envlp::Pt> w = {{100,100},{150,100},{200,100},{200,200}};
+        auto collinear = [](envlp::Pt a, envlp::Pt b, envlp::Pt c) {
             return (std::fabs(a.first - b.first) < 1e-6 &&
                     std::fabs(b.first - c.first) < 1e-6) ||
                    (std::fabs(a.second - b.second) < 1e-6 &&
                     std::fabs(b.second - c.second) < 1e-6);
         };
-        std::vector<symcirc::Pt> out = {w[0]};
+        std::vector<envlp::Pt> out = {w[0]};
         for (size_t i = 1; i + 1 < w.size(); ++i) {
             if (collinear(w[i-1], w[i], w[i+1])) continue;
             out.push_back(w[i]);

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace symcirc {
+namespace envlp {
 
 // Bottom-panel tab: interactive Lua console.
 class LuaConsole : public wxPanel {
@@ -29,4 +29,4 @@ private:
     void on_key(wxKeyEvent& e);
 };
 
-} // namespace symcirc
+} // namespace envlp

@@ -1021,7 +1021,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // with w_ug pinned to its numeric value and each w_pi kept as the symbol
     // omega_pi (their symbolic values are listed under Pole Corner
     // Frequencies), so the reader sees the structure, not a substituted mess.
-    std::string pm_sym_txt, pm_sym_tex;
+    std::string pm_ENVLP_txt, pm_ENVLP_tex;
     if (pm >= 0.0 && ugf > 0.0) {
         char wugb[64];
         std::snprintf(wugb, sizeof(wugb), "%s", eng::format_rads(2 * M_PI * ugf).c_str());
@@ -1038,9 +1038,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
             l += " + \\atan\\left(\\frac{\\omega_{ug}}{\\omega_{z" +
                  std::to_string(i) + "}}\\right)";
         }
-        pm_sym_txt = "PM = " + t + "   (omega_ug = " + wugb +
+        pm_ENVLP_txt = "PM = " + t + "   (omega_ug = " + wugb +
                      ", one atan per pole/zero)";
-        pm_sym_tex = "\\mathrm{PM} = " + l +
+        pm_ENVLP_tex = "\\mathrm{PM} = " + l +
                      ",\\quad \\omega_{ug} = \\mathrm{" + wugb + "}";
     }
 
@@ -1089,7 +1089,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // Phase margin is reported inside the gain/bandwidth block (there is no
     // separate "Stability" section). Its symbolic form is the arctangent sum
     // derived above.
-    std::string pm_sym = pm_sym_txt, pm_sym_latex = pm_sym_tex;
+    std::string pm_sym = pm_ENVLP_txt, pm_ENVLP_latex = pm_ENVLP_tex;
 
     // Closed-loop gain assembled from the asymptotic-gain formula, so the
     // printed expression is exactly what the formula evaluates to:
@@ -1122,7 +1122,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         res.ugf_hz = eng::format_hz(ugf);
         res.pm_deg = pm;
         res.pm_sym = pm_sym;
-        res.pm_sym_latex = pm_sym_latex;
+        res.pm_ENVLP_latex = pm_ENVLP_latex;
     }
     res.report = format_report(res);
 
@@ -1755,17 +1755,17 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             // The amplifier's en is a voltage-noise density (V^2/Hz); the
             // device/resistor sources are current-noise densities (A^2/Hz).
             const char* sym = d.voltage ? "e_n^2" : "i_n^2";
-            const char* sym_th = d.voltage ? "e_{n,th}^2" : "i_{n,th}^2";
-            const char* sym_fl = d.voltage ? "e_{n,1/f}^2" : "i_{n,1/f}^2";
+            const char* ENVLP_th = d.voltage ? "e_{n,th}^2" : "i_{n,th}^2";
+            const char* ENVLP_fl = d.voltage ? "e_{n,1/f}^2" : "i_{n,1/f}^2";
             const char* unit = d.voltage ? "V" : "A";
             t << "    " << d.ref << " (thermal): " << sym << " = " << pretty(d.th)
               << " " << unit << "^2/Hz\n";
-            x << "\\mathrm{" << d.ref << "}:\\quad " << sym_th << " = "
+            x << "\\mathrm{" << d.ref << "}:\\quad " << ENVLP_th << " = "
               << to_latex(d.th) << "\\ " << unit << "^2/Hz\n";
             if (!d.fl.is_zero()) {
                 t << "    " << d.ref << " (flicker): " << sym << " = "
                   << pretty(d.fl) << "/f " << unit << "^2/Hz\n";
-                x << "\\mathrm{" << d.ref << "}:\\quad " << sym_fl
+                x << "\\mathrm{" << d.ref << "}:\\quad " << ENVLP_fl
                   << " = \\frac{" << to_latex(d.fl) << "}{f}\\ " << unit
                   << "^2/Hz\n";
             }
@@ -1774,7 +1774,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         dens_tex = x.str();
     }
     // Symbolic OUTPUT density: S_v(f) = sum_j |H_j|^2 * (i_j,th + i_j,fl/f).
-    std::string out_sym_txt, out_sym_tex;
+    std::string out_ENVLP_txt, out_ENVLP_tex;
     {
         std::ostringstream t, x;
         std::string tt = "    S_v(f) = ";
@@ -1797,12 +1797,12 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         }
         t << tt << "\n";
         x << xx << "\n";
-        out_sym_txt = t.str();
-        out_sym_tex = x.str();
+        out_ENVLP_txt = t.str();
+        out_ENVLP_tex = x.str();
     }
     // Symbolic INPUT density: S_i(f) = S_v(f)/|H|^2, so the device/resistor
     // currents drop their H(s)^2 and the amp's en becomes en^2/H(s)^2.
-    std::string in_sym_txt, in_sym_tex;
+    std::string in_ENVLP_txt, in_ENVLP_tex;
     {
         std::ostringstream t, x;
         std::string it = "    S_i(f) = ";
@@ -1824,8 +1824,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         }
         t << it << "\n";
         x << ix << "\n";
-        in_sym_txt = t.str();
-        in_sym_tex = x.str();
+        in_ENVLP_txt = t.str();
+        in_ENVLP_tex = x.str();
     }
 
 
@@ -1855,8 +1855,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         t << "\nOutput Noise\n------------\n";
         x << "Output Noise:\n";
         // density symbolic
-        t << "  Density S_v(f) [V^2/Hz]:\n" << out_sym_txt;
-        x << "\\mathrm{Density}\\ S_{v}(f):\n" << out_sym_tex;
+        t << "  Density S_v(f) [V^2/Hz]:\n" << out_ENVLP_txt;
+        x << "\\mathrm{Density}\\ S_{v}(f):\n" << out_ENVLP_tex;
         // density at f0 (numeric)
         {
             char b[200];
@@ -1895,8 +1895,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         const char* in_unit = input_is_current ? "A" : "V";
         t << "\nInput Noise\n-----------\n";
         x << "Input Noise:\n";
-        t << "  Density S_i(f) [" << in_unit << "^2/Hz]:\n" << in_sym_txt;
-        x << "\\mathrm{Density}\\ S_{i}(f):\n" << in_sym_tex;
+        t << "  Density S_i(f) [" << in_unit << "^2/Hz]:\n" << in_ENVLP_txt;
+        x << "\\mathrm{Density}\\ S_{i}(f):\n" << in_ENVLP_tex;
         {
             char b[200];
             std::snprintf(b, sizeof(b),
@@ -1960,8 +1960,8 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         res.noise_input_is_current = input_is_current;
         res.noise_vout_total = vout_rms;
         res.noise_iin_total = iin_rms;
-        res.noise_sym_text = out_sym_txt + in_sym_txt;
-        res.noise_sym_latex = out_sym_tex + in_sym_tex;
+        res.noise_ENVLP_text = out_ENVLP_txt + in_ENVLP_txt;
+        res.noise_ENVLP_latex = out_ENVLP_tex + in_ENVLP_tex;
         for (int i = 0; i < npts; ++i) {
             res.noise_f_hz.push_back(freqs[i]);
             res.noise_vout.push_back(std::sqrt(vout[i]));

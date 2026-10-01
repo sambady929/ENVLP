@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace symcirc {
+namespace envlp {
 
 using syms::Kind;
 
@@ -252,4 +252,4 @@ void symbol_body_bbox(const syms::Component& c, const Placement& pl,
     y1 = by1 + pad;
 }
 
-} // namespace symcirc
+} // namespace envlp
