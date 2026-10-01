@@ -22,6 +22,9 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+# Make the MSYS2 toolchain (cmake, ninja, strip, objdump) findable whether we
+# are run from an MSYS2 shell or a plain PowerShell / CI step.
+$env:PATH = "$MsysBin;$env:PATH"
 
 if (-not (Test-Path $Objdump)) { throw "objdump not found at $Objdump" }
 
