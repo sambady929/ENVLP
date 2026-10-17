@@ -49,6 +49,11 @@ command -v em++ >/dev/null 2>&1 || {
     exit 1
 }
 
+# The CLN patch step below is a small Python heredoc; the SDK ships one.
+PYTHON=$(command -v python3 || command -v python || true)
+[ -n "$PYTHON" ] || { echo "Python is needed to patch CLN." >&2; exit 1; }
+export PYTHON
+
 mkdir -p "$DEPS" "$BUILD" "$WEB/mathjax" "$WEB/plotly" "$WEB/examples"
 
 fetch() { # fetch <url> <file>
@@ -66,9 +71,8 @@ unpack() { # unpack <archive> -> $BUILD
 # set the compiler environment by hand and let the shell run configure/make.
 emu_env() {
     export CC=emcc CXX=em++ AR=emar RANLIB=emranlib NM=llvm-nm LD=emcc
-    # -fexceptions must match the app build: GiNaC throws (pole_error and
-    # friends) and ENVLP catches, and mixing exception ABIs across the
-    # libraries and the executable produces traps at static-init time.
+    # Exceptions stay on and must match the app build: GiNaC throws
+    # (pole_error and friends) and ENVLP catches them.
     export CFLAGS="-O2" CXXFLAGS="-O2 -fexceptions"
 }
 
@@ -96,24 +100,62 @@ if [ ! -f "$DEPS/lib/libcln.a" ]; then
       emu_env
       # CLN's timing code uses the POSIX HZ macro (ticks per second), which the
       # Emscripten libc does not define.
-      export CXXFLAGS="-O2 -DHZ=100" CFLAGS="-O2 -DHZ=100"
-      # CLN works out whether it has a 64-bit "double digit" type -- needed for
-      # digit-sequence multiplication -- from a list of CPUs with fast 64-bit
-      # integers. wasm32 is not in that list, so CLN concludes HAVE_DD=0 and
-      # computes wide products with 32-bit arithmetic: wrong results (e.g.
-      # 1000000007*1000000007 != the exact product, integer_length(1000000007)
-      # = 27) and out-of-bounds digit writes. wasm has first-class i64, so it
-      # belongs in that list.
-      #
-      # NOTE: this fix is necessary but NOT sufficient -- CLN still corrupts
-      # memory in the digit-sequence code (see web/README.md, "Known blocker").
-      if ! grep -q "__wasm32__" "$d/include/cln/types.h"; then
-          sed -i 's@^  #if (defined(__alpha__) || defined(__ia64__) || defined(__mips64__).*@  #if (defined(__alpha__) || defined(__ia64__) || defined(__mips64__) || defined(__powerpc64__) || defined(__s390x__) || (defined(__sparc__) \&\& defined(__arch64__)) || (defined(__x86_64__) || defined(_M_AMD64)) || defined(__aarch64__) || (defined(__riscv) \&\& __riscv_xlen == 64) || defined(__e2k__) || defined(__loongarch_lp64) || defined(__wasm32__))@' \
-              "$d/include/cln/types.h"
+      export CXXFLAGS="-O2 -fexceptions -DHZ=100" CFLAGS="-O2 -DHZ=100"
+      # CLN's int constructors pack their argument straight into a fixnum with no
+      # range check, which is only valid when every int fits one (cl_value_len
+      # >= 32). On a 32-bit target cl_value_len is 30, so values with bit 29 set
+      # are silently corrupted -- 1000000007 became -73741817, 1<<29 became
+      # -2^29, and 1<<30 became 0 -- which breaks the whole engine (and GiNaC's
+      # own startup). The long / unsigned long constructors already range-check
+      # through cl_I_constructor_from_L / _from_UL, so make the int ones delegate
+      # to them. See tools/wasm-probes/.
+      if ! grep -q "CLNFIX" "$d/include/cln/number.h"; then
+          "${PYTHON:-python}" - "$d/include/cln/number.h" <<'PYEOF'
+import io, sys
+p = sys.argv[1]
+t = io.open(p, "r", encoding="utf-8", errors="surrogateescape").read()
+old_ctor = ("#define CL_DEFINE_INT_CONSTRUCTORS(_class_)  \\\n"
+            "CL_DEFINE_INT_CONSTRUCTOR(_class_, int)\t\t\t\t\t\\\n"
+            "CL_DEFINE_INT_CONSTRUCTOR(_class_, unsigned int)\n")
+new_ctor = ("#if (cl_value_len >= 32)\n"
+            "// Every int fits into a fixnum value; the packed form is correct.\n"
+            "#define CL_DEFINE_INT_CONSTRUCTORS(_class_)  \\\n"
+            "CL_DEFINE_INT_CONSTRUCTOR(_class_, int)\t\t\t\t\t\\\n"
+            "CL_DEFINE_INT_CONSTRUCTOR(_class_, unsigned int)\n"
+            "#else\n"
+            "// CLNFIX: cl_value_len is 30 here, so an int does not always fit a\n"
+            "// fixnum (bit 29 set, and unsigned >= 2^29, do not). Delegate to the\n"
+            "// long / unsigned long constructors, which range-check and build a\n"
+            "// bignum when needed.\n"
+            "#define CL_DEFINE_INT_CONSTRUCTORS(_class_)  \\\n"
+            "inline _class_::_class_ (const int wert) : _class_ ((long) wert) {}\t\\\n"
+            "inline _class_::_class_ (const unsigned int wert) : _class_ ((unsigned long) wert) {}\n"
+            "#endif\n")
+old_assign = ("#define CL_DEFINE_INT_ASSIGNMENT_OPERATORS(_class_)  \\\n"
+              "CL_DEFINE_INT_ASSIGNMENT_OPERATOR(_class_, int)\t\t\t\t\\\n"
+              "CL_DEFINE_INT_ASSIGNMENT_OPERATOR(_class_, unsigned int)\n")
+new_assign = ("#if (cl_value_len >= 32)\n"
+              "#define CL_DEFINE_INT_ASSIGNMENT_OPERATORS(_class_)  \\\n"
+              "CL_DEFINE_INT_ASSIGNMENT_OPERATOR(_class_, int)\t\t\t\t\\\n"
+              "CL_DEFINE_INT_ASSIGNMENT_OPERATOR(_class_, unsigned int)\n"
+              "#else\n"
+              "#define CL_DEFINE_INT_ASSIGNMENT_OPERATORS(_class_)  \\\n"
+              "inline _class_& _class_::operator= (const int wert)\t\t\t\\\n"
+              "{ return *this = (long) wert; }\t\t\t\t\t\\\n"
+              "inline _class_& _class_::operator= (const unsigned int wert)\t\t\\\n"
+              "{ return *this = (unsigned long) wert; }\n"
+              "#endif\n")
+for old, new in ((old_ctor, new_ctor), (old_assign, new_assign)):
+    if old not in t:
+        sys.exit("CLN patch: pattern not found in " + p)
+    t = t.replace(old, new, 1)
+io.open(p, "w", encoding="utf-8", errors="surrogateescape").write(t)
+PYEOF
       fi
       ./configure --host=wasm32 --disable-shared --enable-static \
           --prefix="$DEPS" \
           CPPFLAGS="-I$DEPS/include" LDFLAGS="-L$DEPS/lib"
+      make clean > /dev/null 2>&1 || true
       make -j"$JOBS"
       make install )
 fi
@@ -135,6 +177,9 @@ if [ ! -f "$DEPS/lib/libginac.a" ]; then
       ./configure --host=wasm32 --disable-shared --enable-static \
           --prefix="$DEPS" \
           CPPFLAGS="-I$DEPS/include" LDFLAGS="-L$DEPS/lib"
+      # CLN's headers are baked into GiNaC's objects (int constructors are
+      # inline), so a CLN change means rebuilding GiNaC from scratch.
+      make clean > /dev/null 2>&1 || true
       make -j"$JOBS"
       make install )
 fi

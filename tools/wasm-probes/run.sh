@@ -69,7 +69,7 @@ const factory = require('$OUTWIN/cln_probe.js');
   }
   console.log('  len(1<<k)     (want k+1):');
   console.log('    ' + row.join('  '));
-  for (const [n, want] of [['p_cln_ash', 100], ['p_cln_parse', 61], ['p_cln_rational', 42]]) {
+  for (const [n, want] of [['p_cln_ash', 100], ['p_cln_parse', 60], ['p_cln_rational', 42]]) {
     const r = await c1(n);
     console.log('  ' + n + ' = ' + r + '   (want ' + want + ')');
     if (r !== want) bad++;
