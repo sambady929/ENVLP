@@ -139,11 +139,11 @@ Ruled out, with evidence:
 This is a known-hard area: there is a fork of CLN, `jan-hudec/cln-em`,
 "tweaked to build under emscripten", which exists for this reason.
 
-### Root cause found, and what remains
+### What was found, and what remains
 
-**Fixed:** CLN decides whether it has a 64-bit "double digit" type — needed for
-digit-sequence multiplication — from a list of CPUs with fast 64-bit integers, in
-`include/cln/types.h`:
+**Patch applied (not the cause).** CLN decides whether it has a 64-bit "double
+digit" type — needed for digit-sequence multiplication — from a list of CPUs with
+fast 64-bit integers, in `include/cln/types.h`:
 
 ```c
 #if (defined(__alpha__) || ... || defined(__loongarch_lp64))
@@ -155,9 +155,11 @@ digit-sequence multiplication — from a list of CPUs with fast 64-bit integers,
                                       // with 32-bit arithmetic
 ```
 
-wasm has first-class `i64`, so wasm32 belongs in that list. `build_web.sh` now
-applies that patch. It is a genuine bug fix — but **not sufficient**: the probes
-still fail, so there is at least one more defect.
+wasm has first-class `i64`, so wasm32 belongs in that list. `build_web.sh`
+applies that patch — but **measurements are identical before and after it**, so
+it is not the cause of the wrong values. It is a consistency fix (without it CLN
+takes its 32-bit-emulation paths) and is kept, but the real defect is the bignum
+path below.
 
 **Remaining, narrowed to one function:** the bug is at the **immediate/fixnum
 boundary**, in the int→`cl_I` construction.
