@@ -78,6 +78,12 @@ python -m http.server 8000 --directory web
 An iframe is recommended: it isolates the app from the theme's CSS and JS, so
 the schematic editor and the plots lay out exactly as intended on any theme.
 
+### Updating a live deployment
+
+`index.html` loads the scripts as `app.js?v=2` etc. Bump that number whenever you
+replace the JavaScript, otherwise visitors keep the copy their browser cached.
+The `.wasm` is fetched by `envlp.js` and can be replaced freely.
+
 ## What is and isn't in this build
 
 | | |
