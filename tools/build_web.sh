@@ -18,7 +18,7 @@ DEPS="$BUILD/deps"
 
 GMP_VER=6.3.0
 CLN_VER=1.3.7
-GINAC_VER=1.8.7
+GINAC_VER=1.8.10
 JOBS=${JOBS:-4}
 
 say() { printf '\n=== %s ===\n' "$*" >&2; }
@@ -108,6 +108,13 @@ if [ ! -f "$DEPS/lib/libginac.a" ]; then
     say "building GiNaC"
     ( cd "$d"
       emu_env
+      # GiNaC finds CLN through pkg-config, which is not on this shell's PATH
+      # (it lives in the MSYS2 toolchain tree). Point it at the .pc we just
+      # installed and hand it the flags directly as a fallback.
+      export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
+      export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+      export CLN_CFLAGS="-I$DEPS/include"
+      export CLN_LIBS="-L$DEPS/lib -lcln -lgmp"
       ./configure --host=wasm32 --disable-shared --enable-static \
           --prefix="$DEPS" \
           CPPFLAGS="-I$DEPS/include" LDFLAGS="-L$DEPS/lib"
@@ -142,7 +149,7 @@ cp "$ROOT"/examples/*.scx                         "$WEB/examples/"
     | sed 's/^/[/;s/$/]/' > index.json )
 # The stub module + its canned result are only for exercising the page before
 # the real build exists (envlp.js above is the real one now).
-rm -f "$WEB/fake_result.json"
+rm -f "$WEB/fake_result.json" "$WEB/_art.json" "$WEB/_geom.json"
 
 say "done"
 ls -la "$WEB" | sed -n '1,20p'

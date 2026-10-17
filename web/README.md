@@ -23,6 +23,22 @@ The script downloads and builds GMP, CLN and GiNaC for wasm into
 copies the typesetting/plotting bundles and the example circuits into `web/`.
 Re-running it only rebuilds what changed.
 
+### Notes for other machines
+
+Building these three autotools libraries for WebAssembly on Windows has three
+sharp edges, all handled by the script but worth knowing:
+
+* **`emconfigure` cannot run `configure`.** It spawns the configure script with
+  Python's `subprocess`, and Windows cannot execute a `/bin/sh` script (WinError
+  193). The script therefore sets `CC=emcc CXX=em++ AR=emar RANLIB=emranlib`
+  itself and lets the shell drive `configure`/`make`.
+* **CLN needs `-DHZ=100`.** Its timing code uses the POSIX `HZ` macro, which the
+  Emscripten libc does not define.
+* **GiNaC needs pkg-config to find CLN.** If it is not on `PATH` (in MSYS2 it
+  lives in `ucrt64/bin`), the configure fails with "pkg-config script could not
+  be found". The script adds the MSYS2 tree to `PATH`, sets `PKG_CONFIG_PATH`,
+  and also passes `CLN_CFLAGS`/`CLN_LIBS` directly.
+
 To try it locally, serve the directory over HTTP — `file://` will not work
 because the browser fetches the `.wasm`:
 
@@ -67,10 +83,17 @@ the schematic editor and the plots lay out exactly as intended on any theme.
 | | |
 |---|---|
 | ✅ the symbolic engine (DC, AC, transfer function, PSRR, loop gain, Zin/Zout, noise, differential) | `src/core` |
-| ✅ the `.scx` reader and net resolver | `src/app/Document.cpp`, `SymbolicGeom.cpp` |
+| ✅ the schematic editor's **model**: components, wire bindings, waypoints, the orthogonal router, net naming, labels, copies, undo, `.scx` round-trip | `src/app/Document.cpp`, exposed by `src/web/EditorApi.cpp` |
+| ✅ the schematic editor's **canvas**: palette, place, wire, select/marquee, drag, rotate, flip, delete, net labels, pan, zoom | `web/editor.js` |
+| ✅ the symbol artwork, shared with the desktop app | `src/app/SymbolDraw.cpp` → `src/web/SymbolArt.cpp` |
 | ✅ MathJax typesetting and Plotly plots | `resources/mathjax`, `resources/plotly` |
-| ❌ the wxWidgets desktop GUI | replace with the web UI here |
+| ❌ the wxWidgets desktop shell | replaced by the web UI |
 | ❌ the Lua console | JavaScript is the scripting layer in the browser |
+
+The editor is deliberately *not* a JavaScript re-implementation of the
+electrical rules: the page renders the geometry the C++ model returns and sends
+it batched edits, so wiring, net naming and `.scx` output are identical to the
+desktop app.
 
 ## Licensing
 
