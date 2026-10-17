@@ -97,6 +97,20 @@ if [ ! -f "$DEPS/lib/libcln.a" ]; then
       # CLN's timing code uses the POSIX HZ macro (ticks per second), which the
       # Emscripten libc does not define.
       export CXXFLAGS="-O2 -DHZ=100" CFLAGS="-O2 -DHZ=100"
+      # CLN works out whether it has a 64-bit "double digit" type -- needed for
+      # digit-sequence multiplication -- from a list of CPUs with fast 64-bit
+      # integers. wasm32 is not in that list, so CLN concludes HAVE_DD=0 and
+      # computes wide products with 32-bit arithmetic: wrong results (e.g.
+      # 1000000007*1000000007 != the exact product, integer_length(1000000007)
+      # = 27) and out-of-bounds digit writes. wasm has first-class i64, so it
+      # belongs in that list.
+      #
+      # NOTE: this fix is necessary but NOT sufficient -- CLN still corrupts
+      # memory in the digit-sequence code (see web/README.md, "Known blocker").
+      if ! grep -q "__wasm32__" "$d/include/cln/types.h"; then
+          sed -i 's@^  #if (defined(__alpha__) || defined(__ia64__) || defined(__mips64__).*@  #if (defined(__alpha__) || defined(__ia64__) || defined(__mips64__) || defined(__powerpc64__) || defined(__s390x__) || (defined(__sparc__) \&\& defined(__arch64__)) || (defined(__x86_64__) || defined(_M_AMD64)) || defined(__aarch64__) || (defined(__riscv) \&\& __riscv_xlen == 64) || defined(__e2k__) || defined(__loongarch_lp64) || defined(__wasm32__))@' \
+              "$d/include/cln/types.h"
+      fi
       ./configure --host=wasm32 --disable-shared --enable-static \
           --prefix="$DEPS" \
           CPPFLAGS="-I$DEPS/include" LDFLAGS="-L$DEPS/lib"

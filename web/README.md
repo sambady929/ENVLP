@@ -137,23 +137,64 @@ Ruled out, with evidence:
   `-sSTACK_OVERFLOW_CHECK=2` change nothing.
 
 This is a known-hard area: there is a fork of CLN, `jan-hudec/cln-em`,
-"tweaked to build under emscripten", and its patch teaches CLN's `object.h` that
-`__asmjs__` is a 4-byte-aligned architecture — i.e. exactly the
-immediate-representation question that the wrong bit lengths point at.
+"tweaked to build under emscripten", which exists for this reason.
 
-### Options
+### Root cause found, and what remains
 
-1. **Patch CLN for wasm32** (or build from a fork that does) and keep the
-   browser-only deployment. Most promising; needs someone to work through CLN's
-   integer representation and re-run the probes above.
-2. **Solve on the server.** Serve the page from WordPress but run the analysis
-   in a small endpoint (native binary or a WASI build) that the page POSTs the
-   `.scx` to. No CLN porting, but the host must be able to execute something.
-3. **Use the desktop app for analysis** and keep the web page as the editor and
-   viewer only.
+**Fixed:** CLN decides whether it has a 64-bit "double digit" type — needed for
+digit-sequence multiplication — from a list of CPUs with fast 64-bit integers, in
+`include/cln/types.h`:
 
-The front-end needs no changes for options 1 or 2 — it already talks to the
-engine through `envlp_run` / `envlp_doc_*`.
+```c
+#if (defined(__alpha__) || ... || defined(__loongarch_lp64))
+    #define HAVE_FAST_LONGLONG        // wasm32 is not in this list
+#endif
+...
+#if (intDDsize <= (defined(HAVE_FAST_LONGLONG) ? 64 : 32))
+    #define HAVE_DD 1                 // so this is 0, and CLN multiplies digits
+                                      // with 32-bit arithmetic
+```
+
+wasm has first-class `i64`, so wasm32 belongs in that list. `build_web.sh` now
+applies that patch. It is a genuine bug fix — but **not sufficient**: the probes
+still fail, so there is at least one more defect.
+
+**Remaining:** the traps are inside CLN's digit-sequence code —
+`NUDS_to_I()` (`src/integer/conv/cl_I_from_NUDS.cc`), reached from the string
+reader via `digits_to_I_divconq()`, and `ash()`. `NUDS_to_I` writes one digit
+past its input buffer *by design* (the caller leaves a spare limb), so the
+out-of-bounds write means a buffer is being allocated one limb short — i.e. a
+size computed in CLN's DS/alloca path. That is where to look next.
+
+Ruled out, with evidence:
+
+* **Build configuration** — `cln/intparam.h` reports the correct wasm32 sizes
+  (`long` 32, pointers 32, `long long` 64), `gmp.h` reports `GMP_LIMB_BITS 32`,
+  and CLN's `config.h` selects `GMP_DEMANDS_UINTD_LONG`, so `uintD` matches
+  `mp_limb_t`. Build-tree and installed headers are byte-identical.
+* **Stale objects / a bad reconfigure** — a clean `make clean` rebuild is
+  identical.
+* **The optimiser** — at `-O0` the traps disappear but the *values are still
+  wrong*, so it is not (only) miscompilation.
+* **Stack exhaustion** — an 8 MB stack plus `-sSTACK_OVERFLOW_CHECK=2` changes
+  nothing, so the bad write is to a heap buffer, not past the stack.
+* **The exception ABI** — matching `-fexceptions` across the libraries and the
+  app changes nothing.
+
+### Where to pick it up
+
+* The pass/fail test is four lines: link a probe against only `libcln.a` and
+  check `cl_I("1000000007") * cl_I("1000000007") == cl_I("1000000014000000049")`,
+  `integer_length(cl_I(1000000007)) == 30`, and that `ash` on a 60-bit value does
+  not trap. The exact probes used here are described above.
+* Then rebuild CLN, GiNaC (their objects embed the headers, so `make clean`
+  first) and the app — `tools/build_web.sh` does all three.
+* The front-end needs no changes: it talks to the engine through `envlp_run` /
+  `envlp_doc_*`. A working `envlp.wasm` drops straight in.
+
+Fallbacks if the port stalls: run the analysis in a small endpoint the page
+POSTs the `.scx` to, or keep the web page as the editor/viewer and analyse in the
+desktop app.
 
 ## Licensing
 
