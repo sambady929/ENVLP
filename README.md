@@ -12,6 +12,10 @@ H(s) = K / ((1 + s·R1·C1)·(1 + s·R2·C2))
 Built with C++17, [GiNaC](https://www.ginac.de/) for symbolic math, and
 wxWidgets for the GUI.
 
+The analysis engine also builds to **WebAssembly**, so it can run entirely in a
+browser (no server, nothing uploaded) — see [`web/README.md`](web/README.md).
+The plots and the typeset math are Plotly and MathJax in either case.
+
 ## Features
 
 - **Schematic capture**: place resistors, capacitors, inductors, V/I sources,

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ENVLP — symbolic circuit analyser</title>
+<link rel="stylesheet" href="style.css">
+<script>
+  // Must be set *before* the MathJax bundle loads: the bundle augments this
+  // object at startup, and assigning it afterwards replaces MathJax's own.
+  window.MathJax = { svg: { fontCache: 'global' }, options: { enableMenu: false } };
+</script>
+<script src="mathjax/tex-svg.js"></script>
+<script src="plotly/plotly-basic.min.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>ENVLP</h1>
+  <span class="tag">symbolic circuit analyser</span>
+  <span class="spacer"></span>
+  <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+  <button id="btn-open" class="ghost">Open .scx…</button>
+  <button id="btn-save" class="ghost">Save .scx…</button>
+  <input type="file" id="file" accept=".scx,.txt" hidden>
+</header>
+
+<main>
+  <aside id="palette" class="palette">
+    <div class="ttl">Components</div>
+    <div id="palette-list"></div>
+    <div class="ttl">Tools</div>
+    <button class="tool" data-tool="select">Select <kbd>Esc</kbd></button>
+    <button class="tool" data-tool="wire">Wire <kbd>W</kbd></button>
+    <div class="hint">
+      <b>Place</b> pick a part, click the canvas.<br>
+      <b>Wire</b> W, click start, click end.<br>
+      <b>Move</b> drag a part (wires follow).<br>
+      <b>Rotate</b> R &nbsp; <b>Flip</b> F / Shift+F<br>
+      <b>Label a net</b> N, click a wire.<br>
+      <b>Delete</b> Del &nbsp; <b>Pan</b> middle-drag &nbsp; <b>Zoom</b> wheel
+    </div>
+  </aside>
+
+  <section class="center">
+    <div class="canvas-wrap">
+      <canvas id="canvas" tabindex="0"></canvas>
+      <div id="hud" class="hud"></div>
+    </div>
+    <div class="results">
+      <nav class="tabs">
+        <button data-tab="text" class="active">Report</button>
+        <button data-tab="math">Math</button>
+        <button data-tab="plot">Plot</button>
+      </nav>
+      <div id="tab-text" class="tab active"><pre id="report"></pre></div>
+      <div id="tab-math" class="tab"><div id="math" class="math"></div></div>
+      <div id="tab-plot" class="tab">
+        <div class="row">
+          <label for="plot-mode">plot</label>
+          <select id="plot-mode">
+            <option value="bode">Bode</option>
+            <option value="nyquist">Nyquist</option>
+            <option value="nichols">Nichols</option>
+            <option value="noise">Noise</option>
+          </select>
+          <button id="save-html" class="ghost">Save HTML…</button>
+          <button id="save-py" class="ghost">Save Python…</button>
+        </div>
+        <div id="plot"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="dock">
+    <div class="ttl">Analysis</div>
+    <div class="grid">
+      <label for="kind">analysis</label>
+      <select id="kind">
+        <option value="TransferFunction">Transfer function H(s)</option>
+        <option value="AC">AC (small-signal)</option>
+        <option value="DC">DC operating point</option>
+        <option value="PSRR">PSR / PSRR</option>
+        <option value="LoopGain">Loop gain (return ratio)</option>
+        <option value="ShortCircuitCurrent">Short-circuit current</option>
+        <option value="InputImpedance">Input impedance</option>
+        <option value="OutputImpedance">Output impedance</option>
+        <option value="Noise">Noise</option>
+        <option value="Differential">Differential (Adm/Acm/CMRR)</option>
+      </select>
+
+      <label for="input">input</label>
+      <input id="input" value="V1" placeholder="V1 / I1">
+
+      <label for="output">output</label>
+      <input id="output" value="V(out)" placeholder="V(out) or V(a)-V(b)">
+
+      <label for="port_p" class="diff" hidden>port +</label>
+      <input id="port_p" class="diff" hidden placeholder="vin">
+
+      <label for="port_n" class="diff" hidden>port &minus;</label>
+      <input id="port_n" class="diff" hidden placeholder="vcm">
+
+      <label for="sweep">sweep</label>
+      <div class="inline">
+        <input id="f0" value="1" title="start [Hz]">
+        <input id="f1" value="1e9" title="stop [Hz]">
+        <input id="points" value="10" title="points per interval">
+      </div>
+
+      <label for="dc_mode">DC model</label>
+      <select id="dc_mode">
+        <option value="1">1. gm/Id (symbolic)</option>
+        <option value="2">2. square law (symbolic)</option>
+      </select>
+
+      <label for="vdd">VDD / Vthn / Vthp</label>
+      <div class="inline">
+        <input id="vdd" value="5" title="supply [V]">
+        <input id="vthn" value="0.6" title="Vthn [V]">
+        <input id="vthp" value="0.6" title="Vthp [V]">
+      </div>
+
+      <label class="check"><input type="checkbox" id="prune" checked>
+        ignore negligible terms</label>
+      <label class="check"><input type="checkbox" id="assume_sat" checked>
+        assume all devices saturated</label>
+    </div>
+    <button id="run" class="primary">Run analysis</button>
+    <div id="status" class="status"></div>
+    <div class="ttl">Properties</div>
+    <div id="props" class="props"></div>
+  </aside>
+</main>
+
+<footer>
+  The solver is ENVLP's C++ core compiled to WebAssembly — the schematic and
+  every analysis run in your browser; nothing is uploaded.
+</footer>
+
+<script src="envlp.js"></script>
+<script src="editor.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

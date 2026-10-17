@@ -127,6 +127,7 @@ add_executable(ENVLP WIN32
   src/app/Document.cpp
   src/app/SymbolGeom.cpp
   src/app/Symbols.cpp
+  src/app/SymbolDraw.cpp
   src/app/SchematicCanvas.cpp
   src/app/PalettePanel.cpp
   src/app/PropertiesPanel.cpp
@@ -179,3 +180,4 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
   enable_testing()
   add_subdirectory(tests)
 endif()
+

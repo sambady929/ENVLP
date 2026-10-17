@@ -1,5 +1,6 @@
 #include "Symbols.h"
 #include "SymbolGeom.h"
+#include "SymbolTarget.h"
 #include "Theme.h"
 
 #include <algorithm>
@@ -24,388 +25,52 @@ const wxColour kValInk = theme::val_ink;  // value text
 constexpr double kWire = theme::kStrokeWire;
 constexpr double kBody = theme::kStrokeEmphasis;
 
-struct Ctx {
+// The wxWidgets target: draws the same calls onto a DC.
+struct WxTarget : SymbolTarget {
     wxDC& dc;
-    double ox, oy;
-    int rot;
-    bool flip_h = false, flip_v = false;
     wxColour col;
-    // pen cache: drawing a symbol sets the same pen many times; skip the
-    // redundant wxDC::SetPen calls (they are surprisingly costly on GDI).
     mutable int last_width = -1;
-
-    // set the pen width for the next strokes
-    void w(double width) const {
-        int px = std::max(1, int(std::lround(width)));
+    explicit WxTarget(wxDC& d, wxColour c) : dc(d), col(c) {}
+    void set_width(double w) override {
+        int px = std::max(1, int(std::lround(w)));
         if (px == last_width) return;
         last_width = px;
         dc.SetPen(wxPen(col, px));
     }
-
-    wxPoint P(double x, double y) const {
-        Pt r = rotate_pt({flip_h ? -x : x, flip_v ? -y : y}, rot);
-        return wxPoint(int(std::lround(ox + r.first)),
-                       int(std::lround(oy + r.second)));
+    void set_colour(Rgb c) override {
+        col = wxColour(c.r, c.g, c.b);
+        last_width = -1;
     }
-    void line(double x0, double y0, double x1, double y1) const {
-        dc.DrawLine(P(x0, y0), P(x1, y1));
+    void set_emphasis(bool) override {} // draw_coupling sets the DC font itself
+    void line(double x0, double y0, double x1, double y1) override {
+        dc.DrawLine(int(std::lround(x0)), int(std::lround(y0)),
+                    int(std::lround(x1)), int(std::lround(y1)));
     }
-    void polyline(const std::vector<Pt>& pts, bool close = false) const {
-        for (size_t i = 1; i < pts.size(); ++i)
-            line(pts[i - 1].first, pts[i - 1].second, pts[i].first,
-                 pts[i].second);
-        if (close && pts.size() > 2)
-            line(pts.back().first, pts.back().second, pts.front().first,
-                 pts.front().second);
-    }
-    void fillpoly(const std::vector<Pt>& pts) const {
+    void fill_poly(const std::vector<Pt>& pts) override {
         std::vector<wxPoint> wp;
         wp.reserve(pts.size());
-        for (const auto& p : pts) wp.push_back(P(p.first, p.second));
+        for (const auto& p : pts)
+            wp.push_back(wxPoint(int(std::lround(p.first)),
+                                 int(std::lround(p.second))));
         dc.SetBrush(wxBrush(col));
         dc.DrawPolygon(int(wp.size()), wp.data());
         dc.SetBrush(*wxTRANSPARENT_BRUSH);
     }
-    // filled rectangle between two corners (axis-aligned in symbol space)
-    void fillrect(double x0, double y0, double x1, double y1) const {
-        fillpoly({{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}});
+    void circle(double x, double y, double r) override {
+        dc.DrawCircle(wxPoint(int(std::lround(x)), int(std::lround(y))),
+                      int(std::lround(r)));
     }
-    void circle(double cx, double cy, double r) const {
-        dc.DrawCircle(P(cx, cy), int(std::lround(r)));
-    }
-    // ellipse in symbol space; `rot`-flip-aware at the endpoints via P()
-    void ellipse(double cx, double cy, double rx, double ry,
-                 int steps = 32) const {
-        std::vector<Pt> pts;
-        for (int i = 0; i <= steps; ++i) {
-            double th = 2.0 * M_PI * i / steps;
-            pts.push_back({cx + rx * std::cos(th), cy + ry * std::sin(th)});
-        }
-        polyline(pts);
-    }
-    void arc(double cx, double cy, double r, double a0, double a1,
-             int steps = 18) const {
-        std::vector<Pt> pts;
-        for (int i = 0; i <= steps; ++i) {
-            double th = a0 + (a1 - a0) * i / steps;
-            pts.push_back({cx + r * std::cos(th), cy + r * std::sin(th)});
-        }
-        polyline(pts);
-    }
-    // solid triangular arrowhead, tip at (tx,ty), coming from (fx,fy)
-    void arrow(double fx, double fy, double tx, double ty, double size) const {
-        double dx = tx - fx, dy = ty - fy;
-        double len = std::hypot(dx, dy);
-        if (len < 1e-9) return;
-        dx /= len;
-        dy /= len;
-        double px = -dy, py = dx;
-        fillpoly({{tx, ty},
-                  {tx - dx * size + px * size * 0.5,
-                   ty - dy * size + py * size * 0.5},
-                  {tx - dx * size - px * size * 0.5,
-                   ty - dy * size - py * size * 0.5}});
-    }
-    void text(const std::string& s, double x, double y, bool centered) const {
-        wxPoint p = P(x, y);
+    void text(const std::string& s, double x, double y, bool centered) override {
         wxString t = wxString::FromUTF8(s);
+        int px = int(std::lround(x)), py = int(std::lround(y));
         if (centered) {
             wxSize ts = dc.GetTextExtent(t);
-            p.x -= ts.x / 2;
-            p.y -= ts.y / 2;
+            px -= ts.x / 2;
+            py -= ts.y / 2;
         }
-        dc.DrawText(t, p.x, p.y);
+        dc.DrawText(t, px, py);
     }
 };
-
-// --- passives --------------------------------------------------------------
-void draw_resistor(Ctx& t) {
-    t.w(kWire);
-    t.line(-30, 0, -13, 0);
-    t.line(13, 0, 30, 0);
-    t.polyline({{-13, 0},   {-10.8, -8}, {-6.5, 8}, {-2.2, -8},
-                {2.2, 8},   {6.5, -8},   {10.8, 8}, {13, 0}});
-}
-
-void draw_capacitor(Ctx& t) {
-    t.w(kWire);
-    t.line(-30, 0, -5, 0);
-    t.line(5, 0, 30, 0);
-    t.w(kBody);
-    t.line(-5, -13, -5, 13);
-    t.line(5, -13, 5, 13);
-}
-
-void draw_inductor(Ctx& t) {
-    t.w(kWire);
-    t.line(-30, 0, -16, 0);
-    t.line(16, 0, 30, 0);
-    // four upward humps
-    for (int i = 0; i < 4; ++i) t.arc(-12 + i * 8, 0, 4, M_PI, 2 * M_PI);
-}
-
-void draw_diode(Ctx& t) {
-    t.w(kWire);
-    t.line(-30, 0, -10, 0);
-    t.line(9, 0, 30, 0);
-    // anode triangle (outline) and cathode bar
-    t.polyline({{-10, -10}, {-10, 10}, {9, 0}}, true);
-    t.w(kBody);
-    t.line(9, -10, 9, 10);
-}
-
-// --- sources ---------------------------------------------------------------
-void draw_vsource(Ctx& t) {
-    t.w(kWire);
-    t.line(0, -30, 0, -15);
-    t.line(0, 15, 0, 30);
-    t.circle(0, 0, 15);
-    // polarity marks inside the circle (+ upper, - lower)
-    t.line(-7, -7, 7, -7);
-    t.line(0, -12, 0, -2);
-    t.line(-7, 7, 7, 7);
-}
-
-void draw_isource(Ctx& t) {
-    t.w(kWire);
-    t.line(0, -30, 0, -15);
-    t.line(0, 15, 0, 30);
-    t.circle(0, 0, 15);
-    // arrow points down, away from the head pin (current source convention)
-    t.line(0, -8, 0, -1);
-    t.arrow(0, -1, 0, 8, 7);
-}
-
-void draw_vdd(Ctx& t) {
-    t.w(kWire);
-    t.line(0, 0, 0, -11);
-    t.fillrect(-13, -15, 13, -11);
-}
-
-void draw_gnd(Ctx& t) {
-    t.w(kWire);
-    t.line(0, 0, 0, 8);
-    t.w(kBody);
-    t.line(-12, 8, 12, 8);
-    t.line(-7.5, 15, 7.5, 15);
-    t.line(-4, 21, 4, 21);
-}
-
-// --- controlled sources ----------------------------------------------------
-void draw_vcvs(Ctx& t, Kind k) {
-    t.w(kWire);
-    t.line(40, -10, 26, -10);
-    t.line(40, 10, 26, 10);
-    t.line(-40, -10, -26, -10);
-    t.line(-40, 10, -26, 10);
-    t.w(kBody);
-    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
-    // polarity marks just outside the box, at the pin rows
-    t.w(kWire);
-    t.line(-23, -10, -19, -10);
-    t.line(-21, -12, -21, -8);
-    t.line(-23, 10, -19, 10);
-    t.line(19, -10, 23, -10);
-    t.line(21, -12, 21, -8);
-    t.line(19, 10, 23, 10);
-    t.text(k == Kind::E ? "E" : "G", 0, 0, true);
-}
-
-void draw_body_ccvs_cccs(Ctx& t, Kind k) {
-    t.w(kWire);
-    t.line(40, -10, 26, -10);
-    t.line(40, 10, 26, 10);
-    t.line(-40, -10, -26, -10);
-    t.line(-40, 10, -26, 10);
-    t.w(kBody);
-    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
-    // input port polarity marks just outside the box
-    t.w(kWire);
-    t.line(-23, -10, -19, -10);
-    t.line(-21, -12, -21, -8);
-    t.line(-23, 10, -19, 10);
-    // output port polarity marks
-    t.line(19, -10, 23, -10);
-    t.line(21, -12, 21, -8);
-    t.line(19, 10, 23, 10);
-    t.text(k == Kind::CCCS ? "F" : "H", 0, 0, true);
-}
-
-// --- transistors -----------------------------------------------------------
-// Razavi / sym1 geometry: thin gate lead into a thick gate bar, a thick
-// channel bar, drain and source taps, and a source-polarity arrow.
-void draw_mosfet(Ctx& t, Kind k) {
-    const bool n = (k == Kind::NMOS);
-    t.w(kWire);
-    t.line(-40, 0, -31.33, 0);
-    // drain and source taps off the ends of the channel bar, to the pins
-    t.polyline({{-20.67, -16}, {0, -16}, {0, -40}});
-    t.polyline({{-20.67, 16}, {0, 16}, {0, 40}});
-    // thick bars: gate bar and channel bar
-    t.w(kBody);
-    t.line(-31.33, -14, -31.33, 14);
-    t.line(-20.67, -16, -20.67, 16);
-    // Source arrow on the source tap. The NMOS arrow points to the right
-    // (toward the drain/source pins); the PMOS is drawn mirrored so its arrow
-    // points to the left.
-    if (n)
-        t.arrow(-19, 16, -4, 16, 8);    // NMOS: tip to the right
-    else
-        t.arrow(-4, -16, -19, -16, 8);  // PMOS: tip to the left
-}
-
-void draw_bjt(Ctx& t, Kind k) {
-    const bool npn = (k == Kind::NPN);
-    t.w(kWire);
-    t.line(-40, 0, -16.87, 0);
-    t.w(kBody);
-    t.line(-16.87, -13.35, -16.87, 13.34); // base bar
-    t.w(kWire);
-    if (npn) {
-        // sym1 geometry: collector diagonal to the top, emitter diagonal to
-        // the bottom, filled emitter arrow pointing down-right
-        t.polyline({{-16.87, -6.4}, {0, -13.38}, {0, -40}});
-        t.polyline({{-16.87, 6.4}, {0, 13.38}, {0, 40}});
-        t.fillpoly({{-6.64, 6.79}, {-9.95, 13.38}, {0, 13.38}});
-    } else {
-        // PNP (upside down): emitter diagonal up-right with the arrow at the
-        // base end pointing back toward the base
-        t.polyline({{-8.58, -9.69}, {0, -13.38}, {0, -40}});
-        t.polyline({{-16.87, 6.4}, {0, 13.38}, {0, 40}});
-        t.fillpoly({{-10.23, -12.99}, {-6.92, -6.4}, {-16.87, -6.4}});
-    }
-}
-
-// --- amplifiers / blocks ---------------------------------------------------
-void draw_opamp(Ctx& t, bool fully_diff) {
-    t.w(kWire);
-    t.line(-40, -10, -30, -10);
-    t.line(-40, 10, -30, 10);
-    if (fully_diff) {
-        // Output leads run from the triangle's slanted edge (at y = +/-10 the
-        // edge is at x ~ 4.6) out to the pins, so the lead actually touches the
-        // body instead of floating beside it.
-        t.line(4.6, -10, 34, -10);
-        t.line(4.6, 10, 34, 10);
-    } else {
-        t.line(21.96, 0, 40, 0);
-    }
-    t.w(kBody);
-    t.polyline({{-30, -30}, {-30, 30}, {21.96, 0}}, true);
-    t.w(kWire);
-    if (fully_diff) {
-        // inputs, marked inside the body near the left edge: + on the upper
-        // pin (in+), - on the lower one (in-)
-        t.line(-24, -10, -18, -10);
-        t.line(-21, -13, -21, -7);
-        t.line(-24, 10, -18, 10);
-        // outputs, marked inside the body near the right edge: - on the upper
-        // pin (out-), + on the lower one (out+). The sign swap against the
-        // inputs is the standard FD-amp convention: each feedback resistor then
-        // runs straight across from an input to the output it feeds back to.
-        t.line(-8, -10, -3, -10);
-        t.line(-8, 10, -3, 10);
-        t.line(-5.5, 7.5, -5.5, 12.5);
-    } else {
-        t.line(-27, -10, -21, -10);
-        t.line(-24, -13, -24, -7);
-        t.line(-27, 10, -21, 10);
-    }
-}
-
-void draw_amp(Ctx& t) {
-    t.w(kWire);
-    t.line(-30, 0, -26, 0);
-    t.line(21, 0, 30, 0);
-    t.w(kBody);
-    t.polyline({{-26, -26}, {-26, 26}, {21, 0}}, true);
-}
-
-void draw_ratio(Ctx& t, const std::string& mark) {
-    t.w(kWire);
-    t.line(-30, 0, -22, 0);
-    t.line(22, 0, 30, 0);
-    t.w(kBody);
-    t.polyline({{-22, -22}, {22, -22}, {22, 22}, {-22, 22}}, true);
-    t.text(mark, 0, 0, true);
-}
-
-// standalone mutual-coupling marker: a literal letter K
-void draw_coupling(Ctx& t) {
-    wxFont f = t.dc.GetFont();
-    f.SetPointSize(std::max(10, f.GetPointSize() + 6));
-    f.SetWeight(wxFONTWEIGHT_BOLD);
-    f.SetStyle(wxFONTSTYLE_NORMAL);
-    t.dc.SetFont(f);
-    t.dc.SetTextForeground(t.col);
-    t.text("K", 0, 0, true);
-}
-
-void draw_transformer(Ctx& t) {
-    t.w(kWire);
-    // leads from the pins to the windings
-    t.polyline({{-40, -20}, {-22, -20}, {-22, -16}});
-    t.polyline({{-40, 20}, {-22, 20}, {-22, 16}});
-    for (int i = 0; i < 4; ++i)
-        t.arc(-22, -12 + i * 8, 4, M_PI / 2, 3 * M_PI / 2);
-    t.polyline({{40, -20}, {22, -20}, {22, -16}});
-    t.polyline({{40, 20}, {22, 20}, {22, 16}});
-    for (int i = 0; i < 4; ++i)
-        t.arc(22, -12 + i * 8, 4, -M_PI / 2, M_PI / 2);
-    // core, close to the windings
-    t.w(kBody);
-    t.line(-3, -16, -3, 16);
-    t.line(3, -16, 3, 16);
-}
-
-void draw_nullor(Ctx& t) {
-    // Nullor as a boxed two-port, like the other controlled sources: the input
-    // port (in+, in-) on the left holds the nullator glyph (a narrow ellipse
-    // spanning the port), the output port (out+, out-) on the right holds the
-    // norator glyph (two overlapping circles spanning the port).
-    t.w(kWire);
-    // leads from the pins to the box
-    t.line(-40, -10, -26, -10);
-    t.line(-40, 10, -26, 10);
-    t.line(40, -10, 26, -10);
-    t.line(40, 10, 26, 10);
-    t.w(kBody);
-    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
-    // inside: nullator (left) and norator (right), each spanning its port
-    t.w(kWire);
-    t.ellipse(-13, 0, 5, 15, 36);            // nullator
-    t.circle(11, -6, 7);                     // norator: two overlapping circles
-    t.circle(11, 6, 7);
-}
-
-void draw_body(Ctx& t, Kind k) {
-    switch (k) {
-    case Kind::R: draw_resistor(t); break;
-    case Kind::C: draw_capacitor(t); break;
-    case Kind::L: draw_inductor(t); break;
-    case Kind::V: draw_vsource(t); break;
-    case Kind::I: draw_isource(t); break;
-    case Kind::GND: draw_gnd(t); break;
-    case Kind::VDD: draw_vdd(t); break;
-    case Kind::D: draw_diode(t); break;
-    case Kind::E:
-    case Kind::G: draw_vcvs(t, k); break;
-    case Kind::CCCS:
-    case Kind::CCVS: draw_body_ccvs_cccs(t, k); break;
-    case Kind::NMOS:
-    case Kind::PMOS: draw_mosfet(t, k); break;
-    case Kind::NPN:
-    case Kind::PNP: draw_bjt(t, k); break;
-    case Kind::NULLOR: draw_nullor(t); break;
-    case Kind::OPAMP: draw_opamp(t, false); break;
-    case Kind::FDOPAMP: draw_opamp(t, true); break;
-    case Kind::AMP: draw_amp(t); break;
-    case Kind::IS: draw_ratio(t, "1/s"); break;
-    case Kind::SBLK: draw_ratio(t, "s"); break;
-    case Kind::T: draw_transformer(t); break;
-    case Kind::K: draw_coupling(t); break;
-    }
-}
 
 } // namespace
 
@@ -416,8 +81,11 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     dc.SetPen(wxPen(ink, int(kWire)));
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
 
-    Ctx t{dc, pl.x, pl.y, pl.rot, pl.flip_h, pl.flip_v, ink};
-    draw_body(t, c.kind);
+    WxTarget target(dc, ink);
+    Rgb ink_rgb{(unsigned char)ink.Red(), (unsigned char)ink.Green(),
+                (unsigned char)ink.Blue()};
+    draw_body_placed(target, c.kind, pl.x, pl.y, pl.rot, pl.flip_h, pl.flip_v,
+                     ink_rgb);
 
     if (c.kind == Kind::K) return; // coupling marker carries no label
 
@@ -560,8 +228,11 @@ wxBitmap symbol_swatch(syms::Kind k, int w, int h) {
     dc.SetPen(wxPen(kInk, pen));
     dc.SetBrush(*wxTRANSPARENT_BRUSH);
     dc.SetUserScale(sc, sc);
-    Ctx t{dc, w / (2 * sc), h / (2 * sc), 0, false, false, kInk};
-    draw_body(t, k);
+    WxTarget swatch_target(dc, kInk);
+    Rgb swatch_ink{(unsigned char)kInk.Red(), (unsigned char)kInk.Green(),
+                    (unsigned char)kInk.Blue()};
+    draw_body_placed(swatch_target, k, w / (2 * sc), h / (2 * sc), 0, false,
+                     false, swatch_ink);
     dc.SelectObject(wxNullBitmap);
     return bmp;
 }
