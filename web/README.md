@@ -180,21 +180,29 @@ shifts, long-decimal parsing), so its `mp_limb_t`/limb configuration is not the
 problem.
 
 So the fault is in `src/integer/conv/cl_I_from_L.cc`,
-`cl_I_constructor_from_L()`: the fit test at the top
+`cl_I_constructor_from_L()`. Checked and *correct*, so not the cause:
+
+* the fit test `wert & minus_bit(cl_value_len-1) == 0` — `minus_bit(n)` really is
+  the contiguous high-bit mask (`-1UL << n`), so a 30-bit value is correctly
+  routed to the bignum path;
+* `mulu32` for wasm is the plain `(uint64)(x)*(uint64)(y)` form;
+* GMP: `1000000007²`, wide shifts and a 100-digit decimal all exact, with
+  `GMP_LIMB_BITS` 32, no nails, `mp_bits_per_limb` 32.
+
+What is left is the **1-digit bignum construction itself**:
 
 ```c
-var uint32 test = wert & minus_bit(cl_value_len-1);
-if ((test == 0) || (test == (uint32)minus_bit(cl_value_len-1)))
-    { return (cl_private_thing)(cl_combine(cl_FN_tag,wert)); }   // fixnum
+var cl_heap_bignum* ptr = allocate_bignum(1);
+arrayLSref(ptr->data,1,0) = wert;
 ```
 
-versus the 1-digit bignum it builds otherwise (`allocate_bignum(1)` +
-`arrayLSref(ptr->data,1,0) = wert`). A value that needs `cl_value_len` bits
-returns a *smaller* bit count and a 31-bit value returns **0** (an empty
-bignum), which is the signature of the digit array being written or read with
-the wrong length/offset. `NUDS_to_I()` (the parse path) writes one digit past
-its buffer *by design* — the caller leaves a spare limb — which is consistent
-with a length/offset error in the same layer.
+`allocate_bignum(1)` allocates `offsetofa(cl_heap_bignum,data)+sizeof(uintD)*1`
+and `arrayLSref(array,length,i)` is `lspref(arrayLSDptr(array,length),i)`.
+`cl_DS.h` defines `lspref`/`mspref` in **two mirrored conventions** (`lspref(p,i)
+= p[i]` versus `p[-i-1]`), selected by a macro, and `arrayLSDptr`/`arrayMSDptr`
+compensate for whichever is chosen. That pairing — plus `allocate_bignum`
+setting `length` — is the remaining suspect, and the observation that a 31-bit
+value yields an *empty* bignum points at the length/pointer, not the digits.
 
 The next step is to instrument `cl_I_constructor_from_L` on wasm: dump the word
 produced by `cl_combine` and the `len`/top digit of the allocated bignum for
