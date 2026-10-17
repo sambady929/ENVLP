@@ -159,12 +159,46 @@ wasm has first-class `i64`, so wasm32 belongs in that list. `build_web.sh` now
 applies that patch. It is a genuine bug fix — but **not sufficient**: the probes
 still fail, so there is at least one more defect.
 
-**Remaining:** the traps are inside CLN's digit-sequence code —
-`NUDS_to_I()` (`src/integer/conv/cl_I_from_NUDS.cc`), reached from the string
-reader via `digits_to_I_divconq()`, and `ash()`. `NUDS_to_I` writes one digit
-past its input buffer *by design* (the caller leaves a spare limb), so the
-out-of-bounds write means a buffer is being allocated one limb short — i.e. a
-size computed in CLN's DS/alloca path. That is where to look next.
+**Remaining, narrowed to one function:** the bug is at the **immediate/fixnum
+boundary**, in the int→`cl_I` construction.
+
+`integer_length(cl_I(1<<k))`, measured from the wasm build:
+
+| k | 0 … 26 | 27 | 28 | 29 | 30 |
+|---|---|---|---|---|---|
+| bits needed | k+1 | 28 | 29 | 30 | 31 |
+| returned | correct | 28 | 29 | **29** | **0** |
+
+Everything up to `1<<28` is right; it breaks exactly when the value needs
+`cl_value_len` bits (30 — the immediate payload width, from
+`include/cln/object.h`: `cl_value_len = cl_pointer_size - cl_value_shift`). The
+engine's own configuration is correct (`cl_pointer_size` 32, `cl_word_alignment`
+4, `cl_value_shift` 2, `cl_value_len` 30, `intLsize` 32, `intDsize` 32), and a
+small value (`12345` → 14 bits) is exact, as are parsed values and rational
+arithmetic. GMP itself is **verified exact** in this build (multiply, wide
+shifts, long-decimal parsing), so its `mp_limb_t`/limb configuration is not the
+problem.
+
+So the fault is in `src/integer/conv/cl_I_from_L.cc`,
+`cl_I_constructor_from_L()`: the fit test at the top
+
+```c
+var uint32 test = wert & minus_bit(cl_value_len-1);
+if ((test == 0) || (test == (uint32)minus_bit(cl_value_len-1)))
+    { return (cl_private_thing)(cl_combine(cl_FN_tag,wert)); }   // fixnum
+```
+
+versus the 1-digit bignum it builds otherwise (`allocate_bignum(1)` +
+`arrayLSref(ptr->data,1,0) = wert`). A value that needs `cl_value_len` bits
+returns a *smaller* bit count and a 31-bit value returns **0** (an empty
+bignum), which is the signature of the digit array being written or read with
+the wrong length/offset. `NUDS_to_I()` (the parse path) writes one digit past
+its buffer *by design* — the caller leaves a spare limb — which is consistent
+with a length/offset error in the same layer.
+
+The next step is to instrument `cl_I_constructor_from_L` on wasm: dump the word
+produced by `cl_combine` and the `len`/top digit of the allocated bignum for
+`1<<28`, `1<<29`, `1<<30`.
 
 Ruled out, with evidence:
 
