@@ -47,6 +47,14 @@ function callStr(name, arg) {
 }
 function backend(name, arg) { return JSON.parse(callStr(name, arg)); }
 
+// envlp_run takes two strings: the schematic and the options JSON.
+function callStr2(name, a, b) {
+  const p = Module.ccall(name, 'number', ['string', 'string'], [a, b]);
+  const s = Module.UTF8ToString(p);
+  Module.ccall('envlp_free', null, ['number'], [p]);
+  return s;
+}
+
 function docOpen(scx) {
   ED.doc = JSON.parse(callStr('envlp_doc_open', scx || ''));
   ED.selection.clear();

@@ -23,7 +23,7 @@ OUTWIN=$(cd "$OUT" && pwd -W 2>/dev/null || echo "$OUT")
 em++ -O0 -g -std=c++17 -I"$DEPS/include" "$HERE/cln_probe.cpp" \
   -L"$DEPS/lib" -lcln -lgmp \
   -sMODULARIZE=1 -sEXPORT_NAME=createClnProbe \
-  -sEXPORTED_FUNCTIONS='["_p_pointer_size","_p_word_alignment","_p_value_shift","_p_value_len","_p_intDsize","_p_intLsize","_p_gmp_limb_bits","_p_gmp_nail_bits","_p_gmp_bits_per_limb","_p_gmp_mul_exact","_p_cln_mul_exact","_p_cln_len_k","_p_cln_small_len","_p_cln_ash","_p_cln_parse","_p_cln_rational"]' \
+  -sEXPORTED_FUNCTIONS='["_p_pointer_size","_p_word_alignment","_p_value_shift","_p_value_len","_p_intDsize","_p_intLsize","_p_gmp_limb_bits","_p_gmp_nail_bits","_p_gmp_bits_per_limb","_p_gmp_mul_exact","_p_cln_mul_exact","_p_cln_len_k","_p_cln_small_len","_p_cln_ash","_p_cln_parse","_p_cln_rational","_p_i_neg","_p_i_max","_p_i_min","_p_ui_big","_p_ui_max","_p_l_max","_p_l_min","_p_ul_max","_p_ll","_p_ull_big","_p_assign","_p_assign_neg"]' \
   -sEXPORTED_RUNTIME_METHODS='["ccall"]' \
   -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=node \
   -o "$OUT/cln_probe.js"
@@ -72,6 +72,24 @@ const factory = require('$OUTWIN/cln_probe.js');
   for (const [n, want] of [['p_cln_ash', 100], ['p_cln_parse', 60], ['p_cln_rational', 42]]) {
     const r = await c1(n);
     console.log('  ' + n + ' = ' + r + '   (want ' + want + ')');
+    if (r !== want) bad++;
+  }
+  console.log('  --- int/unsigned constructors (regression) ---');
+  for (const [n, want, what] of [
+      ['p_i_neg', 1, 'cl_I(-1000000007)'],
+      ['p_i_max', 1, 'cl_I(2147483647)'],
+      ['p_i_min', 1, 'cl_I(INT_MIN)'],
+      ['p_ui_big', 1, 'cl_I(0x80000000u)'],
+      ['p_ui_max', 1, 'cl_I(0xFFFFFFFFu)'],
+      ['p_l_max', 1, 'cl_I(2147483647L)'],
+      ['p_l_min', 1, 'cl_I(LONG_MIN)'],
+      ['p_ul_max', 1, 'cl_I(0xFFFFFFFFUL)'],
+      ['p_ll', 1, 'cl_I(1000000007LL)'],
+      ['p_ull_big', 1, 'cl_I(ULLONG_MAX)'],
+      ['p_assign', 1, 'x = 1000000007'],
+      ['p_assign_neg', 1, 'x = -1000000007']]) {
+    const r = await c1(n);
+    console.log('  ' + what + ' -> ' + r + '   (want ' + want + ')');
     if (r !== want) bad++;
   }
   console.log('');

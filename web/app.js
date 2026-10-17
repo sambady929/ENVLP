@@ -43,7 +43,7 @@ function run() {
   // let the browser paint the "solving" state before the (synchronous) solve
   setTimeout(() => {
     try {
-      const res = JSON.parse(callStr('envlp_run', JSON.stringify(options())));
+      const res = JSON.parse(callStr2('envlp_run', scx, JSON.stringify(options())));
       if (!res.ok) { setStatus(res.error, true); return; }
       last = res;
       render(res);
@@ -346,24 +346,21 @@ function bindPanel() {
 
 /* --------------------------------------------------------------- start-up --- */
 window.Module = null;
+
+// Open a shipped example, so the page never starts on an empty canvas (and never
+// on a circuit the solver would reject).
+function openExample(name) {
+  fetch('examples/' + name)
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error('missing ' + name))))
+    .then((txt) => { docOpen(txt); setTimeout(frameAll, 30); })
+    .catch(() => setStatus('could not load examples/' + name, true));
+}
+
 createEnvLp().then((m) => {
   window.Module = m;
   bindPanel();
   startEditor();
-  // A small default circuit so the page is never an empty canvas.
-  docOpen([
-    'envlp 1',
-    'comp "R1" "R" 200 200 0 0 0 0 "1k"',
-    'comp "C1" "C" 300 200 0 0 0 0 "1p"',
-    'comp "V1" "V" 100 230 0 0 0 0 ""',
-    'comp "GND1" "GND" 100 280 0 0 0 0 ""',
-    'wire 100,200 170,200 pin:V1:0 pin:R1:0',
-    'wire 230,200 270,200 pin:R1:1 pin:C1:0',
-    'wire 330,200 330,250 100,250 100,260 pin:C1:1 pin:GND1:0',
-    'wire 100,260 100,280 pin:GND1:0 pin:V1:1',
-  ].join('\n'));
-  // frame it
-  setTimeout(frameAll, 60);
+  openExample('rc_lowpass.scx');
 }).catch((e) => {
   setStatus('could not start the solver: ' + (e && e.message ? e.message : e), true);
 });

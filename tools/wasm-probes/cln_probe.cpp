@@ -72,3 +72,34 @@ extern "C" int p_cln_rational(void) {
     cln::cl_RA s = r * r;
     return (s == cln::cl_RA(1) / cln::cl_RA(9)) ? 42 : 7;
 }
+
+// --- boundary cases for every integer constructor --------------------------
+// These are the regression tests for the fix: the int / unsigned int
+// constructors used to pack the value into a fixnum without a range check.
+
+extern "C" int p_i_neg(void)   { return (cln::cl_I(-1000000007) == cln::cl_I("-1000000007")) ? 1 : 0; }
+extern "C" int p_i_max(void)   { return (cln::cl_I(2147483647) == cln::cl_I("2147483647")) ? 1 : 0; }
+extern "C" int p_i_min(void)   { return (cln::cl_I((-2147483647 - 1)) == cln::cl_I("-2147483648")) ? 1 : 0; }
+extern "C" int p_ui_big(void)  { return (cln::cl_I((unsigned int)0x80000000u) == cln::cl_I("2147483648")) ? 1 : 0; }
+extern "C" int p_ui_max(void)  { return (cln::cl_I((unsigned int)0xFFFFFFFFu) == cln::cl_I("4294967295")) ? 1 : 0; }
+extern "C" int p_l_max(void)   { return (cln::cl_I((long)2147483647) == cln::cl_I("2147483647")) ? 1 : 0; }
+extern "C" int p_l_min(void)   { return (cln::cl_I((long)(-2147483647 - 1)) == cln::cl_I("-2147483648")) ? 1 : 0; }
+extern "C" int p_ul_max(void)  { return (cln::cl_I((unsigned long)0xFFFFFFFFul) == cln::cl_I("4294967295")) ? 1 : 0; }
+extern "C" int p_ll(void)      { return (cln::cl_I((long long)1000000007) == cln::cl_I("1000000007")) ? 1 : 0; }
+extern "C" int p_ull_big(void) {
+    return (cln::cl_I((unsigned long long)18446744073709551615ull) ==
+            cln::cl_I("18446744073709551615")) ? 1 : 0;
+}
+// assignment operators go through the same macros
+extern "C" int p_assign(void) {
+    cln::cl_I x;
+    x = 1000000007;
+    const cln::cl_I want("1000000007");
+    return (x == want) ? 1 : 0;
+}
+extern "C" int p_assign_neg(void) {
+    cln::cl_I x;
+    x = -1000000007;
+    const cln::cl_I want("-1000000007");
+    return (x == want) ? 1 : 0;
+}

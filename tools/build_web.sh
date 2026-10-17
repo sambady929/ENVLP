@@ -100,7 +100,14 @@ if [ ! -f "$DEPS/lib/libcln.a" ]; then
       emu_env
       # CLN's timing code uses the POSIX HZ macro (ticks per second), which the
       # Emscripten libc does not define.
-      export CXXFLAGS="-O2 -fexceptions -DHZ=100" CFLAGS="-O2 -DHZ=100"
+      #
+      # -O0: under Emscripten's optimiser CLN miscompiles -- integer parsing and
+      # multiplication read out of bounds at -O1 and -O2, and the traps vanish at
+      # -O0. It is not alloca (the malloc fallback behaves the same), not strict
+      # aliasing (-fno-strict-aliasing changes nothing) and not the stack size.
+      # tools/wasm-probes/ passes completely at -O0, so that is what we build with.
+      # The int-constructor patch below is a separate, genuine CLN bug.
+      export CXXFLAGS="-O0 -fexceptions -DHZ=100" CFLAGS="-O0 -DHZ=100"
       # CLN's int constructors pack their argument straight into a fixnum with no
       # range check, which is only valid when every int fits one (cl_value_len
       # >= 32). On a 32-bit target cl_value_len is 30, so values with bit 29 set
