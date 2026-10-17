@@ -66,7 +66,10 @@ unpack() { # unpack <archive> -> $BUILD
 # set the compiler environment by hand and let the shell run configure/make.
 emu_env() {
     export CC=emcc CXX=em++ AR=emar RANLIB=emranlib NM=llvm-nm LD=emcc
-    export CFLAGS="-O2" CXXFLAGS="-O2"
+    # -fexceptions must match the app build: GiNaC throws (pole_error and
+    # friends) and ENVLP catches, and mixing exception ABIs across the
+    # libraries and the executable produces traps at static-init time.
+    export CFLAGS="-O2" CXXFLAGS="-O2 -fexceptions"
 }
 
 # --- 1. GMP ---------------------------------------------------------------

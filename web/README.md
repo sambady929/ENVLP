@@ -7,6 +7,11 @@ visitor's browser** — nothing is uploaded, and the site only serves static fil
 This directory is the browser front-end; `tools/build_web.sh` produces the
 `envlp.js` + `envlp.wasm` pair next to it.
 
+> **Status: the front-end is complete and working; the WebAssembly build of the
+> solver is blocked on CLN.** See "Known blocker" below. The schematic editor and
+> the analysis UI do not depend on how the solver is compiled — swapping in a
+> working engine build is the only step left.
+
 ## Build
 
 ```bash
@@ -94,6 +99,61 @@ The editor is deliberately *not* a JavaScript re-implementation of the
 electrical rules: the page renders the geometry the C++ model returns and sends
 it batched edits, so wiring, net naming and `.scx` output are identical to the
 desktop app.
+
+## Known blocker: CLN does not work when compiled for wasm32
+
+GMP, CLN and GiNaC all compile and link for `wasm32-unknown-emscripten`, and the
+module loads — but **CLN's integer arithmetic is wrong under wasm**, which makes
+GiNaC (and therefore the solver) unusable. It is not ENVLP's code: a two-line
+probe that links only CLN reproduces it.
+
+What the probes show (all with CLN built by `build_web.sh`):
+
+| operation | expected | actual |
+|---|---|---|
+| `1000000007 * 1000000007` vs `cl_I("1000000014000000049")` | equal | **not equal** |
+| `integer_length(1000000007)` | 30 | **27** |
+| `ash(x, 40)` / `x * x` for 60-bit results | value | **traps: memory access out of bounds** |
+| `cl_I(1)/cl_I(3)` squared, `cl_F("1.2020569031595942853997381615")` | correct | correct |
+
+Everything that goes through *parsing* and *small immediates* is right; anything
+that needs CLN's multi-digit machinery (shifts, wide products, large literals)
+returns wrong values or reads out of bounds. GiNaC's own static initialiser
+parses such a literal, so **`envlp.wasm` traps during setup** even before a call.
+
+Ruled out, with evidence:
+
+* **Build configuration** — `cln/intparam.h` reports the correct wasm32 sizes
+  (`long` 32, pointers 32, `long long` 64), `gmp.h` reports `GMP_LIMB_BITS 32`,
+  and CLN's `config.h` selects `GMP_DEMANDS_UINTD_LONG`, so `uintD` matches
+  `mp_limb_t`. The build-tree and installed headers are byte-identical.
+* **Stale objects / a bad reconfigure** — a clean `make clean` rebuild is
+  identical.
+* **The optimiser** — at `-O0` the traps disappear but the *values are still
+  wrong*, so it is not (only) miscompilation.
+* **The exception ABI** — matching `-fexceptions` across the libraries and the
+  app changes nothing.
+* **Stack and memory sizing** — `-sSTACK_SIZE=8MB -sINITIAL_MEMORY=64MB` and
+  `-sSTACK_OVERFLOW_CHECK=2` change nothing.
+
+This is a known-hard area: there is a fork of CLN, `jan-hudec/cln-em`,
+"tweaked to build under emscripten", and its patch teaches CLN's `object.h` that
+`__asmjs__` is a 4-byte-aligned architecture — i.e. exactly the
+immediate-representation question that the wrong bit lengths point at.
+
+### Options
+
+1. **Patch CLN for wasm32** (or build from a fork that does) and keep the
+   browser-only deployment. Most promising; needs someone to work through CLN's
+   integer representation and re-run the probes above.
+2. **Solve on the server.** Serve the page from WordPress but run the analysis
+   in a small endpoint (native binary or a WASI build) that the page POSTs the
+   `.scx` to. No CLN porting, but the host must be able to execute something.
+3. **Use the desktop app for analysis** and keep the web page as the editor and
+   viewer only.
+
+The front-end needs no changes for options 1 or 2 — it already talks to the
+engine through `envlp_run` / `envlp_doc_*`.
 
 ## Licensing
 
