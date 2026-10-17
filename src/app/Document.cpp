@@ -1,10 +1,12 @@
 #include "Document.h"
 #include "SymbolGeom.h"
+#include "core/Eng.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 
@@ -494,6 +496,11 @@ void Document::bind_wire_ends(Wire& w) const {
     // Bind each end to a pin whose world position coincides with it.
     // A pin match wins over a free coordinate because it's the stronger
     // declaration of intent (the user drew from / to a pin).
+    //
+    // The tolerance is the *same* one the net merge uses (kJoinTol): anything
+    // the resolver treats as touching a pin must also be bound to it, or a wire
+    // that looks (and electrically is) connected to a pin stays put when the
+    // component is dragged and the connection silently breaks.
     auto bind_one = [&](bool start) {
         Pt p = start ? w.pts.front() : w.pts.back();
         for (const auto& c : circuit.comps) {
@@ -502,7 +509,8 @@ void Document::bind_wire_ends(Wire& w) const {
             int np = int(pin_offsets(c.kind).size());
             for (int i = 0; i < np; ++i) {
                 Pt pw = pin_world(c, pl->second, i);
-                if (std::hypot(pw.first - p.first, pw.second - p.second) <= 1.0) {
+                if (std::hypot(pw.first - p.first, pw.second - p.second) <=
+                    kJoinTol) {
                     WireEnd e;
                     e.kind = WireEnd::Kind::Pin;
                     e.ref = c.ref;
@@ -523,6 +531,34 @@ void Document::bind_wire_ends(Wire& w) const {
 void Document::sync_wire_endpoints() {
     for (auto& w : wires) {
         if (w.pts.size() < 2) continue;
+        // Electrical capture: a *free* endpoint that has ended up on (or within
+        // the merge tolerance of) a pin is made a pin end, so the next component
+        // move carries the wire instead of leaving it behind. Already-bound ends
+        // are left alone (their stored coordinate is stale by construction).
+        // The tolerance is the net-merge one, so this can never introduce a
+        // connection the resolver would not already make.
+        auto capture = [&](bool start) {
+            WireEnd& e = start ? w.a : w.b;
+            if (e.kind == WireEnd::Kind::Pin) return;
+            Pt p = start ? w.pts.front() : w.pts.back();
+            for (const auto& c : circuit.comps) {
+                auto pl = placements.find(c.ref);
+                if (pl == placements.end()) continue;
+                int np = int(pin_offsets(c.kind).size());
+                for (int i = 0; i < np; ++i) {
+                    Pt pw = pin_world(c, pl->second, i);
+                    if (std::hypot(pw.first - p.first, pw.second - p.second) <=
+                        kJoinTol) {
+                        e.kind = WireEnd::Kind::Pin;
+                        e.ref = c.ref;
+                        e.pin = i;
+                        return;
+                    }
+                }
+            }
+        };
+        capture(true);
+        capture(false);
         Pt a = wire_end_pt(w, true);
         Pt b = wire_end_pt(w, false);
         // Rebuild the polyline from the authored waypoints, never by mutating
@@ -837,12 +873,12 @@ std::string Document::serialize() const {
       << (req.prune ? 1 : 0) << " " << (req.use_parallel ? 1 : 0) << " "
       << (req.approx_factor ? 1 : 0)
       << "\n";
-    // DC tech settings (large-signal model): mode, Vth, uCox, and the SPICE
-    // model source. Absent in older files (defaults apply).
-    o << "tech " << int(tech.dc_mode) << " " << tech.vth << " " << tech.is << " "
-      << tech.uncox << " " << tech.upcox << " " << quote(tech.model_file) << " "
-      << quote(tech.nmos_model) << " " << quote(tech.pmos_model) << " "
-      << (tech.override_small_signal ? 1 : 0) << "\n";
+    // DC tech settings (large-signal model): mode, Vthn, Vthp, Is, uCox,
+    // assume-saturation, supply. Absent in older files (defaults apply).
+    o << "tech " << int(tech.dc_mode) << " " << tech.vthn << " " << tech.vthp
+      << " " << tech.is << " " << tech.uncox << " " << tech.upcox << " "
+      << (tech.assume_saturation ? 1 : 0) << " "
+      << (tech.include_clm ? 1 : 0) << " " << tech.vdd << "\n";
     for (const auto& c : circuit.comps) {
         auto pl = placements.find(c.ref);
         double x = pl == placements.end() ? 0.0 : pl->second.x;
@@ -863,16 +899,22 @@ std::string Document::serialize() const {
         }
         // Mirror copies carry "mirror=<unit> mult=<m>" after the links.
         if (!c.mirror_ref.empty())
-            o << " mirror=" << c.mirror_ref << " mult=" << c.multiplicity();
+            o << " mirror=" << c.mirror_ref << " mult=" << c.mirror_num()
+              << " den=" << c.mirror_dn();
         o << "\n";
-        for (const auto& kv : c.param_on)
-            o << "param " << quote(c.ref) << " " << quote(kv.first) << " "
-              << (kv.second ? 1 : 0) << " " << quote(c.param_text.count(kv.first)
-                                                         ? c.param_text.at(kv.first)
-                                                         : std::string())
-              << " "
-              << (c.param_db.count(kv.first) ? c.param_db.at(kv.first) : 0)
-              << "\n";
+        // Emit every parameter the user has touched (a parasitic toggle, an
+        // estimate, or a size offset) -- not only the ones with a toggle, so a
+        // plain parameter such as a transformer's Lp/Ls/k survives a round-trip.
+        std::set<std::string> pnames;
+        for (const auto& kv : c.param_on) pnames.insert(kv.first);
+        for (const auto& kv : c.param_text) pnames.insert(kv.first);
+        for (const auto& kv : c.param_db) pnames.insert(kv.first);
+        for (const auto& p : pnames)
+            o << "param " << quote(c.ref) << " " << quote(p) << " "
+              << (c.param_enabled(p) ? 1 : 0) << " "
+              << quote(c.param_text.count(p) ? c.param_text.at(p)
+                                             : std::string())
+              << " " << (c.param_db.count(p) ? c.param_db.at(p) : 0) << "\n";
     }
     for (const auto& w : wires) {
         // Format: "wire x,y x,y ... [a=<pin|free>] [b=<pin|free>]"
@@ -922,6 +964,7 @@ bool Document::deserialize(const std::string& data, std::string& err) {
     std::istringstream in(data);
     std::string line;
     bool saw_header = false;
+    bool tech_vdd_seen = false;
     int lineno = 0;
     while (std::getline(in, line)) {
         ++lineno;
@@ -986,23 +1029,52 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 req.sweep.f_stop_hz = req.sweep.f_start_hz * 1e6;
             }
         } else if (kw == "tech") {
-            std::string smode, svth, sis, sun, sup, sfile, snm, spm, sovr;
-            if (!need(smode) || !need(svth) || !need(sis) || !need(sun) ||
-                !need(sup) || !need(sfile) || !need(snm) || !need(spm) ||
-                !need(sovr))
-                return fail("bad tech");
-            int md = std::atoi(smode.c_str());
-            tech.dc_mode = md == 0   ? syms::DcMode::GmOverId
-                           : md == 1 ? syms::DcMode::SquareLaw
-                                     : syms::DcMode::Numeric;
-            tech.vth = std::atof(svth.c_str());
-            tech.is = std::atof(sis.c_str());
-            tech.uncox = std::atof(sun.c_str());
-            tech.upcox = std::atof(sup.c_str());
-            tech.model_file = sfile;
-            tech.nmos_model = snm;
-            tech.pmos_model = spm;
-            tech.override_small_signal = sovr != "0";
+            // Collect every token so the current layout (mode Vthn Vthp Is uCox
+            // assumeSat Vdd) and the older layouts load.
+            std::vector<std::string> t;
+            std::string tok;
+            while (next_token(line, i, tok)) t.push_back(tok);
+            if (t.size() < 8) return fail("bad tech");
+            int md = std::atoi(t[0].c_str());
+            tech.dc_mode = md == 0 ? syms::DcMode::GmOverId
+                                   : syms::DcMode::SquareLaw;
+            size_t k = 1; // index of the first process value
+            auto is01 = [](const std::string& s) {
+                return s == "0" || s == "1";
+            };
+            const bool new_layout =
+                (t.size() == 9 && is01(t[6]) && is01(t[7])) || t.size() == 8;
+            if (t.size() >= 11 || new_layout) {
+                tech.vthn = std::atof(t[k++].c_str());
+                tech.vthp = std::atof(t[k++].c_str());
+            } else {
+                // Older files carried a single Vth; use it for both polarities.
+                double v = std::atof(t[k++].c_str());
+                tech.vthn = v;
+                tech.vthp = v;
+            }
+            tech.is = std::atof(t[k++].c_str());
+            tech.uncox = std::atof(t[k++].c_str());
+            tech.upcox = std::atof(t[k++].c_str());
+            if (new_layout) {
+                tech.assume_saturation = t[k++] != "0";
+                if (t.size() >= 9) tech.include_clm = t[k++] != "0";
+                tech.vdd = std::atof(t[k++].c_str());
+                tech_vdd_seen = true;
+            } else {
+                // Legacy: model_file, nmos_model, pmos_model, override[, vdd].
+                if (t.size() >= 11) {
+                    k += 3; // skip model file + model names
+                    k += 1; // skip override
+                } else {
+                    k += 3;
+                    if (k < t.size()) k += 1;
+                }
+                if (k < t.size()) {
+                    tech.vdd = std::atof(t[k].c_str());
+                    tech_vdd_seen = true;
+                }
+            }
         } else if (kw == "comp") {
             std::string ref, tok, sx, sy, srot, sfh, sfv, sdb, val;
             if (!need(ref) || !need(tok) || !need(sx) || !need(sy) ||
@@ -1026,6 +1098,9 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                 } else if (extra.rfind("mult=", 0) == 0) {
                     c.mirror_mult = std::atoi(extra.c_str() + 5);
                     if (c.mirror_mult < 1) c.mirror_mult = 1;
+                } else if (extra.rfind("den=", 0) == 0) {
+                    c.mirror_den = std::atoi(extra.c_str() + 4);
+                    if (c.mirror_den < 1) c.mirror_den = 1;
                 } else if (extra.rfind("dc=", 0) == 0) {
                     c.dc_text = extra.substr(3);
                 } else if (extra.rfind("ac=", 0) == 0) {
@@ -1154,6 +1229,21 @@ bool Document::deserialize(const std::string& data, std::string& err) {
     if (!saw_header) {
         err = "not an ENVLP file (missing header)";
         return false;
+    }
+    // Older files carried the supply voltage on each VDD symbol instead of in
+    // the tech settings. Migrate the first one so a saved schematic keeps its
+    // rail voltage.
+    if (!tech_vdd_seen) {
+        bool got = false;
+        for (auto& c : circuit.comps) {
+            if (c.kind != syms::Kind::VDD) continue;
+            if (!got && !c.value_text.empty()) {
+                double v = 0.0;
+                if (syms::eng::parse_value(c.value_text, v)) tech.vdd = v;
+                got = true;
+            }
+            c.value_text.clear(); // now carried by tech, not the symbol
+        }
     }
     // Re-bind any wire end that wasn't explicitly tagged. Old .scx files
     // predate the binding, and hand-written files often omit it; binding by

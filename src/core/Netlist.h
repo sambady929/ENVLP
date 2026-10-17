@@ -107,7 +107,11 @@ struct Component {
     //   mirror_mult: how many copies of the unit device this is (>= 1). A
     //               device with mult = m has gm, Cgs, ... scaled by m.
     std::string mirror_ref;
+    // The copy is `mirror_mult / mirror_den` unit devices, so a fractional copy
+    // (mirror_mult=1, mirror_den=2 => half a unit) is expressible as well as the
+    // usual integer multiples.
     int mirror_mult = 1;
+    int mirror_den = 1;
     // Per-parameter numeric overrides materialised when the circuit's mirrors
     // are resolved (a copy's parameters are the unit's, scaled).
     std::map<std::string, double> param_override;
@@ -117,10 +121,14 @@ struct Component {
     double param_estimate(const std::string& p) const;
     std::string value_symbol() const { return ref; } // main value symbol name
 
-    // Effective multiplicity of this device (1 unless it mirrors another).
-    int multiplicity() const { return mirror_ref.empty() || mirror_mult < 1
-                                          ? 1
-                                          : mirror_mult; }
+    // Copy multiplicity as an exact rational num/den (1/x for a fractional copy).
+    int mirror_num() const {
+        return mirror_ref.empty() || mirror_mult < 1 ? 1 : mirror_mult;
+    }
+    int mirror_dn() const {
+        return mirror_ref.empty() || mirror_den < 1 ? 1 : mirror_den;
+    }
+    int multiplicity() const { return mirror_num(); }
 };
 
 // Symbol name for a device parameter: "gm_M1", "Cgd_M2", ...
@@ -136,10 +144,10 @@ bool can_mirror(const Component& unit, const Component& copy);
 // instead, so they are excluded here.
 bool is_copyable(Kind k);
 
-// Scale a mirrored parameter's estimate for `mult` copies of the unit device.
-// Transconductances and capacitances scale with the copy count; resistances
-// scale inversely (m parallel/series unit devices divide the resistance).
-double scale_mirror_estimate(UnitClass uc, double unit_value, int mult);
+// Scale a mirrored parameter's estimate for a copy of `ratio` units of the unit
+// device (ratio = mult/den, so a half copy is 0.5). Transconductances and
+// capacitances scale with the copy count; resistances scale inversely.
+double scale_mirror_estimate(UnitClass uc, double unit_value, double ratio);
 
 
 

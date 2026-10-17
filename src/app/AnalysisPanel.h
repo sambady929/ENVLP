@@ -69,9 +69,14 @@ private:
 
     void add_card(syms::AnalysisKind kind);
     void remove_card(int i);
-    // Build the DC-settings block (mode, Vth/Is/uCox, model file + models,
-    // override, ignore-negligible) inside a DC card.
+    // Reorder card i by dir (±1). The card order drives the .scx card list.
+    void move_card(int i, int dir);
+    // Build the DC card's mode selector plus a "DC analysis options" button
+    // that opens the mode-specific settings dialog.
     void build_dc_settings(wxWindow* box, wxSizer* s, AnalysisCard& c);
+    // Modal dialog with the settings for the currently selected DC mode
+    // (supply rail, Vth / uCox, or the SPICE model source).
+    void open_dc_options();
     wxDECLARE_EVENT_TABLE();
 };
 

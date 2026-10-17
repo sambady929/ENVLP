@@ -280,6 +280,77 @@ bool extract_from_product(const ex& prod, ex& out_gain) {
             return true;
         }
     }
+
+    // Three components in parallel: a*b*c/(a*b + b*c + c*a) -> par(a, par(b,c)).
+    // The two-way loop above cannot see this -- neither half of the denominator
+    // is a numerator factor (each half is a sum of two products) -- yet the
+    // whole thing is three parallel components, which is exactly a
+    // single-stage amplifier's gain gm*(ro1 || ro2 || RL). Accept only when the
+    // denominator is *precisely* the three pairwise products of three numerator
+    // factors.
+    for (size_t di = 0; di < dens.size(); ++di) {
+        const ex& den = dens[di];
+        if (!is_a<GiNaC::add>(den) || den.nops() != 3) continue;
+        const int nn = int(nums.size());
+        for (int i = 0; i < nn; ++i) {
+            for (int j = i + 1; j < nn; ++j) {
+                for (int k = j + 1; k < nn; ++k) {
+                    const ex a = nums[i], b = nums[j], c = nums[k];
+                    const ex want[3] = {(a * b).expand(), (b * c).expand(),
+                                        (c * a).expand()};
+                    ex got[3] = {den.op(0).expand(), den.op(1).expand(),
+                                 den.op(2).expand()};
+                    bool used[3] = {false, false, false};
+                    bool ok = true;
+                    for (int t = 0; t < 3 && ok; ++t) {
+                        bool found = false;
+                        for (int s = 0; s < 3; ++s)
+                            if (!used[s] && got[s].is_equal(want[t])) {
+                                used[s] = true;
+                                found = true;
+                                break;
+                            }
+                        if (!found) ok = false;
+                    }
+                    if (!ok) continue;
+                    ex rest = lead;
+                    for (int s = 0; s < nn; ++s)
+                        if (s != i && s != j && s != k) rest = rest * nums[s];
+                    ex out = rest * par(a, par(b, c));
+                    for (size_t dj = 0; dj < dens.size(); ++dj)
+                        if (dj != di) out = out / dens[dj];
+                    out_gain = out.normal();
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Reciprocal parallel: (a + b)/(a*b*rest) -> 1/(rest*par(a,b)). A gain such
+    // as (ro_M1 + ro_M4)/(gm_M1*ro_M1*ro_M4) is 1/(gm_M1*par(ro_M1,ro_M4)) --
+    // the output-resistance term of a single-stage amplifier. Without this the
+    // whole sum stays expanded in the numerator (the pattern the two-way
+    // product loop cannot see, because here the *sum* is a numerator factor and
+    // its two operands are denominator factors).
+    for (size_t ni = 0; ni < nums.size(); ++ni) {
+        const ex& s = nums[ni];
+        if (!is_a<GiNaC::add>(s) || s.nops() != 2) continue;
+        const ex a = s.op(0), b = s.op(1);
+        int ia = -1, ib = -1;
+        for (size_t dd = 0; dd < dens.size(); ++dd) {
+            if (ia < 0 && dens[dd].is_equal(a)) { ia = int(dd); continue; }
+            if (ib < 0 && dens[dd].is_equal(b)) { ib = int(dd); continue; }
+        }
+        if (ia < 0 || ib < 0) continue;
+        ex num_rest = lead;
+        for (size_t k = 0; k < nums.size(); ++k)
+            if (k != ni) num_rest = num_rest * nums[k];
+        ex den_rest = ex(1);
+        for (size_t dd = 0; dd < dens.size(); ++dd)
+            if (int(dd) != ia && int(dd) != ib) den_rest = den_rest * dens[dd];
+        out_gain = (num_rest / (den_rest * par(a, b))).normal();
+        return true;
+    }
     return false;
 }
 

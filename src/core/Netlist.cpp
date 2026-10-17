@@ -254,6 +254,36 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"fcn", "1k", true, false, "Hz",
          "1/f noise corner frequency (flicker = thermal below this)"},
     };
+    // Passive parasitics: all off by default so a component is ideal unless
+    // the user asks otherwise. R: series lead inductance + parallel stray
+    // capacitance. C: ESR + ESL in series, leakage in parallel. L: winding
+    // resistance in series, self-capacitance / core loss in parallel.
+    static const std::vector<ParamDef> resistor = {
+        {"Cpar", "1p", true, false, "F", "parallel (stray) capacitance"},
+        {"Lser", "1n", true, false, "H", "series lead inductance"},
+    };
+    static const std::vector<ParamDef> capacitor = {
+        {"Rser", "1", true, false, "Ohm", "equivalent series resistance (ESR)"},
+        {"Lser", "1n", true, false, "H", "equivalent series inductance (ESL)"},
+        {"Rpar", "1G", true, false, "Ohm", "leakage (parallel) resistance"},
+    };
+    static const std::vector<ParamDef> inductor = {
+        {"Rser", "1", true, false, "Ohm", "winding (DC) resistance"},
+        {"Cpar", "1p", true, false, "F", "self (parallel) capacitance"},
+        {"Rpar", "1G", true, false, "Ohm", "core-loss (parallel) resistance"},
+    };
+    // Transformer: the two winding inductances and the coupling coefficient,
+    // plus (off by default) the winding resistances and the inter-winding
+    // capacitance.
+    static const std::vector<ParamDef> transformer = {
+        {"Lp", "1m", false, true, "H", "primary inductance"},
+        {"Ls", "4m", false, true, "H",
+         "secondary inductance (turns ratio n = sqrt(Ls/Lp))"},
+        {"k", "0.99", false, true, "", "coupling coefficient"},
+        {"Rp", "1", true, false, "Ohm", "primary winding resistance"},
+        {"Rs", "1", true, false, "Ohm", "secondary winding resistance"},
+        {"Cps", "1p", true, false, "F", "inter-winding capacitance"},
+    };
     // Op-amps / gain blocks: the DC gain lives in value_text (edited as
     // "Gain"); GBW is the gain-bandwidth product (Hz) that sets the single
     // dominant pole at w0 = 2*pi*GBW/gain. It is optional: switch it off for
@@ -274,6 +304,10 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         case Kind::PNP: return pnp;
         case Kind::D: return diode;
         case Kind::K: return coupling;
+        case Kind::R: return resistor;
+        case Kind::C: return capacitor;
+        case Kind::L: return inductor;
+        case Kind::T: return transformer;
         case Kind::OPAMP:
         case Kind::FDOPAMP:
         case Kind::AMP: return opamp;
@@ -284,10 +318,13 @@ const std::vector<ParamDef>& param_defs(Kind k) {
 UnitClass param_unit_class(Kind k, const std::string& p) {
     (void)k;
     if (p == "gm" || p == "gmb") return UnitClass::Siemens;
-    if (p == "ro" || p == "rpi" || p == "rd") return UnitClass::Ohm;
+    if (p == "ro" || p == "rpi" || p == "rd" || p == "Rser" || p == "Rpar" ||
+        p == "Rp" || p == "Rs")
+        return UnitClass::Ohm;
     if (p == "Cgs" || p == "Cgd" || p == "Cds" || p == "Cdb" || p == "Csb" ||
-        p == "Cpi" || p == "Cmu" || p == "Cd")
+        p == "Cpi" || p == "Cmu" || p == "Cd" || p == "Cpar" || p == "Cps")
         return UnitClass::Farad;
+    if (p == "Lser" || p == "Lp" || p == "Ls") return UnitClass::Henry;
     return UnitClass::Plain;
 }
 
@@ -367,6 +404,10 @@ bool is_copyable(Kind k) {
     case Kind::AMP:
     case Kind::E:
     case Kind::G:
+    // Independent sources copy too, so e.g. I2 can be a copy of I1 and the two
+    // stay in a fixed ratio (a current mirror's reference/branch currents).
+    case Kind::V:
+    case Kind::I:
         return true;
     default:
         return false;
@@ -378,36 +419,64 @@ bool can_mirror(const Component& unit, const Component& copy) {
     // count); a single-value passive or gain block also copies, and its one
     // value scales. The kinds must match exactly: an NMOS cannot copy a PMOS,
     // an NPN cannot copy a PNP, a resistor cannot copy a capacitor.
-    bool dev = unit.kind == Kind::NMOS || unit.kind == Kind::PMOS ||
-               unit.kind == Kind::NPN || unit.kind == Kind::PNP;
-    if ((!dev && !is_copyable(unit.kind)) || unit.kind != copy.kind)
-        return false;
-    // A component that is itself a copy must mirror the same unit, never
-    // another copy, so the chain stays one level deep.
-    return unit.mirror_ref.empty();
+    if (!is_device(unit.kind) && !is_copyable(unit.kind)) return false;
+    if (unit.kind != copy.kind) return false;
+    // A copy of a copy is allowed (chains are flattened in resolve_mirrors), so
+    // the unit may itself be a copy -- only a direct cycle is rejected.
+    return unit.ref != copy.ref;
 }
 
-double scale_mirror_estimate(UnitClass uc, double unit_value, int mult) {
-    if (mult < 1) mult = 1;
+double scale_mirror_estimate(UnitClass uc, double unit_value, double ratio) {
+    if (!(ratio > 0.0)) ratio = 1.0;
     switch (uc) {
         // transconductance and capacitance grow with the number of devices
         case UnitClass::Siemens:
         case UnitClass::Farad:
-            return unit_value * mult;
-        // a resistance formed by `mult` unit devices is divided (parallel for a
+            return unit_value * ratio;
+        // a resistance formed by `ratio` unit devices is divided (parallel for a
         // current source / series for a voltage), so it scales inversely
         case UnitClass::Ohm:
-            return unit_value / mult;
+            return unit_value / ratio;
         // A gain block / controlled source: the copy's gain is the unit's times
         // the copy count (so an inverting amp's Rf = m*Rin gives a gain of -m).
         default:
-            return unit_value * mult;
+            return unit_value * ratio;
     }
 }
 
 void resolve_mirrors(Circuit& c) {
     // Clear stale overrides so repeated calls are idempotent.
     for (auto& comp : c.comps) comp.param_override.clear();
+
+    // Flatten copy chains first: if A copies B and B copies C, A becomes a copy
+    // of C with the product ratio (so A's model collapses all the way to C).
+    for (auto& copy : c.comps) {
+        if (copy.mirror_ref.empty()) continue;
+        long nm = copy.mirror_num(), dn = copy.mirror_dn();
+        std::string cur = copy.mirror_ref;
+        std::set<std::string> seen;
+        seen.insert(copy.ref);
+        while (true) {
+            if (!seen.insert(cur).second)
+                throw std::runtime_error(
+                    "mirror: cycle through '" + cur + "'");
+            const Component* u = c.find(cur);
+            if (!u)
+                throw std::runtime_error("mirror: unit device '" + cur +
+                                         "' for '" + copy.ref + "' not found");
+            if (u->mirror_ref.empty()) break;
+            nm *= u->mirror_num();
+            dn *= u->mirror_dn();
+            cur = u->mirror_ref;
+        }
+        copy.mirror_ref = cur;
+        // A long copy chain multiplies the counts, which can overflow to 0 or a
+        // negative value. Clamp here so the *stored* fields are always a usable
+        // ratio -- the accessors guard too, but the raw field is what the copy
+        // control edits, what gets serialized, and what a division would use.
+        copy.mirror_mult = (nm > 0 && nm <= 1000000L) ? int(nm) : 1;
+        copy.mirror_den = (dn > 0 && dn <= 1000000L) ? int(dn) : 1;
+    }
 
     for (auto& copy : c.comps) {
         if (copy.mirror_ref.empty()) continue;
@@ -423,12 +492,26 @@ void resolve_mirrors(Circuit& c) {
                 "mirror: '" + copy.ref + "' (" + kind_display(copy.kind) +
                 ") cannot copy '" + copy.mirror_ref + "' (" +
                 kind_display(unit->kind) + ")");
-        int mult = copy.multiplicity();
+        const int rnum = copy.mirror_num(), rden = copy.mirror_dn();
+        const double ratio = (rnum > 0 && rden > 0) ? double(rnum) / double(rden)
+                                                    : 1.0;
         if (is_copyable(copy.kind)) {
+            // An independent source copies its DC and AC values scaled by the
+            // copy ratio (I2 = 2*I1), so the two stay in a fixed ratio.
+            if (copy.kind == Kind::V || copy.kind == Kind::I) {
+                auto scale_text = [&](const std::string& txt) {
+                    double v = 0.0;
+                    if (!eng::parse_value(txt, v)) v = 0.0;
+                    return eng::format_eng(v * ratio, 4);
+                };
+                copy.dc_text = scale_text(unit->dc_text);
+                copy.ac_text = scale_text(unit->ac_text);
+                continue;
+            }
             // A single-value copy scales its *value*: a copy is a *series*
-            // multiple of the unit, so Rf = m*Rin, Cf = Cin/m, Lf = m*Lin, and
-            // an amplifier gain is m*A. (Devices use the parallel rule above,
-            // where the copy is m unit devices.)
+            // multiple of the unit, so Rf = r*Rin, Cf = Cin/r, Lf = r*Lin, and
+            // an amplifier gain is r*A. (Devices use the parallel rule above,
+            // where the copy is r unit devices.)
             if (!unit->value_text.empty()) {
                 double uv = unit->estimate();
                 UnitClass uc = value_unit_class(copy.kind);
@@ -436,9 +519,9 @@ void resolve_mirrors(Circuit& c) {
                 switch (uc) {
                     case UnitClass::Ohm:
                     case UnitClass::Henry:
-                    case UnitClass::Plain: sv = uv * mult; break;
-                    case UnitClass::Farad: sv = uv / mult; break;
-                    default: sv = uv * mult; break;
+                    case UnitClass::Plain: sv = uv * ratio; break;
+                    case UnitClass::Farad: sv = uv / ratio; break;
+                    default: sv = uv * ratio; break;
                 }
                 copy.value_text = eng::format_eng(sv, 4);
             }
@@ -448,7 +531,7 @@ void resolve_mirrors(Circuit& c) {
             double uv = unit->param_estimate(d.name);
             copy.param_override[d.name] =
                 scale_mirror_estimate(param_unit_class(copy.kind, d.name), uv,
-                                      mult);
+                                      ratio);
             // carry the unit's enable state so the copy stamps the same model
             copy.param_on[d.name] = unit->param_enabled(d.name);
         }
@@ -512,11 +595,10 @@ bool Circuit::validate(std::string& err) const {
 }
 
 std::string next_ref(const Circuit& c, Kind k) {
-    // VDD is a singleton marker: it always reads "VDD" (there is no
-    // "VDD1"). validate() treats it as anonymous so several VDD symbols may
-    // share the same reference. GND keeps its numbered form so multiple
-    // ground symbols stay addressable in the schematic.
-    if (k == Kind::VDD) return "VDD";
+    // Ground and supply symbols are anonymous: GND and VDD keep a numbered
+    // reference ("GND1", "VDD1") so several of them stay addressable in the
+    // schematic (placements/links are keyed by reference). They are still
+    // electrically one net each -- VDD is a single rail.
     std::string prefix = ref_prefix(k);
     int n = 1;
     while (c.find(prefix + std::to_string(n))) ++n;

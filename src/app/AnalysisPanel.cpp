@@ -6,6 +6,7 @@
 #include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/combobox.h>
+#include <wx/dialog.h>
 #include <wx/filedlg.h>
 #include <wx/statline.h>
 
@@ -80,161 +81,169 @@ void AnalysisPanel::remove_card(int i) {
     if (on_changed) on_changed();
 }
 
-// The DC card's process/model block -- everything the large-signal operating
-// point needs. Moved here from the old "DC settings..." modal dialog so the
-// settings live with the analysis that uses them.
+void AnalysisPanel::move_card(int i, int dir) {
+    int j = i + dir;
+    if (i < 0 || j < 0 || j >= int(cards_.size()) || i >= int(cards_.size()))
+        return;
+    std::swap(cards_[i], cards_[j]);
+    if (doc_) doc_->dirty = true;
+    refresh(doc_);
+    if (on_changed) on_changed();
+}
+
+
+// A one-line summary of the active DC settings, shown next to the options
+// button so the card reads informatively without opening the dialog.
+static wxString dc_settings_summary(const syms::TechParams& tech) {
+    wxString s = wxString::Format("VDD %g V", tech.vdd);
+    switch (tech.dc_mode) {
+        case syms::DcMode::GmOverId:
+            s += wxString::Format(", Vthn %g V, Vthp %g V", tech.vthn,
+                                  tech.vthp);
+            break;
+        case syms::DcMode::SquareLaw:
+            s += wxString::Format(", Vthn %g V, Vthp %g V, uCox %g/%g",
+                                  tech.vthn, tech.vthp, tech.uncox, tech.upcox);
+            if (tech.assume_saturation) s += ", assume saturated";
+            break;
+    }
+    return s;
+}
+
+// The DC card's mode selector plus a button that opens the mode-specific
+// options dialog. Everything else (supply, process values, SPICE model) lives
+// in that dialog, so the card stays in/out/mode/options.
 void AnalysisPanel::build_dc_settings(wxWindow* box, wxSizer* s, AnalysisCard& c) {
     if (!doc_) return;
     syms::TechParams& tech = doc_->tech;
 
-    auto* grid = new wxFlexGridSizer(2, 4, 5);
+    auto* mode_row = new wxBoxSizer(wxHORIZONTAL);
+    mode_row->Add(new wxStaticText(box, wxID_ANY, "mode"), 0,
+                  wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    auto* mode = new wxChoice(box, wxID_ANY);
+    mode->Append("1. gm/Id symbolic");
+    mode->Append("2. Square law symbolic");
+    mode->SetSelection(tech.dc_mode == syms::DcMode::GmOverId
+                           ? 0
+                           : tech.dc_mode == syms::DcMode::SquareLaw ? 1 : 0);
+    mode_row->Add(mode, 1);
+    s->Add(mode_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    mode->Bind(wxEVT_CHOICE, [this, mode](wxCommandEvent&) {
+        if (rebuilding_) return;
+        doc_->tech.dc_mode = mode->GetSelection() == 0
+                                 ? syms::DcMode::GmOverId
+                                 : syms::DcMode::SquareLaw;
+        doc_->dirty = true;
+        if (on_tech_changed) on_tech_changed();
+        if (on_changed) on_changed();
+        // The options/summary row depends on the mode: rebuild after the
+        // event handler returns (the control is owned by the old layout).
+        CallAfter([this] { refresh(doc_); });
+    });
+
+    auto* row = new wxBoxSizer(wxHORIZONTAL);
+    auto* btn = new wxButton(box, wxID_ANY, "DC analysis options...");
+    row->Add(btn, 0, wxRIGHT, 6);
+    auto* sum = new wxStaticText(box, wxID_ANY, dc_settings_summary(tech));
+    sum->SetForegroundColour(theme::text_muted);
+    wxFont sf = sum->GetFont();
+    sf.SetPointSize(std::max(7, sf.GetPointSize() - 1));
+    sum->SetFont(sf);
+    row->Add(sum, 1, wxALIGN_CENTER_VERTICAL);
+    s->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_dc_options(); });
+}
+
+// Modal "DC analysis options" dialog. The fields shown depend on the mode
+// selected on the card: the supply rail is always present; Vth applies to the
+// symbolic modes; uCox to the square-law mode; the SPICE model source to the
+// numeric mode.
+void AnalysisPanel::open_dc_options() {
+    if (!doc_) return;
+    syms::TechParams& tech = doc_->tech;
+    const bool square = tech.dc_mode == syms::DcMode::SquareLaw;
+
+    wxDialog dlg(this, wxID_ANY, "DC analysis options");
+    auto* top = new wxBoxSizer(wxVERTICAL);
+    auto* grid = new wxFlexGridSizer(2, 8, 6);
     grid->AddGrowableCol(1, 1);
     auto add_row = [&](const wxString& label, wxWindow* w) {
-        grid->Add(new wxStaticText(box, wxID_ANY, label), 0,
+        grid->Add(new wxStaticText(&dlg, wxID_ANY, label), 0,
                   wxALIGN_CENTER_VERTICAL);
         grid->Add(w, 1, wxEXPAND);
     };
 
-    auto* mode = new wxChoice(box, wxID_ANY);
-    mode->Append("1. gm/Id symbolic");
-    mode->Append("2. Square law symbolic");
-    mode->Append("3. Numeric (SPICE models)");
-    mode->SetSelection(tech.dc_mode == syms::DcMode::GmOverId
-                           ? 0
-                           : tech.dc_mode == syms::DcMode::SquareLaw ? 1 : 2);
-    add_row("mode", mode);
+    // Supply rail: shared by every mode.
+    auto* vdd = new wxTextCtrl(&dlg, wxID_ANY, wxString::Format("%g", tech.vdd));
+    add_row("Supply VDD (V):", vdd);
 
-    auto* vth = new wxTextCtrl(box, wxID_ANY,
-                               wxString::FromDouble(tech.vth, 6),
-                               wxDefaultPosition, wxSize(70, -1));
-    add_row("Vth (V)", vth);
-    auto* is = new wxTextCtrl(box, wxID_ANY,
-                              wxString::FromDouble(tech.is, 6),
-                              wxDefaultPosition, wxSize(70, -1));
-    add_row("Is (A)", is);
-    auto* uncox = new wxTextCtrl(box, wxID_ANY,
-                                 wxString::FromDouble(tech.uncox, 8),
-                                 wxDefaultPosition, wxSize(70, -1));
-    add_row("uN*Cox", uncox);
-    auto* upcox = new wxTextCtrl(box, wxID_ANY,
-                                 wxString::FromDouble(tech.upcox, 8),
-                                 wxDefaultPosition, wxSize(70, -1));
-    add_row("uP*Cox", upcox);
+    auto* vthn = new wxTextCtrl(&dlg, wxID_ANY, wxString::Format("%g", tech.vthn));
+    add_row("Vthn (V):", vthn);
+    auto* vthp = new wxTextCtrl(&dlg, wxID_ANY, wxString::Format("%g", tech.vthp));
+    add_row("Vthp (V):", vthp);
 
-    auto* mfile = new wxTextCtrl(box, wxID_ANY,
-                                 wxString::FromUTF8(tech.model_file));
-    add_row("model file", mfile);
-    auto* nmname = new wxComboBox(box, wxID_ANY,
-                                  wxString::FromUTF8(tech.nmos_model),
-                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
-                                  wxCB_DROPDOWN);
-    add_row("NMOS model", nmname);
-    auto* pmname = new wxComboBox(box, wxID_ANY,
-                                  wxString::FromUTF8(tech.pmos_model),
-                                  wxDefaultPosition, wxDefaultSize, 0, nullptr,
-                                  wxCB_DROPDOWN);
-    add_row("PMOS model", pmname);
-    auto* browse = new wxButton(box, wxID_ANY, "Browse... / reload models");
-    grid->AddSpacer(1);
-    grid->Add(browse, 1, wxEXPAND);
+    wxTextCtrl* uncox = nullptr;
+    wxTextCtrl* upcox = nullptr;
+    wxCheckBox* sat = nullptr;
+    if (square) {
+        uncox = new wxTextCtrl(&dlg, wxID_ANY,
+                               wxString::Format("%g", tech.uncox));
+        add_row("uN*Cox (A/V^2):", uncox);
+        upcox = new wxTextCtrl(&dlg, wxID_ANY,
+                               wxString::Format("%g", tech.upcox));
+        add_row("uP*Cox (A/V^2):", upcox);
+        sat = new wxCheckBox(&dlg, wxID_ANY, "assume all in saturation");
+        sat->SetValue(tech.assume_saturation);
+        grid->AddSpacer(1);
+        grid->Add(sat, 1, wxEXPAND);
+    }
+    wxCheckBox* clm = nullptr;
+    if (!square) {
+        // Channel-length modulation is only stampable in the gm/Id mode (square
+        // law's gds = lambda*Id depends on the unknown current).
+        clm = new wxCheckBox(&dlg, wxID_ANY,
+                             "include channel-length modulation");
+        clm->SetValue(tech.include_clm);
+        grid->AddSpacer(1);
+        grid->Add(clm, 1, wxEXPAND);
+    }
 
-    s->Add(grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    top->Add(grid, 0, wxEXPAND | wxALL, 12);
+    auto* buttons = new wxStdDialogButtonSizer();
+    buttons->AddButton(new wxButton(&dlg, wxID_OK));
+    buttons->AddButton(new wxButton(&dlg, wxID_CANCEL));
+    buttons->Realize();
+    top->Add(buttons, 0, wxALIGN_RIGHT | wxALL, 10);
+    dlg.SetSizerAndFit(top);
 
-    std::vector<std::string> nm_names, pm_names;
-    auto load_models = [&]() {
-        // Remember the selection: Clear() would otherwise blank the field.
-        wxString cur_nm = nmname->GetValue();
-        wxString cur_pm = pmname->GetValue();
-        if (cur_nm.IsEmpty()) cur_nm = wxString::FromUTF8(tech.nmos_model);
-        if (cur_pm.IsEmpty()) cur_pm = wxString::FromUTF8(tech.pmos_model);
-        nm_names.clear();
-        pm_names.clear();
-        std::string err;
-        std::vector<syms::MosModel> ms =
-            syms::parse_spice_models(mfile->GetValue().ToStdString(), err);
-        for (const auto& m : ms) (m.pmos ? pm_names : nm_names).push_back(m.name);
-        nmname->Clear();
-        pmname->Clear();
-        for (const auto& n : nm_names) nmname->Append(wxString::FromUTF8(n));
-        for (const auto& n : pm_names) pmname->Append(wxString::FromUTF8(n));
-        nmname->SetValue(cur_nm);
-        pmname->SetValue(cur_pm);
-    };
-    load_models();
-    mfile->Bind(wxEVT_TEXT, [load_models](wxCommandEvent&) { load_models(); });
-    browse->Bind(wxEVT_BUTTON, [this, box, mfile, load_models](wxCommandEvent&) {
-        wxFileDialog fd(box, "Choose a SPICE model file", "", "",
-                        "SPICE models (*.lib;*.mod;*.sp;*.cir)|*.lib;*.mod;*.sp;*.cir|All files (*.*)|*.*",
-                        wxFD_OPEN | wxFD_FILE_MUST_EXIST);
-        if (fd.ShowModal() == wxID_OK) {
-            mfile->ChangeValue(fd.GetPath());
-            load_models();
-        }
-    });
+    if (dlg.ShowModal() != wxID_OK) return;
 
-    auto push_tech = [this]() {
-        if (doc_) doc_->dirty = true;
-        if (on_tech_changed) on_tech_changed();
-        if (on_changed) on_changed();
-    };
-    mode->Bind(wxEVT_CHOICE, [this, mode, push_tech](wxCommandEvent&) {
-        if (rebuilding_) return;
-        doc_->tech.dc_mode =
-            mode->GetSelection() == 0 ? syms::DcMode::GmOverId
-            : mode->GetSelection() == 1 ? syms::DcMode::SquareLaw
-                                        : syms::DcMode::Numeric;
-        push_tech();
-    });
-    auto bind_double = [this, push_tech](wxTextCtrl* tc, double* target) {
-        tc->Bind(wxEVT_TEXT, [this, tc, target, push_tech](wxCommandEvent&) {
-            if (rebuilding_) return;
-            double v = 0.0;
-            if (tc->GetValue().ToDouble(&v)) {
-                *target = v;
-                push_tech();
-            }
-        });
-    };
-    bind_double(vth, &doc_->tech.vth);
-    bind_double(is, &doc_->tech.is);
-    bind_double(uncox, &doc_->tech.uncox);
-    bind_double(upcox, &doc_->tech.upcox);
-    auto bind_str = [this, push_tech](auto* tc, std::string* target) {
-        tc->Bind(wxEVT_TEXT, [this, tc, target, push_tech](wxCommandEvent&) {
-            if (rebuilding_) return;
-            *target = tc->GetValue().ToStdString();
-            push_tech();
-        });
-    };
-    bind_str(mfile, &tech.model_file);
-    bind_str(nmname, &tech.nmos_model);
-    bind_str(pmname, &tech.pmos_model);
+    double v = 0.0;
+    if (vdd->GetValue().ToDouble(&v)) tech.vdd = v;
+    if (vthn->GetValue().ToDouble(&v)) tech.vthn = v;
+    if (vthp->GetValue().ToDouble(&v)) tech.vthp = v;
+    if (uncox && uncox->GetValue().ToDouble(&v)) tech.uncox = v;
+    if (upcox && upcox->GetValue().ToDouble(&v)) tech.upcox = v;
+    if (sat) tech.assume_saturation = sat->GetValue();
+    if (clm) tech.include_clm = clm->GetValue();
 
-    auto* ovr = new wxCheckBox(box, wxID_ANY,
-                               "override small-signal params from numeric DC");
-    ovr->SetValue(tech.override_small_signal);
-    s->Add(ovr, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
-    ovr->Bind(wxEVT_CHECKBOX, [this, ovr, push_tech](wxCommandEvent& e) {
-        if (rebuilding_) return;
-        doc_->tech.override_small_signal = e.IsChecked();
-        push_tech();
-    });
-
-    auto* hint = new wxStaticText(
-        box, wxID_ANY,
-        "Mode 1: gm per device. Mode 2: uCox and symbolic W/L.\n"
-        "Mode 3: a SPICE .lib/.mod (level 1/3), numeric W/L.");
-    hint->SetForegroundColour(theme::text_muted);
-    wxFont hf = hint->GetFont();
-    hf.SetPointSize(std::max(7, hf.GetPointSize() - 1));
-    hint->SetFont(hf);
-    s->Add(hint, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+    doc_->dirty = true;
+    if (on_tech_changed) on_tech_changed();
+    if (on_changed) on_changed();
+    // Defer the rebuild: this runs from a button inside the card's layout,
+    // and refresh() destroys and recreates that layout.
+    CallAfter([this] { refresh(doc_); });
 }
 
 // ---------------------------------------------------------------------------
 void AnalysisPanel::refresh(Document* doc) {
     rebuilding_ = true;
     doc_ = doc;
+
+    // Rebuilding destroys and recreates every card, which without this flashed
+    // the whole panel blank for a moment on each add/remove/move. Freezing the
+    // window suppresses the intermediate repaints.
+    Freeze();
 
     if (auto* old = GetSizer()) old->Clear(true);
     auto* root = new wxBoxSizer(wxVERTICAL);
@@ -279,7 +288,7 @@ void AnalysisPanel::refresh(Document* doc) {
     int idx = 0;
     for (auto& c : cards_) {
         auto* box = new wxPanel(this);
-        box->SetBackgroundColour(wxColour(252, 252, 250));
+        box->SetBackgroundColour(theme::card_bg);
         auto* s = new wxBoxSizer(wxVERTICAL);
 
         auto* top = new wxBoxSizer(wxHORIZONTAL);
@@ -303,8 +312,26 @@ void AnalysisPanel::refresh(Document* doc) {
             top->Add(badge, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
         }
         auto* run = new wxButton(box, wxID_ANY, "Run");
-        auto* del = new wxButton(box, wxID_ANY, "x");
+        // Card order is meaningful (the .scx card list, and therefore the order
+        // the results come in). Small arrow buttons instead of word labels.
+        auto* up = new wxButton(box, wxID_ANY, wxString(wxUniChar(0x2191)),
+                                wxDefaultPosition, wxSize(26, -1),
+                                wxBU_EXACTFIT);
+        auto* dn = new wxButton(box, wxID_ANY, wxString(wxUniChar(0x2193)),
+                                wxDefaultPosition, wxSize(26, -1),
+                                wxBU_EXACTFIT);
+        auto* del = new wxButton(box, wxID_ANY, wxString(wxUniChar(0x00D7)),
+                                 wxDefaultPosition, wxSize(26, -1),
+                                 wxBU_EXACTFIT);
+        up->Bind(wxEVT_BUTTON, [this, idx](wxCommandEvent&) {
+            move_card(idx, -1);
+        });
+        dn->Bind(wxEVT_BUTTON, [this, idx](wxCommandEvent&) {
+            move_card(idx, +1);
+        });
         top->Add(run, 0, wxRIGHT, 4);
+        top->Add(up, 0, wxRIGHT, 1);
+        top->Add(dn, 0, wxRIGHT, 3);
         top->Add(del, 0);
         s->Add(top, 0, wxEXPAND | wxALL, 4);
 
@@ -324,11 +351,14 @@ void AnalysisPanel::refresh(Document* doc) {
             });
         };
         // AC drives every independent source (the output is the superposition),
-        // output impedance turns all sources off, and the differential card
-        // uses its own port instead of a single input source -- so the "in"
-        // field is omitted for all three.
+        // output impedance turns all sources off, the differential card uses its
+        // own port instead of a single input source, the short-circuit card is
+        // driven like the AC card, and DC drives every source with its DC value
+        // -- so the "in" field is omitted for all of those.
         bool needs_input = c.kind != AnalysisKind::AC &&
+                           c.kind != AnalysisKind::DC &&
                            c.kind != AnalysisKind::OutputImpedance &&
+                           c.kind != AnalysisKind::ShortCircuitCurrent &&
                            c.kind != AnalysisKind::Differential;
         if (needs_input)
             add_field("in", wxString::FromUTF8(c.input_ref),
@@ -339,11 +369,50 @@ void AnalysisPanel::refresh(Document* doc) {
             add_field("in-", wxString::FromUTF8(c.in_port_n),
                       [&c](const wxString& v) { c.in_port_n = v.ToStdString(); });
         }
-        // Input impedance is the input source's own response, so it needs the
-        // source but not an output. Output impedance needs the output node but
-        // no input. Everything else needs both.
-        bool needs_output = c.kind != AnalysisKind::InputImpedance;
-        if (needs_output)
+        // Input impedance is the input source's own response and DC lists every
+        // node, so neither needs an output. Output impedance needs the output
+        // node but no input. Everything else needs both.
+        bool needs_output = c.kind != AnalysisKind::InputImpedance &&
+                            c.kind != AnalysisKind::DC;
+        // A differential card measures an output PORT, not a single node. Show
+        // out+ and out- separately; they combine to "V(a)-V(b)" for the solver
+        // (a bare "V(node)" means that node relative to ground).
+        if (c.kind == AnalysisKind::Differential) {
+            auto strip_v = [](std::string t) {
+                if (t.size() > 3 && (t[0] == 'V' || t[0] == 'v')) t = t.substr(2);
+                if (!t.empty() && t.back() == ')') t.pop_back();
+                return t;
+            };
+            auto parse_out = [&](const std::string& s) {
+                std::string op, on;
+                size_t dash = s.find("-V(");
+                if (dash == std::string::npos) dash = s.find(" - V(");
+                if (dash != std::string::npos) {
+                    op = strip_v(s.substr(0, dash));
+                    size_t d = s.find("V(", dash);
+                    on = strip_v(d == std::string::npos ? std::string() :
+                                                      s.substr(d));
+                } else {
+                    op = strip_v(s);
+                }
+                return std::pair<std::string, std::string>(op, on);
+            };
+            auto compose = [](const std::string& op, const std::string& on) {
+                if (on.empty()) return "V(" + op + ")";
+                return "V(" + op + ")-V(" + on + ")";
+            };
+            auto pr = parse_out(c.output);
+            add_field("out+", wxString::FromUTF8(pr.first),
+                      [&c, parse_out, compose](const wxString& v) {
+                          c.output = compose(v.ToStdString(),
+                                             parse_out(c.output).second);
+                      });
+            add_field("out-", wxString::FromUTF8(pr.second),
+                      [&c, parse_out, compose](const wxString& v) {
+                          c.output = compose(parse_out(c.output).first,
+                                             v.ToStdString());
+                      });
+        } else if (needs_output)
             add_field("out", wxString::FromUTF8(c.output),
                       [&c](const wxString& v) { c.output = v.ToStdString(); });
         if (c.kind == AnalysisKind::LoopGain)
@@ -470,6 +539,7 @@ void AnalysisPanel::refresh(Document* doc) {
     FitInside(); // sets the virtual size to the full content height so the
                  // panel scrolls instead of clipping added cards (#5)
     Layout();
+    Thaw();
     rebuilding_ = false;
 }
 

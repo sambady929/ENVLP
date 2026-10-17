@@ -91,8 +91,42 @@ powershell -ExecutionPolicy Bypass -File tools/make_portable.ps1
 This builds and assembles `dist/ENVLP-<version>-win64/` — `ENVLP.exe`, every
 runtime DLL it needs (found transitively with `objdump`, then stripped), and
 the example circuits. Copy that folder anywhere and run `ENVLP.exe`; nothing
-needs to be installed. Tagging a commit `v*` runs the same script in CI and
-attaches `ENVLP-win64.zip` to the GitHub Release.
+needs to be installed.
+
+### Code signing (why Windows warns, and how to stop it)
+
+An unsigned executable downloaded from the internet makes Windows SmartScreen
+show *"Windows protected your PC"* with a **Run anyway** link. That warning is
+driven by **Authenticode**:
+
+- **The real fix** is to sign `ENVLP.exe` with a code-signing certificate that
+  chains to a publicly trusted CA:
+  - an **EV** certificate is trusted immediately;
+  - an **OV** certificate earns SmartScreen reputation as downloads grow.
+- A **self-signed** certificate does **not** help other people — they would
+  have to install it into their Trusted Root store first. It is only useful for
+  your own machines.
+
+`tools/sign.ps1` signs the built exe and every packaged copy with
+`osslsigncode` (install once: `pacman -S mingw-w64-ucrt-x86_64-osslsigncode`):
+
+```powershell
+# PFX (certificate + private key)
+powershell -ExecutionPolicy Bypass -File tools/sign.ps1 `
+    -Pfx mycert.pfx -Password 'secret'
+
+# or PEM certificate + key
+powershell -ExecutionPolicy Bypass -File tools/sign.ps1 -Cert mycert.pem -Key mykey.pem
+```
+
+The executable also carries **VERSIONINFO** metadata (publisher, product,
+version), generated from the `project()` version in `CMakeLists.txt`, so the
+Properties dialog shows who produced the binary and which release it is.
+
+Tagging a commit `v*` runs the packaging in CI and attaches `ENVLP-win64.zip`
+to the GitHub Release. To sign in CI, add repository secrets
+`SIGNING_PFX_BASE64` (the base64 of your .pfx) and `SIGNING_PFX_PASSWORD`; the
+workflow decodes them and runs `tools/sign.ps1` before uploading.
 
 ## Usage
 
@@ -139,6 +173,18 @@ Values use an SI-suffix dropdown (k, M, G, m, µ, n, p, f) so the prefix is
 picked from a list rather than typed. The **size (dB)** field shifts a
 component's estimate up/down in 10 dB steps for pruning purposes (mark a
 resistor as "really 100× bigger than its label" without changing the symbol).
+
+### Parasitics and the supply rail
+
+Passives carry optional parasitics, **off by default**: a resistor's parallel
+`Cpar` and series `Lser`; a capacitor's `Rser` / `Lser` (ESR / ESL) and leakage
+`Rpar`; an inductor's winding `Rser`, self-`Cpar` and core-loss `Rpar`. A
+transformer (`T`) has the standard `Lp`, `Ls` (turns ratio `n = sqrt(Ls/Lp)`)
+and coupling `k`, plus winding `Rp` / `Rs` and inter-winding `Cps`.
+
+A **VDD** symbol is a bare supply rail with no value of its own: its voltage is
+set per analysis in the **DC operating point** card's *DC analysis options*
+dialog, so any number of VDD symbols can be placed and they are all one rail.
 
 ### Frequency sweep and term ranking
 

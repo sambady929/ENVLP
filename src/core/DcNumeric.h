@@ -26,9 +26,10 @@ struct NumericDcResult {
 
 // Solve the large-signal DC operating point numerically with Newton iteration.
 // Every independent source uses its DC value; capacitors open, inductors short.
-// Each MOSFET uses the given level-1/-3 model with its per-device W/L. Throws
-// nothing -- errors are reported in the result.
+// Each MOSFET uses the given level-1/-3 model with its per-device W/L. `vdd` is
+// the supply voltage for a VDD rail (a DC-analysis setting, not a symbol value).
+// Throws nothing -- errors are reported in the result.
 NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
-                                 const MosModel& pmos_model);
+                                 const MosModel& pmos_model, double vdd = 5.0);
 
 } // namespace syms

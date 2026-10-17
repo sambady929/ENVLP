@@ -16,7 +16,12 @@ param(
     [string]$MsysBin  = "C:\msys64\ucrt64\bin",
     [string]$Objdump  = "C:\msys64\ucrt64\bin\objdump.exe",
     [string]$Strip    = "C:\msys64\ucrt64\bin\strip.exe",
-    [string]$Config   = "Release"
+    [string]$Config   = "Release",
+    # Optional code-signing material (see tools/sign.ps1).
+    [string]$Pfx,
+    [string]$Password,
+    [string]$Cert,
+    [string]$Key
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,6 +88,47 @@ if (Test-Path $Strip) {
 }
 foreach ($d in $bundled) { Copy-Item (Join-Path $MsysBin $d) $outDir }
 
+# --- typesetting engine -----------------------------------------------------
+# The Math tab runs MathJax inside the WebView; the bundle ships next to the
+# executable (the panel falls back to its built-in renderer without it).
+$mj = Join-Path $BuildDir "bin/mathjax"
+if (Test-Path $mj) {
+    Copy-Item $mj (Join-Path $outDir "mathjax") -Recurse
+} else {
+    Write-Warning "mathjax/ not found under $mj; the Math tab will use the fallback renderer"
+}
+# Plotly for the plots tab (again loaded from disk at run time).
+$pl = Join-Path $BuildDir "bin/plotly"
+if (Test-Path $pl) {
+    Copy-Item $pl (Join-Path $outDir "plotly") -Recurse
+} else {
+    Write-Warning "plotly/ not found under $pl; the plots tab will use the fallback painter"
+}
+# WebView2Loader.dll is loaded dynamically by wxWidgets, so the import scan
+# above does not see it -- but without it the web view silently falls back to
+# the legacy IE engine, where MathJax cannot run at all.
+$wv2 = Join-Path $BuildDir "bin/WebView2Loader.dll"
+if (Test-Path $wv2) {
+    Copy-Item $wv2 $outDir
+} else {
+    Write-Warning "WebView2Loader.dll not found; the Math tab will fall back to the built-in renderer"
+}
+
+# --- optional signing -------------------------------------------------------
+# Pass -Pfx (and -Password) or -Cert/-Key to Authenticode-sign ENVLP.exe. A
+# certificate that chains to a trusted CA is what removes the SmartScreen
+# "Windows protected your PC" warning on other machines. See tools/sign.ps1.
+if ($Pfx -or $Cert) {
+    $signArgs = @("-File", "tools/sign.ps1", "-Files",
+                  (Join-Path $outDir "ENVLP.exe"))
+    if ($Pfx)   { $signArgs += @("-Pfx", $Pfx) }
+    if ($Password) { $signArgs += @("-Password", $Password) }
+    if ($Cert)  { $signArgs += @("-Cert", $Cert) }
+    if ($Key)   { $signArgs += @("-Key", $Key) }
+    powershell -ExecutionPolicy Bypass -File @signArgs
+    if ($LASTEXITCODE -ne 0) { throw "signing failed" }
+}
+
 # --- example circuits + a short readme --------------------------------------
 if (Test-Path "examples") {
     Copy-Item "examples" (Join-Path $outDir "examples") -Recurse
@@ -97,6 +143,8 @@ GUI/maths libraries ship in this folder. You can copy it to a USB stick.
 
   ENVLP.exe        the program
   *.dll            bundled runtimes (wxWidgets, GiNaC, CLN/GMP, Lua, MinGW)
+  WebView2Loader.dll  lets the app use the Chromium (WebView2) web view
+  mathjax/         MathJax typesetting engine for the "Results" tab
   examples/        example schematics (*.scx)
 
 Notes
@@ -105,6 +153,9 @@ Notes
   is already present on Windows 10/11. On a machine without it, use the
   "Results (Text)" tab; everything else works normally.
 * Circuit files use the .scx text format.
+* MathJax (mathjax/) is (c) The MathJax Consortium, licensed under Apache-2.0.
+* WebView2Loader.dll is (c) Microsoft, distributed under the WebView2 SDK
+  license.
 "@
 Set-Content -Path (Join-Path $outDir "README.txt") -Value $readme
 

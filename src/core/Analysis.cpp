@@ -282,9 +282,8 @@ CardResult dc_numeric_report(const Circuit& c, const AnalysisSpec& s,
     cr.kind = AnalysisKind::DC;
     cr.title = "DC operating point (numeric)";
 
-    cr.report = "DC analysis -- numeric operating point (SPICE models)\n";
-    cr.report += "model file: " + s.tech.model_file + "   NMOS=" +
-                 s.tech.nmos_model + "   PMOS=" + s.tech.pmos_model + "\n";
+    cr.report = "DC analysis -- numeric operating point (square law: uCox with "
+                "symbolic W/L)\n";
     cr.report += "----------------------------------------\n";
 
     // Node voltages, sorted.
@@ -302,7 +301,7 @@ CardResult dc_numeric_report(const Circuit& c, const AnalysisSpec& s,
         for (const auto& op : nr.mos) {
             char b[256];
             std::snprintf(b, sizeof(b),
-                          "  %s: Vgs=%.4g Vds=%.4g Vov=%.4g Id=%.4g A "
+                          "  %s: Vgs=%.4g Vds=%.4g Vdsat=%.4g Id=%.4g A "
                           "gm=%.4g S%s\n",
                           op.ref.c_str(), op.vgs, op.vds, op.vov, op.id, op.gm,
                           op.saturated ? "" : "  [TRIODE]");
@@ -310,45 +309,6 @@ CardResult dc_numeric_report(const Circuit& c, const AnalysisSpec& s,
             char ib[32];
             std::snprintf(ib, sizeof(ib), "%.6g A", op.id);
             cr.values.push_back({"I(" + op.ref + ")", ib});
-        }
-    }
-
-    // ---- optional small-signal override from the numeric bias ----
-    if (s.tech.override_small_signal) {
-        std::string err;
-        std::vector<MosModel> models = parse_spice_models(s.tech.model_file, err);
-        const MosModel* nm = find_model(models, s.tech.nmos_model);
-        const MosModel* pm = find_model(models, s.tech.pmos_model);
-        cr.report += "\nSmall-signal overrides (applied to subsequent analyses):\n";
-        for (const auto& op : nr.mos) {
-            const Component* cc = c.find(op.ref);
-            if (!cc) continue;
-            const MosModel* m = (cc->kind == Kind::NMOS) ? nm : pm;
-            double W = cc->param_estimate("W");
-            double L = cc->param_estimate("L");
-            cr.report += "  " + op.ref + ": gm=" + eng::format_si(op.gm) +
-                         " S, ro=" +
-                         eng::format_si(1.0 / std::max(op.gds, 1e-15)) + " Ohm";
-            if (m) {
-                // Overlap (gate) caps scale with width; junction caps with the
-                // drain/source area (W*L) and sidewall perimeter (~W).
-                double cgs = m->cgso * W;
-                double cgd = m->cgdo * W;
-                double cdb = m->cj * W * L + m->cjsw * W;
-                double csb = cdb;
-                cr.report += ", Cgs=" + eng::format_si(cgs) +
-                             " F, Cgd=" + eng::format_si(cgd) +
-                             " F, Cdb=" + eng::format_si(cdb) +
-                             " F, Csb=" + eng::format_si(csb) + " F";
-                cr.ss_overrides[op.ref]["Cgs"] = cgs;
-                cr.ss_overrides[op.ref]["Cgd"] = cgd;
-                cr.ss_overrides[op.ref]["Cdb"] = cdb;
-                cr.ss_overrides[op.ref]["Csb"] = csb;
-            }
-            cr.ss_overrides[op.ref]["gm"] = op.gm;
-            cr.ss_overrides[op.ref]["ro"] =
-                1.0 / std::max(op.gds, 1e-15);
-            cr.report += "\n";
         }
     }
 
@@ -367,42 +327,99 @@ CardResult dc_numeric_report(const Circuit& c, const AnalysisSpec& s,
 // Mode 2 (square law): Vov is a symbolic design variable and
 // Id = 1/2*uCox*(W/L)*Vov^2. Both check saturation: a device pushed into triode
 // aborts the analysis and is named.
+// Present a DC value's sum with the simple terms first, so a KVL equation reads
+// as it is written by hand: "VDD - R1*I1" instead of "-R1*I1 + VDD". Only the
+// top-level +/- of the string are reordered; anything inside parentheses (a
+// product, a ratio, sqrt(...)) is left alone.
+static std::string dc_order(const std::string& s) {
+    std::vector<std::string> terms;
+    int depth = 0;
+    std::string cur;
+    for (size_t i = 0; i < s.size(); ++i) {
+        char ch = s[i];
+        if (ch == '(') ++depth;
+        else if (ch == ')') --depth;
+        if ((ch == '+' || ch == '-') && depth == 0 && !cur.empty()) {
+            terms.push_back(cur);
+            cur = std::string(1, ch);
+        } else {
+            cur += ch;
+        }
+    }
+    if (!cur.empty()) terms.push_back(cur);
+    if (terms.size() < 2) return s;
+    auto trim = [](std::string t) {
+        while (!t.empty() && (t.front() == ' ' || t.front() == '\t'))
+            t.erase(t.begin());
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
+        return t;
+    };
+    for (auto& t : terms) t = trim(t);
+    auto simple = [](const std::string& t) {
+        std::string b = t;
+        if (!b.empty() && (b[0] == '+' || b[0] == '-')) b = b.substr(1);
+        return b.find('*') == std::string::npos &&
+               b.find('/') == std::string::npos &&
+               b.find('^') == std::string::npos;
+    };
+    std::vector<std::string> out;
+    for (const auto& t : terms)
+        if (simple(t)) out.push_back(t);
+    for (const auto& t : terms)
+        if (!simple(t)) out.push_back(t);
+    std::string r;
+    for (size_t i = 0; i < out.size(); ++i) {
+        const std::string& t = out[i];
+        std::string body = (!t.empty() && (t[0] == '+' || t[0] == '-')) ? t.substr(1)
+                                                                        : t;
+        if (i == 0) {
+            r += body;
+        } else if (!t.empty() && t[0] == '-') {
+            r += " - " + body;
+        } else {
+            r += " + " + body;
+        }
+    }
+    return r;
+}
+
 // ---------------------------------------------------------------------------
 CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
     cr.kind = AnalysisKind::DC;
 
-    // ---- Mode 3: numeric operating point from SPICE models ----
-    if (s.tech.dc_mode == DcMode::Numeric) {
-        cr.title = "DC operating point (numeric)";
-        std::string err;
-        std::vector<MosModel> models = parse_spice_models(s.tech.model_file, err);
-        if (!err.empty()) {
-            cr.summary = "DC (numeric): " + err;
-            cr.report = cr.summary + "\n";
-            return cr;
-        }
-        const MosModel* nm = find_model(models, s.tech.nmos_model);
-        const MosModel* pm = find_model(models, s.tech.pmos_model);
-        if (!nm || !pm) {
-            cr.summary =
-                "DC (numeric): model '" +
-                (nm ? s.tech.pmos_model : s.tech.nmos_model) +
-                "' not found in " + s.tech.model_file;
-            cr.report = cr.summary + "\n";
-            return cr;
-        }
-        NumericDcResult nr = solve_dc_numeric(c, *nm, *pm);
-        if (!nr.ok) {
-            cr.summary = nr.error;
-            cr.report = std::string("DC (numeric) -- FAILED\n") + nr.error + "\n";
-            return cr;
-        }
-        return dc_numeric_report(c, s, nr);
-    }
-
     // ---- Modes 1 and 2: symbolic operating point ----
     cr.title = "DC operating point (large-signal)";
+
+    // Mode 2: unless "assume all in saturation" is set, a numerical pre-solve
+    // decides each device's operating region. The output itself stays SYMBOLIC
+    // -- the region only selects which device relation is reported (the square
+    // law, or the triode Id = uCox*(W/L)*(Vdsat*Vds - Vds^2/2)).
+    std::map<std::string, bool> region_sat; // ref -> saturated?
+    bool have_region = false;
+    std::string region_note;
+    if (s.tech.dc_mode == DcMode::SquareLaw && !s.tech.assume_saturation) {
+        MosModel nm, pm;
+        nm.level = 1;
+        nm.vto = s.tech.vthn;
+        nm.kp = s.tech.uncox;
+        pm.level = 1;
+        pm.pmos = true;
+        pm.vto = s.tech.vthp;
+        pm.kp = s.tech.upcox;
+        NumericDcResult nr = solve_dc_numeric(c, nm, pm, s.tech.vdd);
+        if (nr.ok) {
+            have_region = true;
+            for (const auto& op : nr.mos) region_sat[op.ref] = op.saturated;
+        } else {
+            // Say so rather than silently treating every device as saturated:
+            // with the checkbox off the user is asking for the region check,
+            // and a silent fallback makes the option look inert.
+            region_note = "region check unavailable (" + nr.error +
+                          "): every device is reported as saturated.\n";
+        }
+    }
+
     DcSolution dc;
     try {
         dc = solve_dc(c, s.tech);
@@ -414,37 +431,160 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     ParamTable& pt = dc.params;
 
+    // If the numeric region solve did not converge, judge the region from the
+    // *symbolic* operating point instead: Vds against Vov at the parameter
+    // estimates. This is the same post-hoc rule mode 1 already uses, and it is
+    // all the numeric solve was ever needed for -- a device with Vds = 0 and a
+    // large Vgs is in triode whatever the exact numbers, so an unconverged
+    // numeric solve must not make "assume all in saturation" inert.
+    if (s.tech.dc_mode == DcMode::SquareLaw && !s.tech.assume_saturation &&
+        !have_region) {
+        for (const auto& ref : dc.mosfets) {
+            const Component* mc = c.find(ref);
+            const bool pmos = mc && mc->kind == Kind::PMOS;
+            double vds_n = eval_complex(dc.vds[ref], pt, 0.0).real();
+            double vov_n = eval_complex(dc.vov[ref], pt, 0.0).real();
+            if (!std::isfinite(vds_n) || !std::isfinite(vov_n)) continue;
+            region_sat[ref] = pmos ? (vds_n <= vov_n) : (vds_n >= vov_n);
+            have_region = true;
+        }
+        if (have_region)
+            region_note = "region check: numeric solve unavailable, regions "
+                          "judged from the symbolic operating point.\n";
+    }
+
+    // Mode 2 with a region check: a device the check found in triode keeps its
+    // KCL branch current -- the current through a cascode/mirror leg is the
+    // reference current even when the device law is the triode one. Only the
+    // presented *relation* and the [TRIODE] flag change (handled downstream).
+
+    // Named device overdrives: each device's overdrive expression (e.g.
+    // V1 - Vthn) mapped to a symbol Vdsat_<ref>, so the operating point reads
+    // Vdsat_M1 instead of the raw difference. Only the gm/Id mode names it; the
+    // square-law mode keeps (Vgs - Vth)^2 visible.
+    std::vector<std::pair<ex, ex>> od_subs;
+    if (s.tech.dc_mode == DcMode::GmOverId) {
+        for (const auto& ref : dc.mosfets) {
+            ex od = dc.vov[ref];
+            if (od.is_zero()) continue;
+            od_subs.push_back({od, pt.get("Vdsat_" + ref)});
+        }
+    }
+
+    // Factor the additive terms of a sum without combining them back into an
+    // expanded polynomial: -V1*gm*R1 + Vth*gm*R1 -> -gm*R1*(V1 - Vth). GiNaC's
+    // factor() throws on a non-polynomial (a sqrt/radical): fall back then.
+    auto factor_terms = [](const ex& x) -> ex {
+        if (GiNaC::is_a<GiNaC::add>(x)) {
+            ex sum = 0;
+            for (size_t i = 0; i < x.nops(); ++i)
+                try {
+                    sum += GiNaC::factor(x.op(i));
+                } catch (const std::exception&) {
+                    sum += x.op(i);
+                }
+            return sum;
+        }
+        try {
+            return GiNaC::factor(x);
+        } catch (const std::exception&) {
+            return x;
+        }
+    };
+
+    // True when an expression contains a factored square, pow(add(...), k>=2),
+    // e.g. (Vgs - Vth)^2: the low-entropy form we want to prefer over an
+    // expanded polynomial.
+    std::function<bool(const ex&)> factored_square = [&](const ex& e) -> bool {
+        if (GiNaC::is_a<GiNaC::power>(e)) {
+            const ex& b = e.op(0);
+            const ex& p = e.op(1);
+            if (GiNaC::is_a<GiNaC::add>(b) && GiNaC::is_a<GiNaC::numeric>(p) &&
+                GiNaC::ex_to<GiNaC::numeric>(p).is_integer() &&
+                GiNaC::ex_to<GiNaC::numeric>(p).to_double() >= 2.0)
+                return true;
+        }
+        for (size_t i = 0; i < e.nops(); ++i)
+            if (factored_square(e.op(i))) return true;
+        return false;
+    };
+
     // Put one operating-point value into a design-readable form:
     //   1. combine over a common denominator (exact rationals, so 1/2 stays
     //      1/2, not 0.5);
-    //   2. recover parallel structure: R1*R2/(R1+R2) -> R1||R2 and
-    //      R1*(R2+R3)/(R1+R2+R3) -> R1||(R2+R3);
-    //   3. otherwise keep the denominator a clean factored block.
-    // We keep a finite amplifier gain's "+1": V(out) then reads as the exact
-    // KVL sum, not the ideal A -> infinity limit. (A "to_parallel" result is
-    // already tidy, so we return it without a normal() that would re-expand.)
-    auto dc_value = [&](ex v) -> ex {
-        ex out = v.normal();
-        if (!s.prune) return out;
-        // Factor numerator AND denominator first so the additive factors are
-        // visible to the parallel recovery: a numerator R1*I1*(R2+R3)*A_U1 and
-        // a denominator (A_U1+1)*(R1+R2+R3) expose R1 + (R2+R3), giving
-        // V(out) = I1*(R1||(R2+R3))*A_U1/(A_U1+1).
+    //   2. keep a *factored* structure: collect a device coefficient (gm_M1,
+    //      unCox, ...) and factor each additive term, so a node voltage reads
+    //      VDD - 1/2*R1*gm_M1*Vdsat_M1 rather than the expanded polynomial;
+    //   3. name each device overdrive (Vdsat_<ref>);
+    //   4. recover parallel structure: R1*R2/(R1+R2) -> R1||R2.
+    auto dc_value = [&](ex v, bool name_od = true) -> ex {
+        if (!s.prune) return v.normal();
+        // Expand first: an operating-point value is usually a single fraction
+        // (mul), in which case the overdrive 2*Id/gm is not a subexpression at
+        // all and can never be named. Expanding splits it into a sum whose
+        // terms do contain the overdrive.
+        ex out = v.expand();
+        // Name each device overdrive (Vdsat_<ref>) before any factoring, so
+        // every use of it reads as the named symbol. Substituting only inside
+        // the per-coefficient candidates left a node voltage in the raw
+        // 2*Id/gm form whenever that candidate did not win on length.
+        if (name_od) {
+            for (const auto& sub : od_subs) {
+                if (out.has(sub.first))
+                    out = out.subs(sub.first == sub.second);
+                else if (out.has(-sub.first))
+                    out = out.subs((-sub.first) == (-sub.second));
+            }
+        }
+        out = out.normal();
         ex num = out.numer().expand();
         ex den = out.denom().expand();
-        if (!is_a<GiNaC::numeric>(num)) num = GiNaC::factor(num);
-        if (!is_a<GiNaC::numeric>(den)) den = GiNaC::factor(den);
-        ex ratio = (num / den).normal();
-        ex parred = to_parallel(ratio);
-        if (!parred.is_equal(ratio)) return parred;
-        return num / den;
+        // GiNaC's factor()/collect() can explode on a large multivariate
+        // polynomial (e.g. once channel-length modulation adds the ro terms), so
+        // only run the factoring pass when both parts are small.
+        const bool small = num.nops() <= 20 && den.nops() <= 20;
+        if (small) {
+            try {
+                if (!is_a<GiNaC::numeric>(num)) num = GiNaC::factor(num);
+                if (!is_a<GiNaC::numeric>(den)) den = GiNaC::factor(den);
+            } catch (const std::exception&) {
+                // Non-polynomial (a radical): keep the expanded form.
+            }
+        }
+        ex best = (num / den).normal();
+        // Prefer a factored presentation when it prints shorter: collect by
+        // each device coefficient and factor the additive terms (so a node
+        // voltage reads VDD - 1/2*R1*gm_M1*Vdsat_M1 or ...*(Vgs - Vth)^2 rather
+        // than the expanded polynomial).
+        for (const auto& kv : pt.syms) {
+            if (!small) break;
+            const ex& sym = kv.second;
+            if (!num.has(sym)) continue;
+            ex ratio2;
+            try {
+                ex cand = factor_terms(num.collect(sym));
+                ratio2 = cand / den;
+            } catch (const std::exception&) {
+                continue;
+            }
+            std::string rs = pretty(ratio2), bs = pretty(best);
+            bool better = rs.size() < bs.size() ||
+                          (factored_square(ratio2) && !factored_square(best));
+            if (better) best = ratio2;
+        }
+        // Recover R1||R2 only when it makes the expression shorter (to_parallel
+        // re-expands, which would otherwise undo the factored form above).
+        ex parred = to_parallel(best);
+        if (!parred.is_equal(best) && pretty(parred).size() <= pretty(best).size())
+            return parred;
+        return best;
     };
 
-    // ---- saturation check (Mode 1 only) ----------------------------------
-    // Mode 1 solves Vgs = 2*Id/gm + Vth, so a device can land in triode and the
-    // analysis aborts. Mode 2 *assumes* saturation (the user picks the
-    // overdrive), so there is no numeric Vds to compare -- the report states
-    // the assumption and the defining relation instead.
+    // ---- saturation check (Mode 1) ---------------------------------------
+    // Mode 1 solves Vgs = 2*Id/gm + Vth, so a device can land in triode. Rather
+    // than aborting (which hid the whole operating point), flag each triode
+    // device in the report so V(n1), Vdsat, ... stay visible.
+    std::map<std::string, bool> triode1;
     if (s.tech.dc_mode == DcMode::GmOverId) {
         for (const auto& ref : dc.mosfets) {
             const Component* mc = c.find(ref);
@@ -453,21 +593,7 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
             double vov_n = eval_complex(dc.vov[ref], pt, 0.0).real();
             if (!std::isfinite(vds_n) || !std::isfinite(vov_n)) continue;
             bool saturated = pmos ? (vds_n <= vov_n) : (vds_n >= vov_n);
-            if (!saturated) {
-                ex vds = dc_value(dc.vds[ref]);
-                ex vov = dc_value(dc.vov[ref]);
-                char buf[256];
-                std::snprintf(buf, sizeof(buf),
-                              "device %s is not in saturation: Vds = %s, Vdsat "
-                              "= %s (pushed into triode). DC analysis stopped.",
-                              ref.c_str(), pretty(vds).c_str(),
-                              pretty(vov).c_str());
-                cr.summary = buf;
-                cr.report = std::string("DC (large-signal) -- ABORTED\n") +
-                            "----------------------------------------\n" + buf +
-                            "\n";
-                return cr;
-            }
+            triode1[ref] = !saturated;
         }
     }
 
@@ -476,17 +602,20 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
     std::vector<std::string> latex_names;
 
     std::vector<std::string> node_names;
-    for (const auto& kv : dc.node_v) node_names.push_back(kv.first);
+    // The device-parameter solve: node voltages in terms of the device
+    // overdrives (Vdsat_M<ref>), the sources and the component values.
+    const std::map<std::string, ex>& node_v = dc.node_v;
+    for (const auto& kv : node_v) node_names.push_back(kv.first);
     std::sort(node_names.begin(), node_names.end());
     for (const auto& nd : node_names) {
-        ex vp = dc_value(dc.node_v[nd]);
-        cr.values.push_back({"V(" + nd + ")", pretty(vp)});
+        ex vp = dc_value(node_v.at(nd));
+        cr.values.push_back({"V(" + nd + ")", dc_order(pretty(vp))});
         latex_vals.push_back(vp);
         latex_names.push_back("V(" + nd + ")");
     }
     for (const auto& ref : dc.mosfets) {
         ex id = dc_value(dc.id[ref]);
-        cr.values.push_back({"I(" + ref + ")", pretty(id)});
+        cr.values.push_back({"I(" + ref + ")", dc_order(pretty(id))});
         latex_vals.push_back(id);
         latex_names.push_back("I(" + ref + ")");
     }
@@ -506,26 +635,66 @@ CardResult analyze_dc(const Circuit& c, const AnalysisSpec& s) {
 
     std::string rep = "DC analysis -- large-signal operating point\n";
     if (s.tech.dc_mode == DcMode::SquareLaw) {
-        rep += "square-law mode: Id = 1/2*uCox*(W/L)*Vov^2, saturation assumed\n";
-        rep += "Vov = Vgs - Vth is the device overdrive; W/L are symbolic "
+        rep += "square-law mode: Id = 1/2*uCox*(W/L)*(Vgs - Vth)^2, saturation "
+               "assumed\n";
+        rep += "Vth is Vthn for an NMOS, Vthp for a PMOS; W/L are symbolic "
                "(mirror-aware)\n";
     } else {
         rep += "gm/Id mode: Vgs = 2*Id/gm + Vth, saturation assumed\n";
+        rep += "Vth is Vthn for an NMOS, Vthp for a PMOS; Vdsat = 2*Id/gm\n";
     }
     rep += "pruning threshold = " + std::to_string(int(s.threshold_db)) + " dB\n";
+    if (!region_note.empty()) rep += region_note;
     rep += "----------------------------------------\n";
     for (const auto& kv : cr.values)
         rep += "  " + kv.first + " = " + kv.second + "\n";
     if (!dc.mosfets.empty()) {
         rep += "\nDevice operating points:\n";
         for (const auto& ref : dc.mosfets) {
+            const Component* mc = c.find(ref);
+            const char* th = (mc && mc->kind == Kind::PMOS) ? "Vthp" : "Vthn";
+            // Region: prefer the numeric region check (mode 2); otherwise fall
+            // back to evaluating the symbolic operating point.
+            bool in_triode = false;
+            bool have_dev_region = false;
+            if (s.tech.dc_mode == DcMode::GmOverId) {
+                auto it = triode1.find(ref);
+                if (it != triode1.end()) {
+                    in_triode = it->second;
+                    have_dev_region = true;
+                }
+            }
+            if (have_region) {
+                auto it = region_sat.find(ref);
+                if (it != region_sat.end()) {
+                    in_triode = !it->second;
+                    have_dev_region = true;
+                }
+            }
+            const char* triode_note = in_triode ? "   [TRIODE]" : "";
+            const bool sq = (s.tech.dc_mode == DcMode::SquareLaw);
             rep += "  " + ref + ": Vgs = " + pretty(dc_value(dc.vgs[ref])) +
                    ", Vds = " + pretty(dc_value(dc.vds[ref])) +
-                   ", Vdsat = " + pretty(dc_value(dc.vov[ref])) +
-                   ", Id = " + pretty(dc_value(dc.id[ref])) + "\n";
-            if (s.tech.dc_mode == DcMode::SquareLaw)
-                rep += "      relation: Vov_" + ref + " = Vgs - Vth, Vov_" +
-                       ref + " = sqrt(2*Id*L/(uCox*W))\n";
+                   (sq ? ", Vov = " : ", Vdsat = ") +
+                   pretty(dc_value(dc.vov[ref], false)) +
+                   ", Id = " + pretty(dc_value(dc.id[ref])) + triode_note + "\n";
+            if (s.tech.dc_mode == DcMode::SquareLaw) {
+                if (in_triode)
+                    rep += std::string("      relation: Id = uCox*(W/L)*((Vgs - ") +
+                           th + ")*Vds - Vds^2/2)\n";
+                else
+                    rep += std::string("      relation: Id = 1/2*uCox*(W/L)*(Vgs - ") +
+                           th + ")^2" +
+                           (s.tech.include_clm ? "*(1 + lambda*Vds)" : "") +
+                           "\n";
+            } else {
+                rep += std::string("      relation: Vdsat_") + ref + " = 2*Id_" +
+                       ref + "/gm_" + ref + " = Vgs - " + th;
+                if (s.tech.include_clm)
+                    rep += ", lambda_" + ref + " = 1/(ro_" + ref + "*Id_" + ref +
+                           ")";
+                rep += "\n";
+            }
         }
     }
     cr.report = rep;

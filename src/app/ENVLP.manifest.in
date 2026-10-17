@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="ENVLP.ENVLP" version="0.1.0.0"
+  <assemblyIdentity type="win32" name="ENVLP.ENVLP"
+                    version="@ENVLP_VER_4@"
                     processorArchitecture="*"/>
   <description>ENVLP -- symbolic circuit analyzer</description>
 
@@ -19,8 +20,19 @@
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
     </windowsSettings>
   </application>
+
+  <!-- Run as the invoking user: no elevation prompt, and Windows does not
+       treat the app as an installer. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
 
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>

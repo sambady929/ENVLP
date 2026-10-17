@@ -60,8 +60,16 @@ std::vector<Pt> pin_offsets(Kind k) {
         // grid-placed op-amp lands its pins on the grid too.
         return {{-40, -10}, {-40, 10}, {40, 0}};
     case Kind::FDOPAMP:
-        // in+ , in- , out+ , out-
-        return {{-40, -10}, {-40, 10}, {34, -10}, {34, 10}};
+        // in+ , in- , out+ , out-.
+        //
+        // The outputs are deliberately *sign-swapped* vertically against the
+        // inputs (out- above, out+ below), which is the standard fully
+        // differential amplifier convention: each feedback resistor then runs
+        // straight across the symbol from an input to the output it feeds back
+        // to (out+ -> in-, out- -> in+). Drawing them the other way forces the
+        // feedback to cross, which is why an FD amp drawn "normally" ends up
+        // mis-wired.
+        return {{-40, -10}, {-40, 10}, {34, 10}, {34, -10}};
     case Kind::K:
         return {};
     }

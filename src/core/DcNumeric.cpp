@@ -61,7 +61,7 @@ MosEval eval_mos(const MosModel& m, double w, double l, double vgs, double vds) 
     double Vds = sgn * vds;
     double W = std::max(w, 1e-12);
     double L = std::max(l, 1e-12);
-    double Vth = m.vto + (m.pmos ? 0.0 : 0.0);
+    double Vth = std::fabs(m.vto); // magnitude (a PMOS card stores a negative vto)
     // (No body terminal: the body is tied to the source, so Vbs = 0 and the
     // body-effect term drops out.)
     double Vov = Vgs - Vth;
@@ -115,15 +115,17 @@ MosEval eval_mos(const MosModel& m, double w, double l, double vgs, double vds) 
         }
     }
     e.id *= sgn;
-    e.gm *= sgn;
-    e.gds *= sgn;
+    // gm and gds are DERIVATIVES of the (signed) drain current: d(id)/d(vgs) and
+    // d(id)/d(vds). For a PMOS both come out positive (id falls as vgs rises,
+    // and vgs = -|vgs|), so they are left as the magnitudes computed above; only
+    // the current itself is negated.
     return e;
 }
 
 } // namespace
 
 NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
-                                 const MosModel& pmos_model) {
+                                 const MosModel& pmos_model, double vdd) {
     NumericDcResult out;
 
     // --- node index (ground excluded) ---
@@ -148,15 +150,22 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
     // --- voltage-source / inductor branches (extra current unknowns) ---
     struct Branch { std::string ref; int a, b; double value; };
     std::vector<Branch> branches;
+    bool seen_vdd = false;
     for (const auto& cc : c.comps) {
         if (cc.kind == Kind::V) {
             double v = 0.0;
             eng::parse_value(cc.dc_text, v);
             branches.push_back({cc.ref, N(cc.nodes[0]), N(cc.nodes[1]), v});
         } else if (cc.kind == Kind::VDD) {
-            double v = 0.0;
-            eng::parse_value(cc.value_text, v);
-            branches.push_back({cc.ref, N(cc.nodes[0]), -1, v});
+            // The rail voltage is a DC-analysis setting (tech.vdd), not a
+            // per-symbol value. VDD is a single anonymous supply net, so
+            // several VDD symbols are electrically one source on the same
+            // rail: stamping a branch per symbol adds identical rows and makes
+            // the Jacobian singular. (build_mna collapses them for exactly this
+            // reason; the numeric solver has to as well.)
+            if (seen_vdd) continue;
+            seen_vdd = true;
+            branches.push_back({cc.ref, N(cc.nodes[0]), -1, vdd});
         } else if (cc.kind == Kind::L) {
             branches.push_back({cc.ref, N(cc.nodes[0]), N(cc.nodes[1]), 0.0});
         }
@@ -187,36 +196,112 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
     // then starts off, but the gmin stepping below conditions every node, and
     // the Newton follows the physical branch up rather than a spurious one.
     std::vector<double> x(nvars, 0.0);
-    const int kMaxIter = 200;
-    const double kTol = 1e-12;
+    const int kMaxIter = 300;
+    // Node-voltage convergence. The absolute term is deliberately larger than
+    // SPICE's VNTOL: a device biased right at the triode/saturation boundary
+    // (Vds ~ 0, e.g. a mirror with equal input/output currents) leaves a node
+    // there, and the device-voltage limiting then jitters by a few microvolts.
+    // This solve only picks each device's region, so microvolts do not matter.
+    const double kVTol = 1e-5;
+    const double kResTol = 1e-9; // KCL/KVL residual convergence
+    // Relative tolerances, SPICE style: an absolute 1e-9 on both volts and
+    // amps is unreachable for a mA-scale bias (the device-voltage limiting
+    // never settles the last few ppm), so a perfectly good operating point
+    // would be reported as "did not converge". A term is converged when it is
+    // within `kRelTol` of its own magnitude. (SPICE's RELTOL default is 1e-3;
+    // 1e-4 is tighter and still far more than the region check needs.)
+    const double kRelTol = 1e-4;
+    double f_scale = 0.0; // first-iteration KCL residual: the current scale
 
-    // Newton for one gmin. Operates on a copy so a failed step cannot corrupt
-    // the last good solution; commits through `xout` on success.
+    // --- SPICE device-voltage limiting (fetlim) ----------------------------
+    // Limits how far vgs/vds may move between Newton iterations. This is what
+    // makes a multi-device bias converge instead of oscillating across the
+    // threshold; it is the core of a SPICE DC solve.
+    auto fetlim = [](double vnew, double vold, double vto) {
+        const double vtsthi = std::fabs(2.0 * (vold - vto)) + 2.0;
+        const double vtstlo = vtsthi / 2.0 + 2.0;
+        const double vtox = vto + 3.5;
+        const double delv = vnew - vold;
+        if (vold >= vto) {
+            if (vold >= vtox) {
+                if (delv <= 0.0) {
+                    if (vnew >= vtox) {
+                        if (-delv > vtstlo) vnew = vold - vtstlo;
+                    } else {
+                        vnew = std::max(vnew, vto + 2.0);
+                    }
+                } else if (delv >= vtsthi) {
+                    vnew = vold + vtsthi;
+                }
+            } else {
+                if (delv <= 0.0) vnew = std::max(vnew, vto - 0.5);
+                else vnew = std::min(vnew, vto + 4.0);
+            }
+        } else {
+            if (delv <= 0.0) {
+                if (-delv > vtsthi) vnew = vold - vtsthi;
+            } else {
+                const double vtemp = vto + 0.5;
+                if (vnew <= vtemp) {
+                    if (delv > vtstlo) vnew = vold + vtstlo;
+                } else {
+                    vnew = vtemp;
+                }
+            }
+        }
+        return vnew;
+    };
+    auto fetlim_vds = [](double vnew, double vold) {
+        const double vtsthi = std::fabs(2.0 * vold) + 2.0;
+        const double vtstlo = vtsthi / 2.0 + 2.0;
+        const double delv = vnew - vold;
+        if (vold >= 0.0) {
+            if (delv <= 0.0) {
+                if (vold >= 3.5) {
+                    if (-delv > vtstlo) vnew = vold - vtstlo;
+                } else {
+                    vnew = std::max(vnew, -0.5);
+                }
+            } else if (delv >= vtsthi) {
+                vnew = vold + vtsthi;
+            }
+        } else {
+            if (delv <= 0.0) {
+                if (-delv > vtsthi) vnew = vold - vtsthi;
+            } else if (vnew <= -0.5) {
+                if (delv > vtstlo) vnew = vold + vtstlo;
+            } else {
+                vnew = -0.5;
+            }
+        }
+        return vnew;
+    };
+    const int n_mos = int(mos_model.size());
+    std::vector<double> lim_vgs(n_mos, 0.0), lim_vds(n_mos, 0.0);
+
+    // `src_scale` scales every independent source for source stepping.
+    double src_scale = 1.0;
+
+    // Newton for one gmin. The device voltages are limited each iteration
+    // (fetlim) so the iteration creeps up to the bias instead of jumping across
+    // the threshold and oscillating.
     auto newton = [&](double gg_min, std::vector<double> xx,
                       std::vector<double>& xout) -> bool {
         for (int iter = 0; iter < kMaxIter; ++iter) {
-            // Convention: F[node] = sum of currents LEAVING the node (KCL), and
-            // the Jacobian J = dF/dx. Newton then solves J*dx = -F, x += dx.
             std::vector<std::vector<double>> J(nvars,
                                                std::vector<double>(nvars, 0.0));
             std::vector<double> F(nvars, 0.0);
-
             auto stamp_conductance = [&](int a, int b, double gg) {
                 if (a >= 0) J[a][a] += gg;
                 if (b >= 0) J[b][b] += gg;
                 if (a >= 0 && b >= 0) { J[a][b] -= gg; J[b][a] -= gg; }
             };
-
-            // gmin: a conductance from every node to ground. It keeps a node
-            // reached only through the drain of an off device well posed, and
-            // (stepped from coarse to fine below) removes the spurious
-            // all-devices-off root that a plain Newton can fall into.
+            // gmin: a conductance from every node to ground, keeping a node
+            // reached only through the drain of an off device well posed.
             for (size_t i = 0; i < nodes.size(); ++i) {
                 J[i][i] += gg_min;
                 F[i] += xx[i] * gg_min;
             }
-
-            // Resistors: current leaving a = (v_a - v_b)/R.
             for (const auto& cc : c.comps) {
                 if (cc.kind != Kind::R) continue;
                 double r = cc.estimate();
@@ -227,13 +312,11 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
                 if (a >= 0) F[a] += (xx[a] - (b >= 0 ? xx[b] : 0.0)) * gg;
                 if (b >= 0) F[b] += (xx[b] - (a >= 0 ? xx[a] : 0.0)) * gg;
             }
-            // Independent current sources: value flows n+ -> n- through the
-            // source, i.e. current LEAVES n+ and ENTERS n-.
             for (const auto& sq : isrcs) {
-                if (sq.a >= 0) F[sq.a] += sq.value;
-                if (sq.b >= 0) F[sq.b] -= sq.value;
+                double v = sq.value * src_scale;
+                if (sq.a >= 0) F[sq.a] += v;
+                if (sq.b >= 0) F[sq.b] -= v;
             }
-            // Voltage-source / inductor branches (current unknown at row).
             for (int k = 0; k < nb; ++k) {
                 const Branch& br = branches[k];
                 int row = int(nodes.size()) + k;
@@ -243,73 +326,138 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
                 if (br.b >= 0) F[br.b] -= xx[row];
                 double vl = (br.a >= 0 ? xx[br.a] : 0.0) -
                             (br.b >= 0 ? xx[br.b] : 0.0);
-                F[row] += vl - br.value;
+                F[row] += vl - br.value * src_scale;
             }
-            // MOSFETs: current leaves D by Ids, enters S.
             int mi = 0;
             for (const auto& cc : c.comps) {
                 if (cc.kind != Kind::NMOS && cc.kind != Kind::PMOS) continue;
                 int D = N(cc.nodes[0]), G = N(cc.nodes[1]), S = N(cc.nodes[2]);
+                const MosModel& mm = *mos_model[mi];
+                const double sgn = mm.pmos ? -1.0 : 1.0;
                 double vgs = (G >= 0 ? xx[G] : 0.0) - (S >= 0 ? xx[S] : 0.0);
                 double vds = (D >= 0 ? xx[D] : 0.0) - (S >= 0 ? xx[S] : 0.0);
-                MosEval e = eval_mos(*mos_model[mi], mos_wl[mi].first,
-                                     mos_wl[mi].second, vgs, vds);
+                // Limit in magnitude (a PMOS is evaluated as |vgs|, |vds|).
+                double lvgs_m =
+                    fetlim(sgn * vgs, lim_vgs[mi], std::fabs(mm.vto));
+                double lvds_m = fetlim_vds(sgn * vds, lim_vds[mi]);
+                lim_vgs[mi] = lvgs_m;
+                lim_vds[mi] = lvds_m;
+                MosEval e = eval_mos(mm, mos_wl[mi].first, mos_wl[mi].second,
+                                     sgn * lvgs_m, sgn * lvds_m);
                 ++mi;
-                if (D >= 0) F[D] += e.id;
-                if (S >= 0) F[S] -= e.id;
+                // Id leaves D and enters S: Id = gm*(vG-vS) + gds*(vD-vS).
+                // The transconductance is a VCCS (D<-G), NOT a conductance
+                // between G and S (the gate draws no current).
+                auto stamp_vccs = [&](int op, int on, int cp, int cn, double gg) {
+                    if (op >= 0) {
+                        if (cp >= 0) J[op][cp] += gg;
+                        if (cn >= 0) J[op][cn] -= gg;
+                    }
+                    if (on >= 0) {
+                        if (cp >= 0) J[on][cp] -= gg;
+                        if (cn >= 0) J[on][cn] += gg;
+                    }
+                };
                 auto stamp_pair = [&](int p, int q, double gg) {
                     if (p >= 0) J[p][p] += gg;
                     if (q >= 0) J[q][q] += gg;
                     if (p >= 0 && q >= 0) { J[p][q] -= gg; J[q][p] -= gg; }
                 };
-                stamp_pair(G, S, e.gm);
+                stamp_vccs(D, S, G, S, e.gm);
                 stamp_pair(D, S, e.gds);
+                if (D >= 0) F[D] += e.id;
+                if (S >= 0) F[S] -= e.id;
             }
 
+            double fmax = 0.0;
+            for (double f : F) fmax = std::max(fmax, std::fabs(f));
+            if (iter == 0) f_scale = fmax;
             std::vector<double> rhs(nvars, 0.0);
             for (int i = 0; i < nvars; ++i) rhs[i] = -F[i];
             std::vector<double> dx;
             if (nvars == 0) { xout = xx; return true; }
             if (!solve_linear(J, rhs, dx)) return false;
-            // Voltage limiting: clamp the largest node-voltage step. A full
-            // Newton step can overshoot past a device threshold and oscillate
-            // between the off and saturated regions; limiting the step makes it
-            // creep up to the physical bias instead. Near convergence the step
-            // is tiny, so limiting does not slow the final iterations.
-            double scale = 1.0;
-            const double kStepLim = 0.5;
-            for (int i = 0; i < nvars; ++i)
-                if (std::fabs(dx[i]) > kStepLim)
-                    scale = std::min(scale, kStepLim / std::fabs(dx[i]));
-            double maxd = 0.0;
-            for (int i = 0; i < nvars; ++i) {
-                xx[i] += scale * dx[i];
-                maxd = std::max(maxd, std::fabs(scale * dx[i]));
+            // Cap the node-voltage step so a near-singular iterate cannot throw
+            // a node 1e14 volts away; fetlim keeps the device model sane.
+            double vstep = 0.0;
+            for (size_t i = 0; i < nodes.size(); ++i)
+                vstep = std::max(vstep, std::fabs(dx[i]));
+            const double kStepLim = 1.0;
+            if (vstep > kStepLim) {
+                double sc = kStepLim / vstep;
+                for (int i = 0; i < nvars; ++i) dx[i] *= sc;
             }
-            if (maxd < kTol) { xout = xx; return true; }
+            double vmax = 0.0;
+            for (int i = 0; i < nvars; ++i) xx[i] += dx[i];
+            for (size_t i = 0; i < nodes.size(); ++i)
+                vmax = std::max(vmax, std::fabs(dx[i]));
+            // A node is settled when its step is small in absolute terms or
+            // small relative to the voltage already on it.
+            bool vok = true;
+            for (size_t i = 0; i < nodes.size(); ++i)
+                if (std::fabs(dx[i]) > kVTol + kRelTol * std::fabs(xx[i]))
+                    vok = false;
+            if (vok && fmax < kResTol + kRelTol * f_scale) {
+                xout = xx;
+                return true;
+            }
         }
         return false;
     };
 
-    // gmin stepping: solve with an artificially large node-to-ground leak, then
-    // shrink it by decades, each time resuming from the previous solution. The
-    // leak keeps every node conditioned while the bias establishes, so Newton
-    // cannot land on the degenerate all-off root.
-    bool converged = false;
+    // gmin stepping: solve with an artificial node-to-ground leak, then shrink
+    // it by decades, each time resuming from the previous solution. If that
+    // fails, fall back to source stepping (ramp every source from 0).
     std::vector<double> best = x;
-    for (double gg = 1e-3; gg >= 1e-12; gg *= 0.1) {
+    bool converged = false;
+    std::fill(lim_vgs.begin(), lim_vgs.end(), 0.0);
+    std::fill(lim_vds.begin(), lim_vds.end(), 0.0);
+    for (int dec = 3; dec <= 12; ++dec) {
+        // Exact decades (0.1 multiplication drifts, which made a "is the last
+        // gmin small enough" test fail on a rounding error).
+        const double gg = std::pow(10.0, -dec);
         std::vector<double> xo;
         if (newton(gg, x, xo)) {
             x = xo;
             best = xo;
             converged = true;
         } else {
-            break; // keep the last converged (coarser) solution
+            converged = false;
+            break;
         }
     }
     if (!converged) {
-        out.error = "DC (numeric): Newton iteration did not converge -- check "
-                    "for floating nodes or a device with no DC path";
+        std::vector<double> xs(nvars, 0.0);
+        bool any = false;
+        for (int step = 0; step <= 10; ++step) {
+            src_scale = step / 10.0;
+            std::vector<double> cur = xs;
+            bool step_ok = false;
+            for (int dec = 3; dec <= 12; ++dec) {
+                const double gg = std::pow(10.0, -dec);
+                std::vector<double> xo;
+                if (newton(gg, cur, xo)) {
+                    cur = xo;
+                    step_ok = true;
+                } else {
+                    step_ok = false;
+                    break;
+                }
+            }
+            if (!step_ok) { any = false; break; }
+            xs = cur;
+            any = true;
+        }
+        if (any) {
+            x = xs;
+            best = xs;
+            converged = true;
+        }
+    }
+    if (!converged) {
+        out.error = "DC (numeric): Newton iteration did not converge -- a "
+                    "device biased right at the triode/saturation boundary "
+                    "leaves a node that the iteration cannot settle";
         return out;
     }
     x = best;
@@ -342,3 +490,5 @@ NumericDcResult solve_dc_numeric(const Circuit& c, const MosModel& nmos_model,
 }
 
 } // namespace syms
+
+

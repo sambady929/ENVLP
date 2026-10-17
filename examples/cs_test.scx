@@ -1,9 +1,9 @@
 envlp 1
 req "V1" "V(out)" 1 1e+09 0 10 1 1 1
-tech 0 0.6 1e-16 0.0002 0.0001 "" "nmos" "pmos" 0
+tech 1 0.6 1e-16 0.0002 0.0001 "" "nmos" "pmos" 0 10
 comp "V1" "V" 290 300 0 0 0 0 "" dc=1
 comp "R1" "R" 360 190 90 0 0 0 "1k"
-comp "VDD" "VDD" 360 140 0 0 0 0 "10" dc=5
+comp "VDD" "VDD" 360 140 0 0 0 0 "" dc=5
 comp "GND2" "GND" 360 330 0 0 0 0 ""
 comp "GND3" "GND" 440 320 0 0 0 0 ""
 comp "M1" "NMOS" 360 270 0 0 0 0 ""
@@ -26,3 +26,4 @@ card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer fu
 card "Short-circuit current" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1 "" "" 10 1000 0
 card "Noise" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Noise" 0 "" "" 10 1000 0
 card "PSR / PSRR" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "PSR / PSRR" 1 "" "" 10 1000 0
+card "DC operating point" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "DC operating point" 1 "" "" 10 1000 0

@@ -1,0 +1,53 @@
+envlp 1
+req "V1" "V(out)" 1 1e+09 0 10 1 1 1
+tech 1 0.6 0.6 1e-16 0.0002 0.0001 0 0 5
+comp "M1" "NMOS" 900 530 0 1 0 0 ""
+param "M1" "Cds" 0 "20f" 0
+param "M1" "Cgd" 0 "" 0
+param "M1" "Cgs" 0 "" 0
+param "M1" "gm" 1 "1m" 0
+comp "M2" "NMOS" 1060 530 0 0 0 0 "" mirror=M1 mult=1 den=1
+param "M2" "Cds" 0 "" 0
+param "M2" "Cgd" 0 "" 0
+param "M2" "Cgs" 0 "" 0
+comp "M3" "NMOS" 900 410 0 1 0 0 "" mirror=M1 mult=4 den=1
+param "M3" "Cds" 0 "" 0
+param "M3" "Cgd" 0 "" 0
+param "M3" "Cgs" 0 "" 0
+comp "M4" "NMOS" 1060 410 0 0 0 0 "" mirror=M3 mult=1 den=1
+param "M4" "Cds" 0 "" 0
+param "M4" "Cgd" 0 "" 0
+param "M4" "Cgs" 0 "" 0
+comp "M5" "NMOS" 740 470 0 1 0 0 "" mirror=M1 mult=1 den=4
+param "M5" "Cds" 0 "" 0
+param "M5" "Cgd" 0 "" 0
+param "M5" "Cgs" 0 "" 0
+param "M5" "gm" 1 "1m" 0
+comp "GND1" "GND" 740 510 0 0 0 0 ""
+comp "GND2" "GND" 900 570 0 0 0 0 ""
+comp "GND3" "GND" 1060 570 0 0 0 0 ""
+comp "I1" "I" 900 310 0 0 0 0 "" dc=1m
+comp "I2" "I" 740 310 0 0 0 0 "" dc=1m
+comp "VDD1" "VDD" 900 260 0 0 0 0 ""
+comp "VDD2" "VDD" 740 260 0 0 0 0 ""
+comp "R1" "R" 1060 320 90 0 0 0 "10k"
+comp "VDD3" "VDD" 1060 260 0 0 0 0 ""
+wire 940,410 1020,410 pin:M3:1 pin:M4:1
+wire 940,530 1020,530 pin:M1:1 pin:M2:1
+wire 900,490 900,450 pin:M1:0 pin:M3:2
+wire 780,470 980,470 980,410 pin:M5:1 free
+wire 900,370 900,340 pin:M3:0 pin:I1:1
+wire 1060,490 1060,450 pin:M2:0 pin:M4:2
+wire 740,430 740,410 810,410 810,470 pin:M5:0 free
+wire 740,280 740,260 pin:I2:0 pin:VDD2:0
+wire 900,260 900,280 pin:VDD1:0 pin:I1:0
+wire 740,340 740,410 pin:I2:1 free
+wire 960,530 960,360 900,360 free free wp=960,360
+wire 1060,290 1060,260 pin:R1:1 pin:VDD3:0
+wire 1060,350 1060,370 pin:R1:0 pin:M4:0
+netlabel 1060,370 1072.37,359.25 "out" 9 0
+card "DC operating point" "V1" "V(n3)" "" 1 1e+09 0 10 1 1 1 "DC operating point" 1 "" "" 10 1000 0
+card "Short-circuit current" "I1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Short-circuit current" 1 "" "" 10 1000 0
+card "Output impedance" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Output impedance" 1 "" "" 10 1000 0
+card "AC (small-signal)" "V1" "I(M4)" "" 1 1e+09 0 10 1 1 1 "AC (small-signal)" 1 "" "" 10 1000 0
+card "Transfer function (H(s))" "I1" "I(R1)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 1 "" "" 10 1000 0

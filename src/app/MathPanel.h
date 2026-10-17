@@ -39,6 +39,10 @@ private:
     std::string latex_;
     std::string latex_report_;
     bool ready_ = false;
+    // True when the Chromium (Edge) backend and the MathJax bundle are both
+    // available, i.e. the tab can really typeset. Otherwise the built-in
+    // subset renderer is used.
+    bool typeset_ = false;
 };
 
 } // namespace envlp

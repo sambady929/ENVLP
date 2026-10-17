@@ -103,8 +103,24 @@ target_link_libraries(envlpscript PUBLIC envlpcore ${ENVLP_LUA_TARGET})
 # ---------------------------------------------------------------------------
 # ENVLP: wxWidgets GUI application
 # ---------------------------------------------------------------------------
+set(ENVLP_PUBLISHER "sambady929" CACHE STRING "Publisher shown in file metadata")
+set(ENVLP_COPYRIGHT "MIT License" CACHE STRING "Copyright string")
+# Windows resource metadata: a 4-part version (n.0.0.0) and a dotted string.
+set(ENVLP_VER_COMMA "${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0")
+set(ENVLP_VER_STR   "${PROJECT_VERSION}.0")
+# A 4-part version for the assembly manifest.
+set(ENVLP_VER_4 "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}.0")
+# The .rc and the manifest are generated so the version/publisher live in one
+# place (the project() version). Both land in the build dir; the .rc refers to
+# the manifest by file name, so they must sit together.
+configure_file(src/app/ENVLP.rc.in       ${CMAKE_BINARY_DIR}/ENVLP.rc @ONLY)
+configure_file(src/app/ENVLP.manifest.in ${CMAKE_BINARY_DIR}/ENVLP.manifest @ONLY)
+# The .rc references the icon by relative name, so it must sit in the build dir.
+configure_file(src/app/ENVLP.ico ${CMAKE_BINARY_DIR}/ENVLP.ico COPYONLY)
+
 add_executable(ENVLP WIN32
-  src/app/ENVLP.rc
+  ${CMAKE_BINARY_DIR}/ENVLP.rc
+  ${CMAKE_BINARY_DIR}/ENVLP.manifest
   src/app/ENVLP.ico
   src/app/App.cpp
   src/app/MainFrame.cpp
@@ -122,6 +138,9 @@ add_executable(ENVLP WIN32
   src/app/BodePanel.cpp
   src/app/LuaConsole.cpp
 )
+# The icon file is referenced relative to the generated .rc.
+set_source_files_properties(${CMAKE_BINARY_DIR}/ENVLP.rc PROPERTIES
+  OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/app/ENVLP.ico")
 target_include_directories(ENVLP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(NOT TARGET wx::core)
   target_link_libraries(ENVLP PRIVATE envlpcore envlpscript
@@ -130,6 +149,28 @@ else()
   target_link_libraries(ENVLP PRIVATE envlpcore envlpscript wx::core wx::base
                          wx::aui wx::adv ${ENVLP_WX_WEBVIEW})
 endif()
+
+# MathJax (the typesetting engine the Math tab runs in its wxWebView). It is
+# vendored under resources/ and copied next to the executable; the panel reads
+# it at run time and falls back to the built-in renderer if it is missing.
+# WebView2Loader.dll is what lets wxWidgets use the Chromium (Edge/WebView2)
+# backend at all -- without it the web view silently degrades to the legacy IE
+# engine, where MathJax cannot run. Both are copied next to the executable.
+add_custom_command(TARGET ENVLP POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:ENVLP>/mathjax"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/mathjax/tex-svg.js"
+          "$<TARGET_FILE_DIR:ENVLP>/mathjax/tex-svg.js"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/webview2/x64/WebView2Loader.dll"
+          "$<TARGET_FILE_DIR:ENVLP>/WebView2Loader.dll"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:ENVLP>/plotly"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/plotly/plotly-basic.min.js"
+          "$<TARGET_FILE_DIR:ENVLP>/plotly/plotly-basic.min.js"
+  COMMENT "Staging MathJax, Plotly and the WebView2 loader")
 
 # ---------------------------------------------------------------------------
 # Tests (optional: the tests directory is not part of the public source tree)

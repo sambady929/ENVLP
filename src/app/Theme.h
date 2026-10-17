@@ -38,16 +38,22 @@ inline const wxColour error_red(0xeb, 0x57, 0x57);
 inline const wxColour wire_warn(0xd3, 0x21, 0x2c);
 
 // --- chrome ---------------------------------------------------------------
-inline const wxColour chrome_bg(0xf7, 0xf6, 0xf3);
+// A cool, modern light palette: slightly blue-grey surfaces so white cards and
+// the canvas read as "paper on a desk" instead of a flat beige sheet.
+inline const wxColour chrome_bg(0xf4, 0xf6, 0xfa);
 inline const wxColour surface(0xff, 0xff, 0xff);
-inline const wxColour surface_muted(0xf1, 0xf1, 0xef);
-inline const wxColour surface_hover(0xeb, 0xeb, 0xea);
-inline const wxColour border(0xe9, 0xe9, 0xe7);
-inline const wxColour border_strong(0xdf, 0xdf, 0xde);
-inline const wxColour text(0x37, 0x35, 0x2f);
-inline const wxColour text_muted(0x78, 0x77, 0x74);
-inline const wxColour text_disabled(0xb4, 0xb4, 0xb0);
-inline const wxColour accent_tint(0xe7, 0xf3, 0xfc);
+inline const wxColour surface_muted(0xed, 0xf0, 0xf6);
+inline const wxColour surface_hover(0xe4, 0xe9, 0xf2);
+inline const wxColour border(0xe2, 0xe6, 0xee);
+inline const wxColour border_strong(0xd2, 0xd9, 0xe6);
+inline const wxColour text(0x1f, 0x24, 0x30);
+inline const wxColour text_muted(0x6b, 0x72, 0x84);
+inline const wxColour text_disabled(0xb0, 0xb6, 0xc2);
+inline const wxColour accent_tint(0xe8, 0xf0, 0xfe);
+// Card chrome for the analysis cards (border + header strip).
+inline const wxColour card_bg(0xff, 0xff, 0xff);
+inline const wxColour card_head(0xf8, 0xfa, 0xfd);
+
 
 // --- ink roles for symbols ------------------------------------------------
 inline const wxColour ref_ink(0x00, 0x00, 0x00);   // reference designator

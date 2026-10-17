@@ -621,38 +621,75 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             bool is_copy = !comp->mirror_ref.empty();
 
             if (is_copy) {
+                // Copies are a rational multiple of the unit. The arrows walk an
+                // ordered ratio list (..., 1/4, 1/3, 1/2, 1, 2, 3, 4, ...) and
+                // the actual ratio is shown as text -- never a bare index.
+                const int cnum = comp->mirror_num();
+                const int cden = comp->mirror_den;
+                // level: 1 -> 1, 2 -> 2, ... and 0 -> 1/2, -1 -> 1/3, ...
+                int level = cden == 1 ? cnum : cnum == 1 ? 2 - cden : 1;
                 auto* mc = new wxBoxSizer(wxHORIZONTAL);
-                mc->Add(new wxStaticText(this, wxID_ANY, "Copies (m)"), 0,
+                mc->Add(new wxStaticText(this, wxID_ANY, "Copies"), 0,
                         wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
-                auto* msc = new wxSpinCtrl(this, wxID_ANY, wxEmptyString,
-                                           wxDefaultPosition, wxSize(FromDIP(80), -1),
-                                           wxSP_ARROW_KEYS, 1, 100000,
-                                           comp->multiplicity());
+                auto* msc = new wxSpinButton(this, wxID_ANY, wxDefaultPosition,
+                                             wxSize(FromDIP(40), FromDIP(24)),
+                                             wxSP_VERTICAL | wxSP_ARROW_KEYS);
+                msc->SetRange(-1000, 1000);
+                msc->SetValue(level);
                 mc->Add(msc, 0, wxALIGN_CENTER_VERTICAL);
+                auto* ratio = new wxStaticText(
+                    this, wxID_ANY,
+                    cden == 1 ? wxString::Format("  %d x", cnum)
+                              : wxString::Format("  %d/%d x", cnum, cden));
+                wxFont rf = ratio->GetFont();
+                rf.SetWeight(wxFONTWEIGHT_BOLD);
+                ratio->SetFont(rf);
+                mc->Add(ratio, 0, wxALIGN_CENTER_VERTICAL);
                 GetSizer()->Add(mc, 0,
                                 wxLEFT | wxRIGHT | wxBOTTOM | wxTOP, FromDIP(4));
-                msc->Bind(wxEVT_SPINCTRL, [this, msc](wxSpinEvent&) {
+                msc->Bind(wxEVT_SPIN, [this, msc, ratio](wxSpinEvent&) {
                     if (rebuilding_) return;
                     syms::Component* cc = nullptr;
                     for (auto& x : doc_->circuit.comps)
                         if (x.ref == sel_) cc = &x;
                     if (!cc) return;
-                    cc->mirror_mult = msc->GetValue();
+                    int s = msc->GetValue();
+                    if (s >= 1) {
+                        cc->mirror_mult = s;
+                        cc->mirror_den = 1;
+                    } else {
+                        cc->mirror_mult = 1;
+                        cc->mirror_den = 2 - s;
+                    }
+                    const int n2 = cc->mirror_num();
+                    const int d2 = cc->mirror_den;
+                    ratio->SetLabel(d2 == 1 ? wxString::Format("  %d x", n2)
+                                            : wxString::Format("  %d/%d x", n2,
+                                                               d2));
                     doc_->dirty = true;
                     if (on_edited) on_edited();
                 });
                 auto* note = new wxStaticText(
                     this, wxID_ANY,
-                    wxString::Format("Inherits %s; value scaled by m.",
+                    wxString::Format("Inherits %s (a copy may itself be a copy).",
                                      comp->mirror_ref.c_str()));
                 note->SetForegroundColour(wxColour(115, 115, 120));
                 note->Wrap(FromDIP(240));
                 GetSizer()->Add(note, 0, wxALL, FromDIP(4));
             }
 
-            // Supply rail: a voltage with an SI-suffix dropdown (3.3, 5, 12...).
-            if (!is_copy && c->kind == Kind::VDD)
-                add_value_row("Supply", &comp->value_text, "V");
+            // A VDD supply rail has no per-symbol value: its voltage is a DC
+            // analysis setting (see the DC operating-point card).
+            if (c->kind == Kind::VDD) {
+                auto* note = new wxStaticText(
+                    this, wxID_ANY,
+                    "Supply rail. Its voltage is set in the DC operating-point\n"
+                    "card (DC analysis options). Several VDD symbols share one "
+                    "rail.");
+                note->SetForegroundColour(wxColour(115, 115, 120));
+                note->Wrap(FromDIP(240));
+                GetSizer()->Add(note, 0, wxALL, FromDIP(4));
+            }
 
             // Value selector for passives and the non-source blocks. Voltage
             // and current sources are handled separately below (they carry DC
@@ -689,13 +726,13 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
             }
 
             // Device model parameters (checkbox + mantissa/exponent). W and L
-            // are only meaningful in the numeric DC mode; in the symbolic modes
-            // W/L are symbols (or unused), so hide them to avoid confusion.
+            // are only meaningful in the square-law DC mode (as symbolic
+            // geometry); hide them otherwise.
             if (!is_copy)
                 for (const auto& pd : syms::param_defs(c->kind)) {
                     bool is_geometry = (pd.name == "W" || pd.name == "L");
                     if (is_geometry &&
-                        doc_->tech.dc_mode != syms::DcMode::Numeric)
+                        doc_->tech.dc_mode != syms::DcMode::SquareLaw)
                         continue;
                     add_param_row(comp, pd.name, pd.unit, pd.parasitic,
                                   pd.default_text);

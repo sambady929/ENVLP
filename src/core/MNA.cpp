@@ -29,15 +29,16 @@ GiNaC::ex reg_param(ParamTable& pt, const Component& c,
     // Unit symbol name: `<param>_<unit ref>`. The unit is stamped as a normal
     // component and always registers this symbol (with its own estimate).
     GiNaC::ex usym = pt.get(p + "_" + c.mirror_ref);
-    int mult = c.multiplicity();
+    int mn = c.mirror_num(), md = c.mirror_dn();
+    if (mn == md) return usym;
     switch (uc) {
         // transconductance and capacitance are additive over parallel units
         case UnitClass::Siemens:
         case UnitClass::Farad:
-            return mult == 1 ? usym : GiNaC::ex(mult) * usym;
+            return GiNaC::ex(mn) * usym / GiNaC::ex(md);
         // a resistance made of `mult` units in parallel is divided
         case UnitClass::Ohm:
-            return mult == 1 ? usym : usym / GiNaC::ex(mult);
+            return GiNaC::ex(md) * usym / GiNaC::ex(mn);
         default:
             return usym;
     }
@@ -93,14 +94,15 @@ ex value_symbol_scaled(ParamTable& pt, const Circuit& circ, const Component& c) 
     if (!unit) return sym;
     ex usym = pt.get(unit->ref);
     pt.set(unit->ref, unit->estimate(), value_unit_class(unit->kind));
-    int mult = c.multiplicity();
+    int mn = c.mirror_num(), md = c.mirror_dn();
+    if (mn == md) return usym;
     switch (value_unit_class(c.kind)) {
         case UnitClass::Ohm:
         case UnitClass::Henry:
         case UnitClass::Plain:
-            return mult == 1 ? usym : ex(mult) * usym;
+            return ex(mn) * usym / ex(md);
         case UnitClass::Farad:
-            return mult == 1 ? usym : usym / ex(mult);
+            return ex(md) * usym / ex(mn);
         default:
             return usym;
     }
@@ -174,6 +176,15 @@ struct HeldPassive {
     UnitClass cls = UnitClass::Ohm;
 };
 
+// Whether any of this component's optional (parasitic) parameters is switched
+// on. Such a component is no longer a plain 2-terminal R/C/L for the structural
+// series fold, so the fold must leave it alone.
+bool has_enabled_parasitic(const Component& c) {
+    for (const auto& d : param_defs(c.kind))
+        if (d.parasitic && c.param_enabled(d.name)) return true;
+    return false;
+}
+
 // Fold series pairs of same-class passives into held atoms. `used_nodes` are
 // nodes the caller will probe: they are never folded. Every symbol folded away
 // is registered in `params` so the magnitude pruner still knows it. Returns
@@ -232,6 +243,8 @@ std::map<std::string, HeldPassive> fold_series_passives(
             Component a = circ.comps[i];
             Component b = circ.comps[j];
             if (a.kind != b.kind) continue;         // same class only
+            if (has_enabled_parasitic(a) || has_enabled_parasitic(b))
+                continue;                           // parasitics break the fold
             std::string oa = (a.nodes[0] == m) ? a.nodes[1] : a.nodes[0];
             std::string ob = (b.nodes[0] == m) ? b.nodes[1] : b.nodes[0];
             if (oa == ob) continue;                 // would be a shunt
@@ -317,9 +330,10 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     ex s = sys.params.get("s");
     const bool dc_mode = dc_supply != nullptr;
     if (dc_mode) {
-        // The threshold voltage is a universal DC tech value, registered as a
-        // plain symbol so it appears symbolically in the operating point.
-        sys.params.set("Vth", dc_supply->vth, UnitClass::Volt);
+        // A per-polarity threshold: an NMOS and a PMOS have different Vth.
+        // Registered as plain symbols so they appear in the operating point.
+        sys.params.set("Vthn", dc_supply->vthn, UnitClass::Volt);
+        sys.params.set("Vthp", dc_supply->vthp, UnitClass::Volt);
     }
     // DC source value as a SYMBOL (the source's own name: V1, VDD, I1), so the
     // operating point reads as a design equation. The numeric DC value the user
@@ -327,10 +341,23 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
     // numeric evaluation. (In AC/TF mode the selected input is a numeric unit
     // drive instead, so this is DC-only.)
     auto dc_source_symbol = [&](const Component& c, const std::string& est_text) {
+        // A copy of another source is `mult * <unit>`: the symbol is the unit's
+        // own name, so the report reads I2 = 2*I1 (never two uncorrelated
+        // symbols).
+        const Component* unit =
+            c.mirror_ref.empty() ? nullptr : circ.find(c.mirror_ref);
+        const std::string& name = unit ? unit->ref : c.ref;
         double est = 0.0;
         if (!eng::parse_value(est_text, est)) est = 0.0;
-        sys.params.set(c.ref, est, UnitClass::Volt);
-        return sys.params.get(c.ref);
+        if (unit) {
+            double ue = 0.0;
+            if (eng::parse_value(unit->dc_text, ue)) est = ue;
+        }
+        sys.params.set(name, est, UnitClass::Volt);
+        ex sym = sys.params.get(name);
+        if (unit && c.mirror_num() != c.mirror_dn())
+            return ex(c.mirror_num()) * sym / ex(c.mirror_dn());
+        return sym;
     };
 
     // Fold genuine series groups of same-class passives into held atoms BEFORE
@@ -402,7 +429,8 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         //     device is driven by *current*, Vds = 2*Id/gm with Id the KCL
         //     value). The gate row is (v(G)-v(S)) - Vds = sgn*Vth, and the
         //     branch current entering D is Vds*gm/2.
-        if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS)) {
+        if (dc_mode && (c.kind == Kind::NMOS || c.kind == Kind::PMOS) &&
+            !dc_supply->current_sources) {
             if (dc_supply->square_law) {
                 sys.branch_idx["Id:" + c.ref] = sys.n;
                 sys.var_names.push_back("Id(" + c.ref + ")");
@@ -558,38 +586,70 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         const auto& nd = c.nodes;
         switch (c.kind) {
         case Kind::R: {
-            if (const HeldPassive* hp = held_of(c)) {
+            const HeldPassive* hp = held_of(c);
+            ex r;
+            if (hp) {
                 // A synthetic fold: stamp its held resistance/admittance.
                 sys.params.set(c.ref, hp->est, hp->cls);
-                ex r = hp->value;
-                stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
+                r = hp->value;
             } else {
-                ex r = value_symbol_scaled(sys.params, circ, c);
-                stamp_adm(idx(nd[0]), idx(nd[1]), ex(1) / r);
+                r = value_symbol_scaled(sys.params, circ, c);
             }
+            int a = idx(nd[0]), bb = idx(nd[1]);
+            if (c.param_enabled("Lser")) {
+                // Series lead inductance: one branch of admittance
+                // 1/(R + s*L) (no internal node needed).
+                ex l = reg_param(sys.params, c, "Lser");
+                stamp_adm(a, bb, (ex(1) / (r + s * l)).normal());
+            } else {
+                stamp_adm(a, bb, ex(1) / r);
+            }
+            if (c.param_enabled("Cpar"))
+                stamp_cap(a, bb, reg_param(sys.params, c, "Cpar"));
             break;
         }
         case Kind::C: {
-            if (dc_mode) {
-                // At DC a capacitor is an open circuit: stamp nothing, but
-                // still register its symbol so reports can name it.
-                sys.params.set(c.ref, c.estimate(), UnitClass::Farad);
-                break;
-            }
-            if (const HeldPassive* hp = held_of(c)) {
+            const HeldPassive* hp = held_of(c);
+            ex cap;
+            if (hp) {
                 // A synthetic series-capacitor fold: held capacitance value.
                 sys.params.set(c.ref, hp->est, hp->cls);
-                stamp_cap(idx(nd[0]), idx(nd[1]), hp->value);
+                cap = hp->value;
             } else {
-                ex cap = value_symbol_scaled(sys.params, circ, c);
-                stamp_cap(idx(nd[0]), idx(nd[1]), cap);
+                cap = value_symbol_scaled(sys.params, circ, c);
             }
+            int a = idx(nd[0]), bb = idx(nd[1]);
+            const bool rser = c.param_enabled("Rser");
+            const bool lser = c.param_enabled("Lser");
+            const bool rpar = c.param_enabled("Rpar");
+            if (dc_mode) {
+                // At DC a capacitor is an open circuit; only a leakage
+                // resistance conducts.
+                if (rpar) stamp_adm(a, bb, ex(1) / reg_param(sys.params, c, "Rpar"));
+                break;
+            }
+            if (rser || lser) {
+                // Series ESR + ESL with the capacitor: a single branch of
+                // admittance 1/(Rser + s*Lser + 1/(s*C)).
+                ex z = ex(1) / (s * cap);
+                if (rser) z += reg_param(sys.params, c, "Rser");
+                if (lser) z += s * reg_param(sys.params, c, "Lser");
+                stamp_adm(a, bb, (ex(1) / z).normal());
+            } else {
+                stamp_cap(a, bb, cap);
+            }
+            if (rpar) stamp_adm(a, bb, ex(1) / reg_param(sys.params, c, "Rpar"));
             break;
         }
         case Kind::L: {
             const HeldPassive* hp = held_of(c);
-            ex l = hp ? hp->value : value_symbol_scaled(sys.params, circ, c);
-            if (hp) sys.params.set(c.ref, hp->est, hp->cls);
+            ex l;
+            if (hp) {
+                sys.params.set(c.ref, hp->est, hp->cls);
+                l = hp->value;
+            } else {
+                l = value_symbol_scaled(sys.params, circ, c);
+            }
             int a = idx(nd[0]), bb = idx(nd[1]);
             int k = sys.branch_idx.at(c.ref);
             if (a >= 0) {
@@ -600,8 +660,16 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(bb, k) -= 1;
                 sys.Y(k, bb) -= 1;
             }
-            // At DC an inductor is a short: no s*L self term (a 0 V branch).
+            // Self terms: v(a)-v(b) = (s*L + Rser)*i. At DC an ideal inductor
+            // is a short (s*L -> 0); with a winding resistance it is that
+            // resistance.
+            if (c.param_enabled("Rser"))
+                sys.Y(k, k) -= reg_param(sys.params, c, "Rser");
             if (!dc_mode) sys.Y(k, k) -= s * l;
+            if (c.param_enabled("Cpar"))
+                stamp_cap(a, bb, reg_param(sys.params, c, "Cpar"));
+            if (c.param_enabled("Rpar"))
+                stamp_adm(a, bb, ex(1) / reg_param(sys.params, c, "Rpar"));
             break;
         }
         case Kind::V: {
@@ -659,6 +727,22 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         case Kind::NMOS:
         case Kind::PMOS: {
             int D = idx(nd[0]), G = idx(nd[1]), S = idx(nd[2]);
+            if (dc_mode && dc_supply->current_sources) {
+                // Top-down presentation: the device is an ideal current source
+                // I(M<ref>) flowing D -> S. The current is a symbol (its value is
+                // reported separately), so the node voltages come out as linear,
+                // factored combinations of the device currents.
+                ex id = sys.params.get("I(" + c.ref + ")");
+                if (D >= 0) sys.b(D, 0) -= id;
+                if (S >= 0) sys.b(S, 0) += id;
+                if (dc_supply->current_sources_ro) {
+                    // Norton fallback: give every device an output conductance
+                    // 1/ro so a node fed only by device currents is solvable.
+                    ex ro = reg_param(sys.params, c, "ro");
+                    stamp_adm(D, S, ex(1) / ro);
+                }
+                break;
+            }
             // register every model parameter (enabled or not) so the symbol
             // table always exposes the full model; only enabled ones stamp MNA
             ex gm = reg_param(sys.params, c, "gm");
@@ -668,9 +752,10 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             ex cds = reg_param(sys.params, c, "Cds");
             ex cdb = reg_param(sys.params, c, "Cdb");
             ex csb = reg_param(sys.params, c, "Csb");
-            // Vth is a process value shared by every device (the DC tech
-            // settings), so it is NOT a per-device parameter symbol.
-            ex vth = sys.params.get("Vth");
+            // Per-polarity threshold: an NMOS enters +Vthn, a PMOS -Vthp (its
+            // threshold is a positive magnitude). Vthn/Vthp are process values
+            // shared by every device, so they are NOT per-device parameters.
+            ex vth = sys.params.get((c.kind == Kind::NMOS) ? "Vthn" : "Vthp");
             if (dc_mode && dc_supply->square_law) {
                 // Mode 2: symbolic square law. The device's overdrive is a
                 // *symbolic design variable* Vov_<ref> (not solved), so the
@@ -686,7 +771,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // via the unit so the redundant geometry symbols never appear.
                 const Component* unit =
                     c.mirror_ref.empty() ? &c : circ.find(c.mirror_ref);
-                int mult = c.multiplicity();
+                int mn = c.mirror_num(), md = c.mirror_dn();
                 std::string wbase = unit ? unit->ref : c.ref;
                 ex w_unit = sys.params.get("W_" + wbase);
                 sys.params.set("W_" + wbase,
@@ -698,7 +783,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                                unit ? unit->param_estimate("L")
                                     : c.param_estimate("L"),
                                UnitClass::Plain);
-                ex wsym = c.mirror_ref.empty() ? w_unit : ex(mult) * w_unit;
+                ex wsym = c.mirror_ref.empty() ? w_unit : ex(mn) * w_unit / ex(md);
                 ex lsym = l_unit;
                 std::string ucox_name = (c.kind == Kind::NMOS) ? "unCox" : "upCox";
                 sys.params.set(ucox_name,
@@ -724,6 +809,9 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // No ro in the large-signal solve: ro is a *small-signal* output
                 // conductance, so the DC operating currents are the pure KCL
                 // values (a mirror leg is exactly the reference current).
+                // (Channel-length modulation is not stamped here: in the square
+                // law, gds = lambda*Id depends on the unknown current, so it is
+                // not storable in the linear MNA. See the mode-1 branch.)
             } else if (dc_mode) {
                 // Mode 1: the unknown is the overdrive/saturation voltage
                 // X = 2*Id/gm -- Vdsat for an NMOS, Vov for a PMOS (signed).
@@ -743,13 +831,16 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 if (S >= 0) sys.Y(k, S) -= 1;
                 sys.Y(k, k) -= 1;
                 sys.b(k, 0) = sgn * vth;
-                // No ro in the large-signal solve: the idealized gm/Id model
-                // reports the pure KCL currents (I(M1) = the branch current),
-                // and stamping ro would re-expand every operating point. A
-                // consequence is that a node fed only through ideal
-                // current-source drains (e.g. a current-mirror output with no
-                // resistive load) is genuinely floating and the DC solve
-                // reports that -- which is physically correct for the model.
+                // Channel-length modulation: gds = 1/ro as a D-S conductance.
+                if (dc_supply->include_clm) {
+                    sys.params.set("lambda", dc_supply->lambda,
+                                   UnitClass::Plain);
+                    stamp_adm(D, S, ex(1) / ro);
+                }
+                // No ro otherwise: the idealized gm/Id model
+                // reports the pure KCL currents, and a node fed only through
+                // ideal current-source drains is genuinely floating for this
+                // linearised model.
             } else {
                 // no body terminal: the body is tied to the source
                 stamp_vccs(D, S, G, S, gm);
@@ -804,11 +895,16 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 sys.Y(k, bb) -= 1;
             }
             // Register the supply value as a parameter so reports can name it.
-            // In the large-signal DC solve the rail is driven at its supply
-            // voltage symbol (VDD); otherwise it is a per-unit AC excitation
-            // only when it is the selected input, and zero otherwise.
+            // In the large-signal DC solve the rail is driven at the analysis
+            // supply voltage (a DC setting, not a per-symbol value); otherwise
+            // it is a per-unit AC excitation only when it is the selected
+            // input, and zero otherwise.
             if (dc_mode) {
-                sys.b(k, 0) = dc_source_symbol(c, c.value_text);
+                // A single anonymous rail: name the symbol "VDD" so the
+                // operating point reads as a design equation whatever the
+                // individual symbol's reference is.
+                sys.params.set("VDD", dc_supply->vdd, UnitClass::Volt);
+                sys.b(k, 0) = sys.params.get("VDD");
             } else {
                 sys.params.set(c.ref, c.estimate(), UnitClass::Volt);
                 sys.b(k, 0) = (c.ref == input_ref) ? ex(1) : ex(0);
@@ -941,9 +1037,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             // v(out+) - v(out-) constraint (row kp already couples op-on)
             if (on >= 0) sys.Y(kp, on) -= 1;
             // GBW: add the dominant pole (s/w0)*(v(op) - v(on)) to the kp row.
+            // `gbw` is already the *angular* gain-bandwidth (rad/s) -- amp_gbw
+            // registers 2*pi*GBW_Hz -- so the extra 2*pi here double-counted it
+            // and folded 1/(2*pi) into the printed coefficient.
             if (c.param_enabled("GBW") && c.param_estimate("GBW") > 0.0) {
-                if (op >= 0) sys.Y(kp, op) += s * gain / (2.0 * M_PI * gbw);
-                if (on >= 0) sys.Y(kp, on) -= s * gain / (2.0 * M_PI * gbw);
+                if (op >= 0) sys.Y(kp, op) += s * gain / gbw;
+                if (on >= 0) sys.Y(kp, on) -= s * gain / gbw;
             }
             break;
         }
@@ -994,6 +1093,15 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             sys.Y(kn, kn) -= s * ls;
             sys.Y(kp, kn) -= s * m;
             sys.Y(kn, kp) -= s * m;
+            // Parasitics (off by default): the winding resistances add to the
+            // series (s*L) self terms; the inter-winding capacitance bridges
+            // the two positive terminals.
+            if (c.param_enabled("Rp"))
+                sys.Y(kp, kp) -= reg_param(sys.params, c, "Rp");
+            if (c.param_enabled("Rs"))
+                sys.Y(kn, kn) -= reg_param(sys.params, c, "Rs");
+            if (!dc_mode && c.param_enabled("Cps"))
+                stamp_cap(pp, sp, reg_param(sys.params, c, "Cps"));
             break;
         }
         case Kind::K: {
@@ -1004,12 +1112,10 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // coupling coefficient k (plain symbol) times the geometric
                 // mean of the two inductances gives the mutual inductance
                 ex k_val = reg_param(sys.params, c, "K");
-                // make sure both inductors' symbols exist even if the L case
-                // has not run yet (component order is arbitrary)
-                reg_param(sys.params, *la, "L");
-                reg_param(sys.params, *lb, "L");
-                ex l1 = sys.params.get(param_symbol(*la, "L"));
-                ex l2 = sys.params.get(param_symbol(*lb, "L"));
+                // Use each inductor's own value symbol (the L case may not have
+                // run yet: component order is arbitrary).
+                ex l1 = value_symbol_scaled(sys.params, circ, *la);
+                ex l2 = value_symbol_scaled(sys.params, circ, *lb);
                 sys.params.set(c.ref, c.estimate(), UnitClass::Plain);
                 ex m = k_val * GiNaC::sqrt((l1 * l2).expand());
                 int aa = sys.node_idx.count(la->nodes[0])
@@ -1199,6 +1305,7 @@ std::vector<TimeConstant> open_circuit_time_constants(
             else if (pd.name == "Cpi") { a = n1; b = n2; }   // B-E
             else if (pd.name == "Cmu") { a = n1; b = n0; }   // B-C
             else if (pd.name == "Cd") { a = n0; b = n1; }    // A-K
+            else if (pd.name == "Cps") { a = n0; b = n2; }   // T: p+ to s+
             else { a = n0; b = n1; }
             if (a == b) continue;
             std::string ENVLP_name = param_symbol(cc, pd.name);

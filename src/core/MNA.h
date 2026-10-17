@@ -45,7 +45,20 @@ MnaSystem build_mna(const Circuit& c, const std::string& input_ref,
 // This is what makes the DC operating point a real bias solve. The caller
 // checks each device is in saturation.
 struct MnaDcSupply {
-    double vth = 0.6;  // MOSFET threshold voltage, from the DC tech settings
+    double vthn = 0.6; // NMOS threshold voltage, from the DC tech settings
+    double vthp = 0.6; // PMOS threshold voltage magnitude
+    double vdd = 5.0;  // supply-rail voltage for every VDD symbol
+    // Include channel-length modulation: stamp each device's output conductance
+    // (mode 1: 1/ro; mode 2: lambda*Id) so the drain current depends on Vds.
+    bool include_clm = false;
+    double lambda = 0.05; // mode 2's CLM coefficient (a process symbol)
+    // Presentation mode: stamp each MOSFET as an ideal current source
+    // I(M<ref>) from D to S (no gate row, no branch unknown). Used for a second
+    // solve that expresses the node voltages linearly in the device currents.
+    bool current_sources = false;
+    // Norton fallback for the presentation solve: also stamp each device's
+    // output conductance 1/ro, so a node fed only by device currents is solvable.
+    bool current_sources_ro = false;
     // GmOverId (default): Id is an unknown and the gate row is
     // vgs = 2*Id/gm + Vth. SquareLaw: Id = 1/2*uCox*(W/L)*Vov^2 is a symbolic
     // current source (Vov, W, L are symbols); no Id unknown.

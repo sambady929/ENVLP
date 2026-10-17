@@ -199,12 +199,19 @@ private:
         }
         if (w == "sqrt") {
             std::string a = read_raw_arg();
-            // The radical and the radicand are separate inline-blocks aligned on
-            // their vertical centre, with the bar as the radicand's top border.
-            // Wrapping the radicand as its own box keeps the bar attached to the
-            // *whole* radicand: a tall fraction inside would otherwise push a
-            // plain inline `border-top` up off the fraction (bar floating).
-            return "<span class=\"sqrt\"><span class=\"radic\">&radic;</span>"
+            // The radical is drawn as an inline SVG that fills a stretched
+            // wrapper span. The wrapper is an ordinary flex item, so it always
+            // matches the radicand's height; the SVG is absolutely positioned
+            // inside it and so cannot fall back to its intrinsic aspect ratio.
+            // The drawing is stretched with preserveAspectRatio="none" and the
+            // stroke held at a constant width, so the sign covers the whole
+            // radicand and joins the overbar -- no glyph metrics, no transforms.
+            return "<span class=\"sqrt\">"
+                   "<span class=\"radic\"><svg viewBox=\"0 0 9 20\" "
+                   "preserveAspectRatio=\"none\">"
+                   "<path d=\"M0 19 L3 19 L9 0\" fill=\"none\" "
+                   "stroke=\"#10141a\" stroke-width=\"1.3\" "
+                   "vector-effect=\"non-scaling-stroke\"/></svg></span>"
                    "<span class=\"radicand\">" +
                    render_tex(a) + "</span></span>";
         }
@@ -263,10 +270,13 @@ const char* kStyle =
     "               border-bottom: 1.4px solid #10141a; }"
     ".frac > .den { display: block; padding: 1px 4px 0 4px; }"
     "sub, sup { font-size: 72%; }"
-    ".sqrt { display: inline-flex; align-items: center; }"
-    ".sqrt > .radic { margin-right: 1px; }"
+    ".sqrt { display: inline-flex; align-items: stretch; }"
+    ".sqrt > .radic { position: relative; align-self: stretch;"
+    "                 width: 0.55em; min-height: 1em; margin-right: -1px; }"
+    ".sqrt > .radic > svg { position: absolute; top: 0; left: 0;"
+    "                       width: 100%; height: 100%; overflow: visible; }"
     ".sqrt > .radicand { border-top: 1.3px solid #10141a;"
-    "                   padding: 2px 3px 0 2px; }"
+    "                   padding: 3px 4px 2px 3px; }"
     ".overline { border-top: 1.3px solid #10141a; padding-top: 1px; }"
     ".mathrm, .text { font-style: normal; }"
     ".mathit { font-style: italic; }"

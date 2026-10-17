@@ -638,7 +638,7 @@ int SchematicCanvas::hit_pin(const std::string& ref, Pt p) const {
     if (pl == doc_->placements.end()) return -1;
     int n = int(pin_offsets(c->kind).size());
     for (int i = 0; i < n; ++i)
-        if (dist(pin_world(*c, pl->second, i), p) <= snap_r()) return i;
+        if (dist(pin_world(*c, pl->second, i), p) <= pin_r()) return i;
     return -1;
 }
 
@@ -648,7 +648,7 @@ int SchematicCanvas::hit_any_pin(Pt p, std::string& ref) const {
         if (pl == doc_->placements.end()) continue;
         int n = int(pin_offsets(c.kind).size());
         for (int i = 0; i < n; ++i)
-            if (dist(pin_world(c, pl->second, i), p) <= snap_r()) {
+            if (dist(pin_world(c, pl->second, i), p) <= pin_r()) {
                 ref = c.ref;
                 return i;
             }
@@ -1079,7 +1079,11 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         }
 
         Pt last = wire_pts_.back();
-        if (target == last) break;
+        if (target == last) {
+            // Clicking the terminal we are already sitting on also ends it.
+            if (pin >= 0) { wire_finish(); Refresh(); }
+            break;
+        }
 
         // commit the segment (visible from now on)
         std::vector<Pt> seg = wire_pts_;
@@ -1319,6 +1323,10 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
             drag_wire_ = -1;
             drag_wire_pts_backup_.clear();
             drag_label_ = -1;
+            // Re-derive the route from its pinned vertices so the result is
+            // clean orthogonal wiring (and so a later component move rebuilds
+            // the same shape instead of a stale polyline).
+            if (doc_) doc_->sync_wire_endpoints();
             notify_doc();
         } else {
             notify_doc();
@@ -1412,23 +1420,76 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         }
         double dx = std::round((p.first - drag_anchor_.first) / kGrid) * kGrid;
         double dy = std::round((p.second - drag_anchor_.second) / kGrid) * kGrid;
+        // A dragged segment moves *perpendicular to itself*: a horizontal
+        // segment takes only the vertical delta, a vertical one only the
+        // horizontal delta, so its neighbours stretch instead of everything
+        // going diagonal. Then the whole route is re-orthogonalised below.
+        if (segment && seg_a >= 0 && seg_b >= 0 &&
+            seg_a < int(drag_wire_pts_backup_.size()) &&
+            seg_b < int(drag_wire_pts_backup_.size())) {
+            const Pt& sa = drag_wire_pts_backup_[seg_a];
+            const Pt& sb = drag_wire_pts_backup_[seg_b];
+            const bool horizontal =
+                std::fabs(sa.second - sb.second) < std::fabs(sa.first - sb.first);
+            if (horizontal)
+                dx = 0.0;
+            else
+                dy = 0.0;
+        }
 
-        // New positions for the dragged wire's vertices.
-        std::vector<Pt> new_pts = drag_wire_pts_backup_;
-        for (size_t k = 0; k < new_pts.size(); ++k) {
-            if (segment && int(k) != seg_a && int(k) != seg_b) continue;
-            new_pts[k].first += dx;
-            new_pts[k].second += dy;
+        // New positions for the dragged wire's vertices. A segment whose end is
+        // pin-bound cannot move that end (the pin is where it is), so a
+        // perpendicular drag has to *insert a jog* next to the pin -- otherwise
+        // the wire simply snapped back to the pin and the segment never moved.
+        std::vector<Pt> new_pts;
+        new_pts.reserve(drag_wire_pts_backup_.size() + 2);
+        {
+            const int npts = int(drag_wire_pts_backup_.size());
+            const Wire& dw = doc_->wires[drag_wire_];
+            const bool a_pin = (dw.a.kind == WireEnd::Kind::Pin);
+            const bool b_pin = (dw.b.kind == WireEnd::Kind::Pin);
+            for (int k = 0; k < npts; ++k) {
+                Pt p = drag_wire_pts_backup_[k];
+                const bool moved_k = !segment || k == seg_a || k == seg_b;
+                const bool pin_k =
+                    (k == 0 && a_pin) || (k == npts - 1 && b_pin);
+                if (moved_k && pin_k) {
+                    Pt m{p.first + dx, p.second + dy};
+                    // keep the pin, add the moved copy beside it
+                    if (k == 0) {
+                        new_pts.push_back(p);
+                        new_pts.push_back(m);
+                    } else {
+                        new_pts.push_back(m);
+                        new_pts.push_back(p);
+                    }
+                } else {
+                    if (moved_k) {
+                        p.first += dx;
+                        p.second += dy;
+                    }
+                    new_pts.push_back(p);
+                }
+            }
         }
         // Old -> new mapping for the moved vertices, so other wires can
-        // follow exactly those endpoints.
+        // follow exactly those endpoints. Bounded by the *backup* size (the new
+        // polyline can be longer, because a pin end gets a jog inserted), and a
+        // pin end never moves, so it is not in the map.
         std::map<std::pair<double, double>, Pt> moved;
-        for (size_t k = 0; k < new_pts.size(); ++k) {
-            Pt& o = drag_wire_pts_backup_[k];
-            Pt& n = new_pts[k];
-            if (segment && int(k) != seg_a && int(k) != seg_b) continue;
-            if (o.first != n.first || o.second != n.second)
-                moved[{o.first, o.second}] = n;
+        {
+            const int n0 = int(drag_wire_pts_backup_.size());
+            const Wire& dw = doc_->wires[drag_wire_];
+            for (int k = 0; k < n0; ++k) {
+                if (segment && k != seg_a && k != seg_b) continue;
+                const bool pin_k =
+                    (k == 0 && dw.a.kind == WireEnd::Kind::Pin) ||
+                    (k == n0 - 1 && dw.b.kind == WireEnd::Kind::Pin);
+                if (pin_k) continue; // the pin end stays put
+                const Pt o = drag_wire_pts_backup_[k];
+                if (dx != 0.0 || dy != 0.0)
+                    moved[{o.first, o.second}] = Pt{o.first + dx, o.second + dy};
+            }
         }
         // Apply to the dragged wire itself. The authored waypoints become the
         // dragged interior, so a later re-sync (e.g. after a component moves)

@@ -8,13 +8,17 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <utility>
 #include <vector>
 #include <wx/dcbuffer.h>
 #include <wx/filedlg.h>
+#include <wx/filename.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
+#include <wx/stdpaths.h>
+#include <wx/webview.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -55,6 +59,157 @@ std::vector<double> unwrap_phase(const std::vector<double>& phase_in) {
 }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Plotly plumbing: locate the vendored bundle, stage the page next to it and
+// load it with LoadURL. (Same reasoning as the Math tab: SetPage goes through
+// NavigateToString, whose HTML is capped well below the bundle size.)
+// ---------------------------------------------------------------------------
+namespace {
+wxString plotly_file() {
+    static wxString cached;
+    static bool done = false;
+    if (done) return cached;
+    done = true;
+    wxFileName exe(wxStandardPaths::Get().GetExecutablePath());
+    wxFileName staged(exe.GetPathWithSep() + "plotly", "plotly-basic.min.js");
+    if (staged.FileExists()) {
+        cached = staged.GetFullPath();
+        return cached;
+    }
+    wxFileName dev(wxGetCwd(), "plotly-basic.min.js");
+    dev.AppendDir("resources");
+    dev.AppendDir("plotly");
+    if (dev.FileExists()) cached = dev.GetFullPath();
+    return cached;
+}
+
+bool stage_plot_page(const wxString& js, const std::string& page,
+                     wxString& out_url) {
+    wxFileName dir(wxStandardPaths::Get().GetTempDir(), "");
+    dir.AppendDir("envlp-plots");
+    if (!dir.DirExists() &&
+        !wxFileName::Mkdir(dir.GetFullPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL))
+        return false;
+    wxFileName bundle(dir.GetFullPath(), "plotly-basic.min.js");
+    if (!bundle.FileExists() ||
+        bundle.GetSize().GetValue() != wxFileName(js).GetSize().GetValue()) {
+        if (!wxCopyFile(js, bundle.GetFullPath(), true)) return false;
+    }
+    // A fresh file name every render: WebView2 serves a file:// URL from its
+    // cache, so re-writing plot.html and re-loading the same URL can show the
+    // *previous* figure (or nothing at all).
+    static int page_seq = 0;
+    char name[48];
+    std::snprintf(name, sizeof(name), "plot_%d.html", ++page_seq);
+    wxFileName pg(dir.GetFullPath(), name);
+    {
+        std::ofstream f(pg.GetFullPath().ToStdString().c_str(), std::ios::binary);
+        if (!f) return false;
+        f << page;
+        if (!f) return false;
+    }
+    wxString url = pg.GetFullPath();
+    url.Replace("\\", "/");
+    out_url = "file:///" + url;
+    return true;
+}
+
+std::string js_num(double v) {
+    if (!std::isfinite(v)) return "null";
+    char b[40];
+    std::snprintf(b, sizeof(b), "%.10g", v);
+    return b;
+}
+
+std::string js_arr(const std::vector<double>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) s += ",";
+        s += js_num(v[i]);
+    }
+    return s + "]";
+}
+
+// A Python list of numbers, wrapped so a long sweep stays readable.
+std::string py_arr(const std::vector<double>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) s += ", ";
+        s += js_num(v[i]);
+        if (i && i % 8 == 0) s += "\n    ";
+    }
+    return s + "]";
+}
+
+// Plotly customdata: one triple of numbers per sample, so a hovertemplate can
+// show frequency / derived quantities alongside the plotted x and y.
+std::string js_customdata3(const std::vector<double>& a,
+                           const std::vector<double>& b,
+                           const std::vector<double>& c) {
+    const size_t n = std::min(a.size(), std::min(b.size(), c.size()));
+    std::string s = "[";
+    for (size_t i = 0; i < n; ++i) {
+        if (i) s += ",";
+        s += "[" + js_num(a[i]) + "," + js_num(b[i]) + "," + js_num(c[i]) +
+             "]";
+    }
+    return s + "]";
+}
+
+// The Nichols M/N contour grid as Plotly line traces, so the live chart shows
+// the same background the built-in painter drew.
+std::string nichols_grid_js() {
+    std::string out;
+    auto emit = [&](const std::string& xs, const std::string& ys) {
+        if (!out.empty()) out += ",";
+        out += "{x:" + xs + ",y:" + ys +
+               ",mode:'lines',type:'scatter',line:{color:'#d8dcea',width:0.8},"
+               "hoverinfo:'skip',showlegend:false}";
+    };
+    for (double m_db : {-12.0, -6.0, -3.0, 0.0, 3.0, 6.0, 12.0}) {
+        for (int branch = 0; branch < (m_db > 0.0 ? 2 : 1); ++branch) {
+            double m = std::pow(10.0, m_db / 20.0);
+            std::vector<double> xs, ys;
+            for (int k = -180; k <= 0; ++k) {
+                double phi = k * M_PI / 180.0;
+                double cp = std::cos(phi), sp = std::sin(phi);
+                double g;
+                if (std::fabs(m - 1.0) < 1e-9) {
+                    if (cp >= -1e-9) continue;
+                    g = -1.0 / (2.0 * cp);
+                } else {
+                    double disc = 1.0 - m * m * sp * sp;
+                    if (disc < 0.0) continue;
+                    double root = m * std::sqrt(disc);
+                    g = (branch == 0) ? (m * m * cp + root) / (1.0 - m * m)
+                                      : (m * m * cp - root) / (1.0 - m * m);
+                }
+                if (g <= 0.0) continue;
+                xs.push_back(double(k));
+                ys.push_back(20.0 * std::log10(g));
+            }
+            if (xs.size() > 1) emit(js_arr(xs), js_arr(ys));
+        }
+    }
+    for (double alpha : {-150.0, -120.0, -90.0, -60.0, -30.0, 0.0, 30.0, 60.0,
+                         90.0, 120.0, 150.0}) {
+        double ta = std::tan(alpha * M_PI / 180.0);
+        std::vector<double> xs, ys;
+        for (int k = -180; k <= 0; ++k) {
+            double phi = k * M_PI / 180.0;
+            double den = std::sin(phi) - ta * std::cos(phi);
+            if (std::fabs(den) < 1e-9) continue;
+            double g = ta / den;
+            if (g <= 0.0) continue;
+            xs.push_back(double(k));
+            ys.push_back(20.0 * std::log10(g));
+        }
+        if (xs.size() > 1) emit(js_arr(xs), js_arr(ys));
+    }
+    return out;
+}
+} // namespace
+
 // The frequency band to plot: the analysis result's sweep, or a default.
 void BodeCanvas::band(double& f0, double& f1, int& n) const {
     if (res_ && res_->sweep.f_stop_hz > res_->sweep.f_start_hz) {
@@ -71,30 +226,116 @@ void BodeCanvas::band(double& f0, double& f1, int& n) const {
 BodeCanvas::BodeCanvas(wxWindow* parent) : wxPanel(parent) {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     SetBackgroundColour(*wxWHITE);
+    // The plots are rendered by Plotly inside a wxWebView (Chromium via the
+    // Edge backend), which is what makes them interactive and exportable as a
+    // self-contained page or as plotly.py. Without the web view -- or without
+    // the vendored bundle / WebView2Loader -- the class falls back to its own
+    // wxDC painter, so the tab always shows something.
+    if (wxWebView::IsBackendAvailable(wxWebViewBackendEdge) &&
+        !plotly_file().empty()) {
+        view_ = wxWebView::New(this, wxID_ANY, wxWebViewDefaultURLStr,
+                               wxDefaultPosition, wxDefaultSize,
+                               wxWebViewBackendEdge);
+    }
+    if (view_) {
+        auto* s = new wxBoxSizer(wxVERTICAL);
+        s->Add(view_, 1, wxEXPAND);
+        SetSizer(s);
+    }
+}
+
+BodeCanvas::~BodeCanvas() {
+    if (view_) {
+        // Detach the event handlers and stop loading before the window is
+        // destroyed; a WebView2 torn down mid-navigation can crash the process.
+        view_->Stop();
+    }
+}
+
+void BodeCanvas::refresh_any() {
+    if (!view_) {
+        Refresh();
+        return;
+    }
+    // Coalesce: one page load per event-loop turn. A single "Run" pushes a
+    // title *and* a result, which used to fire two back-to-back navigations;
+    // doing that repeatedly is what made the tab flaky.
+    if (pending_) return;
+    pending_ = true;
+    CallAfter([this] {
+        pending_ = false;
+        refresh_now();
+    });
+}
+
+void BodeCanvas::refresh_now() {
+    if (!view_) return;
+    // Only a new result / mode / title needs a page reload. An axis-range or
+    // grid toggle is applied in place: reloading the page on every keystroke
+    // was what made the tab flicker and take the web view down.
+    if (res_ != last_res_ || mode_ != last_mode_ || title_ != last_title_) {
+        last_res_ = res_;
+        last_mode_ = mode_;
+        last_title_ = title_;
+        render_plot();
+        return;
+    }
+    relayout_plot();
+}
+
+std::string BodeCanvas::axis_relayout_js() const {
+    if (auto_range_) return std::string();
+    auto g = [](double v) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%.6g", v);
+        return std::string(b);
+    };
+    std::string js;
+    if (mode_ == PlotMode::Bode) {
+        js += "'xaxis.range':[" + g(std::log10(x_lo_)) + "," +
+              g(std::log10(x_hi_)) + "],";
+        js += "'xaxis2.range':[" + g(std::log10(x_lo_)) + "," +
+              g(std::log10(x_hi_)) + "],";
+        js += "'yaxis.range':[" + g(y_lo_) + "," + g(y_hi_) + "],";
+        js += "'yaxis2.range':[" + g(y_lo_) + "," + g(y_hi_) + "],";
+    } else if (mode_ == PlotMode::Noise) {
+        js += "'xaxis.range':[" + g(std::log10(x_lo_)) + "," +
+              g(std::log10(x_hi_)) + "],";
+        js += "'yaxis.range':[" + g(y_lo_) + "," + g(y_hi_) + "],";
+    }
+    if (js.empty()) return js;
+    return js.substr(0, js.size() - 1); // drop the trailing comma
+}
+
+void BodeCanvas::relayout_plot() {
+    if (!view_) return;
+    std::string js = axis_relayout_js();
+    if (js.empty()) return;
+    view_->RunScript("Plotly.relayout('plot',{" + js + "});");
 }
 
 void BodeCanvas::set_result(const syms::AnalysisResult* r) {
     res_ = r;
-    Refresh();
+    refresh_any();
 }
 
 void BodeCanvas::set_mode(PlotMode m) {
     mode_ = m;
-    Refresh();
+    refresh_any();
 }
 
 void BodeCanvas::set_x_range(double lo, double hi) {
     x_lo_ = std::max(1e-12, lo);
     x_hi_ = std::max(x_lo_ * 1.0001, hi);
     auto_range_ = false;
-    Refresh();
+    refresh_any();
 }
 
 void BodeCanvas::set_y_range(double lo, double hi) {
     y_lo_ = lo;
     y_hi_ = std::max(y_lo_ + 0.1, hi);
     auto_range_ = false;
-    Refresh();
+    refresh_any();
 }
 
 void BodeCanvas::sample(std::vector<double>& f, std::vector<double>& mag,
@@ -276,6 +517,8 @@ std::string BodeCanvas::escape_xml(std::string s) {
 // painting
 // ---------------------------------------------------------------------------
 void BodeCanvas::on_paint(wxPaintEvent&) {
+    // With the Plotly view live the web view covers the panel; nothing to do.
+    if (view_) return;
     wxAutoBufferedPaintDC dc(this);
     wxSize sz = GetClientSize();
     dc.SetBackground(*wxWHITE);
@@ -620,10 +863,17 @@ void BodeCanvas::paint_nichols(wxDC& dc, const wxSize& sz) const {
         ny_hi = std::max(ny_hi, c.mag[i]);
     }
     if (nx_lo > nx_hi || ny_lo > ny_hi) return;
-    double phspan = std::max(nx_hi - nx_lo, 20.0);
-    double mspan = std::max(ny_hi - ny_lo, 20.0);
-    nx_lo -= phspan * 0.06; nx_hi += phspan * 0.06;
-    ny_lo -= mspan * 0.08; ny_hi += mspan * 0.08;
+    // Nichols shows the full canonical chart window, not just the curve's
+    // extent: the M/N contour grid is the point, and clipping to the curve
+    // hides it. Extend if the curve runs past the canonical edge.
+    nx_lo = std::min(nx_lo, -180.0);
+    nx_hi = std::max(nx_hi, 0.0);
+    ny_lo = std::min(ny_lo, -40.0);
+    ny_hi = std::max(ny_hi, 20.0);
+    double phspan = nx_hi - nx_lo;
+    double mspan = ny_hi - ny_lo;
+    nx_lo -= phspan * 0.04; nx_hi += phspan * 0.04;
+    ny_lo -= mspan * 0.05; ny_hi += mspan * 0.05;
 
     const int mL = 56, mR = 16, mT = 16, mB = 34;
     int W = sz.x - mL - mR, H = sz.y - mT - mB;
@@ -863,8 +1113,8 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     mode->Append("Nichols");
     mode->Append("Noise");
     mode->SetSelection(0);
-    auto* svg = new wxButton(this, wxID_ANY, "Save SVG...");
-    auto* png = new wxButton(this, wxID_ANY, "Save PNG...");
+    auto* svg = new wxButton(this, wxID_ANY, "Save HTML...");
+    auto* png = new wxButton(this, wxID_ANY, "Save Python...");
     auto* csv = new wxButton(this, wxID_ANY, "Save CSV...");
     auto_box_ = new wxCheckBox(this, wxID_ANY, "Auto scale");
     auto_box_->SetValue(true);
@@ -940,17 +1190,19 @@ BodePanel::BodePanel(wxWindow* parent) : wxPanel(parent) {
     ymax_->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent&) { apply_axis(); });
 
     svg->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        wxFileDialog dlg(this, "Save plot", "", "plot.svg",
-                         "SVG (*.svg)|*.svg", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
-        if (dlg.ShowModal() == wxID_OK && !plot_->save_svg(dlg.GetPath().ToStdString()))
-            wxMessageBox("Could not write the SVG file.", "Save failed",
+        wxFileDialog dlg(this, "Save plot page", "", "plot.html",
+                         "HTML (*.html)|*.html", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+        if (dlg.ShowModal() == wxID_OK &&
+            !plot_->save_html(dlg.GetPath().ToStdString()))
+            wxMessageBox("Could not write the HTML file.", "Save failed",
                          wxICON_ERROR, this);
     });
     png->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        wxFileDialog dlg(this, "Save plot", "", "plot.png",
-                         "PNG (*.png)|*.png", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
-        if (dlg.ShowModal() == wxID_OK && !plot_->save_png(dlg.GetPath().ToStdString()))
-            wxMessageBox("Could not write the PNG file.", "Save failed",
+        wxFileDialog dlg(this, "Save Python script", "", "plot.py",
+                         "Python (*.py)|*.py", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+        if (dlg.ShowModal() == wxID_OK &&
+            !plot_->save_python(dlg.GetPath().ToStdString()))
+            wxMessageBox("Could not write the Python file.", "Save failed",
                          wxICON_ERROR, this);
     });
     csv->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -1022,6 +1274,261 @@ void BodePanel::sync_axis_controls() {
     if (xmax_) xmax_->ChangeValue(fmt(plot_->x_hi()));
     if (ymin_) ymin_->ChangeValue(fmt(plot_->y_lo()));
     if (ymax_) ymax_->ChangeValue(fmt(plot_->y_hi()));
+}
+
+// ---------------------------------------------------------------------------
+// Plotly figure: one spec feeds the live view, the HTML export and the
+// plotly.py export, so all three are always the same picture.
+// ---------------------------------------------------------------------------
+BodeCanvas::PlotSpec BodeCanvas::plot_spec() const {
+    PlotSpec spec;
+    spec.title = title_.empty() ? std::string("Plot") : title_;
+    std::vector<double> f, mag, ph;
+    sample(f, mag, ph);
+    // The three vectors can differ in length (a truncated/partial sample, a
+    // noise result with a single row): index them through one common size, or
+    // the mode-specific loops below read past the end.
+    const size_t n = std::min(f.size(), std::min(mag.size(), ph.size()));
+    f.resize(n);
+    mag.resize(n);
+    ph.resize(n);
+
+    auto esc = [](std::string s) {
+        std::string o;
+        for (char c : s) {
+            if (c == '\\') o += "\\\\";
+            else if (c == '\'') o += "\\'";
+            else o += c;
+        }
+        return o;
+    };
+
+    if (mode_ == PlotMode::Nyquist) {
+        std::vector<double> re(n), im(n);
+        for (size_t i = 0; i < n; ++i) {
+            double m = std::pow(10.0, mag[i] / 20.0);
+            double r = ph[i] * M_PI / 180.0;
+            re[i] = m * std::cos(r);
+            im[i] = m * std::sin(r);
+        }
+        spec.traces_js =
+            "var traces = [{x:" + js_arr(re) + ",y:" + js_arr(im) +
+            ",customdata:" + js_customdata3(f, mag, ph) +
+            ",mode:'lines',type:'scatter',name:'H(jw)',"
+            "line:{color:'#c82828',width:2},"
+            "hovertemplate:'Re = %{x:.3g}   Im = %{y:.3g}<br>"
+            "|H| = %{customdata[1]:.2f} dB   phase = %{customdata[2]:.1f} deg"
+            "<br>f = %{customdata[0]:.4g} Hz<extra></extra>'},"
+            "{x:[-1],y:[0],mode:'markers',type:'scatter',name:'-1',"
+            "marker:{color:'#c82828',size:9,symbol:'x'},"
+            "hovertemplate:'critical point (-1, 0)<extra></extra>'"
+            "}];";
+        spec.layout_js =
+            "var layout = {title:'" + esc(spec.title) +
+            "',xaxis:{title:'Re',zeroline:true,zerolinecolor:'#bbb'},"
+            "yaxis:{title:'Im',zeroline:true,zerolinecolor:'#bbb',"
+            "scaleanchor:'x',scaleratio:1},showlegend:false,"
+            "margin:{l:60,r:20,t:40,b:45}};";
+        spec.py =
+            "import numpy as np\nimport plotly.graph_objects as go\n\n"
+            "re = np.array(" + py_arr(re) + ")\n"
+            "im = np.array(" + py_arr(im) + ")\n\n"
+            "fig = go.Figure()\n"
+            "fig.add_trace(go.Scatter(x=re, y=im, mode='lines', name='H(jw)',"
+            " line=dict(color='#c82828', width=2)))\n"
+            "fig.add_trace(go.Scatter(x=[-1], y=[0], mode='markers',"
+            " name='-1', marker=dict(color='#c82828', size=9, symbol='x')))\n"
+            "fig.update_layout(title='" + esc(spec.title) + "',"
+            " xaxis_title='Re', yaxis_title='Im', showlegend=False)\n"
+            "fig.update_yaxes(scaleanchor='x', scaleratio=1)\n"
+            "fig.show()\n";
+        return spec;
+    }
+
+    if (mode_ == PlotMode::Nichols) {
+        // Always draw the full chart; the curve is extended only if it runs
+        // past the canonical window.
+        double ph_lo = -180.0, ph_hi = 0.0, m_lo = -40.0, m_hi = 20.0;
+        for (size_t i = 0; i < n; ++i) {
+            if (!std::isfinite(ph[i]) || !std::isfinite(mag[i])) continue;
+            if (ph[i] < ph_lo) { ph_lo = ph[i]; ph_hi = std::max(ph_hi, 0.0); }
+            if (ph[i] > ph_hi) ph_hi = ph[i];
+            if (mag[i] < m_lo) m_lo = mag[i];
+            if (mag[i] > m_hi) m_hi = mag[i];
+        }
+        // Closed-loop response from the open-loop value: G = L/(1+L). The
+        // Nichols contour grid *is* the chart of this, so the hover has to
+        // report it along with the open-loop numbers.
+        std::vector<double> cl_db(n, 0.0), cl_ph(n, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            double lm = std::pow(10.0, mag[i] / 20.0);
+            double lr = lm * std::cos(ph[i] * M_PI / 180.0);
+            double li = lm * std::sin(ph[i] * M_PI / 180.0);
+            double dr = 1.0 + lr, di = li;
+            double d2 = dr * dr + di * di;
+            if (!(d2 > 0.0)) continue;
+            double gr = (lr * dr + li * di) / d2;
+            double gi = (li * dr - lr * di) / d2;
+            cl_db[i] = 20.0 * std::log10(std::hypot(gr, gi));
+            cl_ph[i] = std::atan2(gi, gr) * 180.0 / M_PI;
+        }
+        spec.traces_js = "var traces = [" + nichols_grid_js() + ","
+            "{x:" + js_arr(ph) + ",y:" + js_arr(mag) +
+            ",customdata:" + js_customdata3(f, cl_db, cl_ph) +
+            ",mode:'lines',type:'scatter',name:'H(jw)',"
+            "line:{color:'#2b8a3e',width:2.2},"
+            "hovertemplate:'open loop |H| = %{y:.2f} dB   phase = %{x:.1f} deg"
+            "<br>closed loop |G| = %{customdata[1]:.2f} dB   phase = "
+            "%{customdata[2]:.1f} deg<br>f = %{customdata[0]:.4g} Hz"
+            "<extra></extra>'}];";
+        // Build with std::string: a fixed snprintf buffer truncated the layout
+        // (and therefore broke the whole script) as soon as the card title was
+        // anything longer than a couple of characters.
+        auto g = [](double v) {
+            char b[32];
+            std::snprintf(b, sizeof(b), "%.6g", v);
+            return std::string(b);
+        };
+        spec.layout_js = "var layout = {title:'" + esc(spec.title) +
+            "',xaxis:{title:'phase [deg]',range:[" + g(ph_lo) + "," + g(ph_hi) +
+            "]},yaxis:{title:'|H| [dB]',range:[" + g(m_lo) + "," + g(m_hi) +
+            "]},showlegend:false,margin:{l:60,r:20,t:40,b:45}};";
+        spec.py =
+            "import numpy as np\nimport plotly.graph_objects as go\n\n"
+            "f = np.array(" + py_arr(f) + ")\n"
+            "phase_deg = np.array(" + py_arr(ph) + ")\n"
+            "mag_db = np.array(" + py_arr(mag) + ")\n"
+            "# closed loop G = L/(1+L), from the open-loop value\n"
+            "L = 10 ** (mag_db / 20.0) * np.exp(1j * np.deg2rad(phase_deg))\n"
+            "G = L / (1 + L)\n"
+            "cl_db = 20 * np.log10(np.abs(G))\n"
+            "cl_ph = np.rad2deg(np.angle(G))\n\n"
+            "fig = go.Figure()\n"
+            "fig.add_trace(go.Scatter(x=phase_deg, y=mag_db, mode='lines',"
+            " name='H(jw)', line=dict(color='#2b8a3e', width=2.2),"
+            " customdata=np.stack([f, cl_db, cl_ph], axis=-1),"
+            " hovertemplate='open loop |H| = %{y:.2f} dB  phase = %{x:.1f} deg"
+            "<br>closed loop |G| = %{customdata[1]:.2f} dB  phase ="
+            " %{customdata[2]:.1f} deg<br>f = %{customdata[0]:.4g} Hz"
+            "<extra></extra>'))\n"
+            "fig.update_layout(title='" + esc(spec.title) + "',"
+            " xaxis_title='phase [deg]', yaxis_title='|H| [dB]',"
+            " showlegend=False)\n"
+            "fig.show()\n";
+        return spec;
+    }
+
+    // Bode / noise: log-x, magnitude (and phase for Bode) on stacked axes.
+    bool noise = (mode_ == PlotMode::Noise);
+    std::string mag_name = noise ? "S(f)" : "|H|";
+    std::string mag_unit = noise ? "" : " [dB]";
+    if (noise) {
+        spec.traces_js = "var traces = [{x:" + js_arr(f) + ",y:" + js_arr(mag) +
+                         ",mode:'lines',type:'scatter',name:'S',"
+                         "line:{color:'#c82828',width:2}}];";
+        spec.layout_js =
+            "var layout = {title:'" + esc(spec.title) +
+            "',xaxis:{title:'f [Hz]',type:'log'},"
+            "yaxis:{title:'S [dB]'},showlegend:false,"
+            "margin:{l:60,r:20,t:40,b:45}};";
+        spec.py =
+            "import numpy as np\nimport plotly.graph_objects as go\n\n"
+            "f = np.array(" + py_arr(f) + ")\n"
+            "s_db = np.array(" + py_arr(mag) + ")\n\n"
+            "fig = go.Figure()\n"
+            "fig.add_trace(go.Scatter(x=f, y=s_db, mode='lines', name='S',"
+            " line=dict(color='#c82828', width=2)))\n"
+            "fig.update_layout(title='" + esc(spec.title) + "',"
+            " xaxis_title='f [Hz]', yaxis_title='S [dB]', showlegend=False)\n"
+            "fig.update_xaxes(type='log')\n"
+            "fig.show()\n";
+        return spec;
+    }
+    spec.traces_js = "var traces = [{x:" + js_arr(f) + ",y:" + js_arr(mag) +
+                     ",mode:'lines',type:'scatter',name:'|H| dB',"
+                     "line:{color:'#c82828',width:2},xaxis:'x',yaxis:'y'},"
+                     "{x:" + js_arr(f) + ",y:" + js_arr(ph) +
+                     ",mode:'lines',type:'scatter',name:'phase deg',"
+                     "line:{color:'#285ac8',width:2},xaxis:'x2',yaxis:'y2'}];";
+    spec.layout_js =
+        "var layout = {title:'" + esc(spec.title) +
+        "',grid:{rows:2,columns:1,pattern:'independent',"
+        "roworder:'top to bottom'},showlegend:false,"
+        "xaxis:{title:'f [Hz]',type:'log'},yaxis:{title:'|H| [dB]'},"
+        "xaxis2:{title:'f [Hz]',type:'log'},yaxis2:{title:'phase [deg]'},"
+        "margin:{l:60,r:20,t:40,b:45}};";
+    spec.py =
+        "import numpy as np\nimport plotly.graph_objects as go\n"
+        "from plotly.subplots import make_subplots\n\n"
+        "f = np.array(" + py_arr(f) + ")\n"
+        "mag_db = np.array(" + py_arr(mag) + ")\n"
+        "phase_deg = np.array(" + py_arr(ph) + ")\n\n"
+        "fig = make_subplots(rows=2, cols=1, shared_xaxes=True,"
+        " subplot_titles=('|H| [dB]', 'phase [deg]'))\n"
+        "fig.add_trace(go.Scatter(x=f, y=mag_db, mode='lines', name='|H| dB',"
+        " line=dict(color='#c82828')), row=1, col=1)\n"
+        "fig.add_trace(go.Scatter(x=f, y=phase_deg, mode='lines',"
+        " name='phase deg', line=dict(color='#285ac8')), row=2, col=1)\n"
+        "fig.update_xaxes(type='log', title_text='f [Hz]', row=2, col=1)\n"
+        "fig.update_layout(title='" + esc(spec.title) + "', showlegend=False)\n"
+        "fig.show()\n";
+    return spec;
+}
+
+void BodeCanvas::render_plot() {
+    if (!view_) return;
+    PlotSpec spec = plot_spec();
+    std::string page;
+    page += "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>";
+    page += "html,body{margin:0;padding:0;height:100%;background:#fff;"
+            "font-family:'Segoe UI',sans-serif;} #plot{width:100%;height:100vh;}"
+            "</style><script src=\"plotly-basic.min.js\"></script></head>";
+    page += "<body><div id=\"plot\"></div><script>";
+    page += spec.traces_js;
+    page += spec.layout_js;
+    page += "Plotly.newPlot('plot',traces,layout,{responsive:true,"
+            "displaylogo:false});</script></body></html>";
+    wxString url;
+    const wxString js = plotly_file();
+    if (!js.empty() && stage_plot_page(js, page, url)) {
+        view_->LoadURL(url);
+        return;
+    }
+    Refresh();
+}
+
+bool BodeCanvas::save_html(const std::string& path) const {
+    PlotSpec spec = plot_spec();
+    std::string page;
+    page += "<!DOCTYPE html><html><head><meta charset=\"utf-8\">";
+    page += "<title>" + escape_xml(spec.title) + "</title>";
+    page += "<style>html,body{margin:0;padding:0;height:100%;background:#fff;}"
+            "#plot{width:100%;height:100vh;}</style>";
+    // Self-contained: the Plotly bundle is fetched from the CDN, so the file
+    // works when opened on any machine with a network; the live view uses the
+    // vendored copy.
+    page += "<script src=\"https://cdn.plot.ly/plotly-basic-2.35.2.min.js\">"
+            "</script></head><body><div id=\"plot\"></div><script>";
+    page += spec.traces_js;
+    page += spec.layout_js;
+    page += "Plotly.newPlot('plot',traces,layout,{responsive:true});";
+    page += "</script></body></html>";
+    std::ofstream o(path, std::ios::binary);
+    if (!o) return false;
+    o << page;
+    return bool(o);
+}
+
+bool BodeCanvas::save_python(const std::string& path) const {
+    PlotSpec spec = plot_spec();
+    std::ofstream o(path, std::ios::binary);
+    if (!o) return false;
+    o << "\"\"\"ENVLP export: " << spec.title << "\n\n"
+      << "The arrays below are the exact samples the plot was drawn from, so\n"
+      << "you can re-plot, fit, or process them however you like.\n"
+      << "Requires: pip install plotly numpy\n\"\"\"\n";
+    o << spec.py;
+    return bool(o);
 }
 
 } // namespace envlp

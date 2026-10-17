@@ -777,7 +777,7 @@ static double ugbw_rads_of(const LowEntropy& R, ParamTable& pt, const ex& s) {
 // pruned unless the user separately enabled approximate factoring. Returns true
 // and rewrites `f` when at least one root was dropped.
 static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
-                             double ref_tau, double lim,
+                             double ref_tau, double lim, double band_tau,
                              const std::vector<Candidate>& cands,
                              const std::string& where,
                              std::vector<Dropped>& dropped) {
@@ -803,11 +803,14 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
         if (!real_root && im < 0.0) continue;
         double tau = real_root ? (re != 0.0 ? -1.0 / re : 0.0)
                                : 1.0 / std::abs(r);
-        bool far = tau > 0.0 && std::isfinite(tau) &&
-                   tau <= ref_tau / lim * 1.000001;
-        if (far) {
+        bool by_ratio = ref_tau > 0.0 && tau > 0.0 && std::isfinite(tau) &&
+                        tau <= ref_tau / lim * 1.000001;
+        bool by_band =
+            band_tau > 0.0 && tau > 0.0 && std::isfinite(tau) && tau < band_tau;
+        if (by_ratio || by_band) {
+            double ref = by_ratio ? ref_tau : band_tau;
             dropped.push_back({where + ", factor", f.text,
-                               20.0 * std::log10(tau / ref_tau)});
+                               20.0 * std::log10(tau / ref)});
             changed = true;
             continue;
         }
@@ -849,27 +852,35 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
 // (a quadratic that did not factor symbolically) is reduced root-by-root.
 void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
                       const ex& s, double ref_tau, double threshold_db,
-                      const std::vector<Candidate>& cands,
+                      double band_tau, const std::vector<Candidate>& cands,
                       const std::string& where,
                       std::vector<Dropped>& dropped) {
-    if (ref_tau <= 0.0) return;
+    if (ref_tau <= 0.0 && band_tau <= 0.0) return;
     double lim = std::pow(10.0, threshold_db / 20.0);
     std::vector<Factor> kept;
     for (auto f : factors) {
         int deg = 0;
         try { deg = f.expr.degree(s); } catch (...) { deg = 0; }
         if (!f.origin && deg >= 2) {
-            reduce_far_roots(f, pt, s, ref_tau, lim, cands, where, dropped);
+            reduce_far_roots(f, pt, s, ref_tau, lim, band_tau, cands, where,
+                             dropped);
             if (!f.expr.is_equal(ex(1))) kept.push_back(f);
             continue;
         }
         double tau = factor_tau(f, pt, s);
         // "At or beyond" the threshold is dropped (60 dB == 1000x). The
         // *1.000001 tolerates floating-point error at an exact power-of-ten.
-        bool far = tau > 0.0 && tau <= ref_tau / lim * 1.000001;
-        if (far) {
+        // A pole/zero above the top of the sweep is outside the analysed band
+        // altogether, so it is dropped whatever the threshold says.
+        bool by_ratio =
+            ref_tau > 0.0 && tau > 0.0 && tau <= ref_tau / lim * 1.000001;
+        bool by_band = band_tau > 0.0 && tau > 0.0 && tau < band_tau;
+        if (by_ratio || by_band) {
+            // Report against whichever reference did the dropping, so a
+            // band-dropped pole reads relative to the top of the sweep.
+            double ref = by_ratio ? ref_tau : band_tau;
             dropped.push_back({where + ", factor", f.text,
-                               20.0 * std::log10(tau / ref_tau)});
+                               20.0 * std::log10(tau / ref)});
         } else {
             kept.push_back(f);
         }
@@ -1306,9 +1317,51 @@ std::string to_latex_cdot(const ex& e) {
             }
         }
         if (has_denominator) {
-            std::ostringstream os;
-            e.print(GiNaC::print_latex(os));
-            return os.str();
+            // Print as \frac{numerator}{denominator} with every product dotted,
+            // rather than letting GiNaC juxtapose the factors (which read as one
+            // term: "4 \sqrt{2} I2" instead of "4\cdot\sqrt{2}\cdot I_2").
+            std::vector<ex> nfac, dfac;
+            for (size_t i = 0; i < e.nops(); ++i) {
+                const ex& op = e.op(i);
+                if (is_a<GiNaC::power>(op) && is_a<numeric>(op.op(1)) &&
+                    GiNaC::ex_to<numeric>(op.op(1)).is_negative())
+                    dfac.push_back(GiNaC::pow(op.op(0), -op.op(1)));
+                else
+                    nfac.push_back(op);
+            }
+            // A rational coefficient reads better hoisted out in front of the
+            // fraction (1/2\cdot\frac{..}{..}) than nested inside it.
+            ex coeff = 1;
+            std::vector<ex> keep;
+            for (size_t i = 0; i < nfac.size(); ++i) {
+                if (is_a<numeric>(nfac[i])) coeff = coeff * nfac[i];
+                else keep.push_back(nfac[i]);
+            }
+            auto join = [](const std::vector<ex>& v) {
+                std::string s;
+                for (size_t i = 0; i < v.size(); ++i) {
+                    if (i) s += "\\cdot ";
+                    std::string f = to_latex_cdot(v[i]);
+                    if (is_a<GiNaC::add>(v[i]) ||
+                        is_a<GiNaC::add>(v[i].expand()))
+                        f = "\\left(" + f + "\\right)";
+                    s += f;
+                }
+                return s;
+            };
+            std::string num = join(keep);
+            const std::string den = join(dfac);
+            const bool unit = coeff.is_equal(ex(1));
+            if (num.empty()) {
+                std::string c = unit ? std::string("1") : to_latex_cdot(coeff);
+                return "\\frac{" + c + "}{" + den + "}";
+            }
+            std::string frac = "\\frac{" + num + "}{" + den + "}";
+            if (unit) return frac;
+            std::string c = to_latex_cdot(coeff);
+            if (!c.empty() && c[0] == '-')
+                return "-" + c.substr(1) + "\\cdot " + frac;
+            return c + "\\cdot " + frac;
         }
         // Separate the numeric coefficient from the symbolic factors.
         ex coeff = 1;
@@ -1336,6 +1389,22 @@ std::string to_latex_cdot(const ex& e) {
             body += ft;
         }
         return (neg ? "-" : "") + body;
+    }
+    if (is_a<GiNaC::power>(e)) {
+        const ex& base = e.op(0);
+        const ex& xp = e.op(1);
+        if (is_a<numeric>(xp)) {
+            const numeric n = GiNaC::ex_to<numeric>(xp);
+            // A radical: recurse so the radicand's products keep their \cdot.
+            if (n.is_equal(numeric(1, 2)))
+                return "\\sqrt{" + to_latex_cdot(base) + "}";
+            if (n.is_equal(numeric(-1, 2)))
+                return "\\frac{1}{\\sqrt{" + to_latex_cdot(base) + "}}";
+            if (n.is_integer() && n.is_negative()) {
+                std::string d = to_latex_cdot(GiNaC::pow(base, -xp));
+                return "\\frac{1}{" + d + "}";
+            }
+        }
     }
     if (is_a<GiNaC::add>(e)) {
         std::string out;
@@ -1389,7 +1458,35 @@ std::string low_entropy_latex_rhs(const LowEntropy& le) {
     }
     std::string num = K;
     if (!N.empty()) num += (num.empty() ? "" : "\\cdot ") + N;
-    if (num.empty()) num = "1";    if (D.empty())
+    if (num.empty()) num = "1";
+    // A gain that is itself a single fraction is folded into the denominator:
+    // \frac{P}{Q} / D  ->  \frac{P}{Q\cdot D}. Printing it as a fraction of a
+    // fraction is the reciprocal output-resistance gain, which reads badly.
+    if (N.empty() && !D.empty() && num.rfind("\\frac{", 0) == 0) {
+        size_t i = 6;
+        int depth = 1;
+        size_t p1 = 0;
+        for (; i < num.size(); ++i) {
+            if (num[i] == '{') ++depth;
+            else if (num[i] == '}' && --depth == 0) { p1 = i; break; }
+        }
+        if (p1 > 6 && i + 1 < num.size() && num[i + 1] == '{') {
+            const size_t q0 = i + 2;
+            depth = 1;
+            size_t q1 = 0;
+            for (size_t j = q0; j < num.size(); ++j) {
+                if (num[j] == '{') ++depth;
+                else if (num[j] == '}' && --depth == 0) { q1 = j; break; }
+            }
+            // Only when the gain *is* exactly that fraction (nothing after).
+            if (q1 > q0 && q1 + 1 == num.size()) {
+                os << "\\frac{" << num.substr(6, p1 - 6) << "}{"
+                   << num.substr(q0, q1 - q0) << "\\cdot " << D << "}";
+                return os.str();
+            }
+        }
+    }
+    if (D.empty())
         os << num;
     else
         os << "\\frac{" << num << "}{" << D << "}";
@@ -1688,6 +1785,24 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
     // A = 1e9 becomes 1, but A/(A+1) with A = 1 stays exact.
     if (opts.prune && !K.is_zero())
         K = simplify_gain(K, params, comp_db);
+    // Fold a "one minus a small term" gain back into the denominator:
+    //     A/(A + B)  ->  1/(1 + B/A)
+    // which is the low-entropy form whenever B/A is the small quantity (a
+    // supply-rejection ratio, a resistive divider, ...). `A/(A+B)` hides the
+    // small term in a long numerator+denominator pair; `1/(1+B/A)` shows it
+    // once, and the parallel rewrite below then turns B/A into R1||R2. Only
+    // fold when the denominator is exactly the numerator plus *one* term, and
+    // only when it prints shorter.
+    if (opts.prune && !K.is_zero()) {
+        ex kn = K.numer(), kd = K.denom();
+        ex diff = (kd - kn).normal();
+        if (!kn.is_zero() && !diff.is_zero() &&
+            !GiNaC::is_a<GiNaC::add>(diff.expand())) {
+            ex inner = to_parallel(GiNaC::factor((diff / kn).normal()));
+            ex folded = (ex(1) / (ex(1) + inner)).normal();
+            if (pretty(folded).size() < pretty(K).size()) K = folded;
+        }
+    }
     // Recover parallel structure in the gain too: -R1*R2*A/(A*(R1+R2)) is
     // -(R1||R2). This is what makes a TIA's gain read -(R1||R2) rather than
     // an expanded resistor ratio.
@@ -1744,10 +1859,18 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         // A constant numerator has no zero to reference: fall back to the pole
         // reference so the numerator is not kept wholesale.
         if (!(zero_ref_tau > 0.0)) zero_ref_tau = pole_ref_tau;
-        drop_far_factors(R.den_factors, params, s, pole_ref_tau, pz_db, cands,
-                         "denominator", R.dropped);
-        drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, cands,
-                         "numerator", R.dropped);
+        // A pole/zero above the top of the sweep is outside the analysed band:
+        // the in-band response never sees it, so it is dropped whatever the
+        // threshold says. Without this a circuit whose corners all sit above
+        // the sweep still carries every one of them, which is the opposite of a
+        // low-entropy result.
+        double band_tau = opts.band_hi_hz > 0.0
+                              ? 1.0 / (2.0 * M_PI * opts.band_hi_hz)
+                              : 0.0;
+        drop_far_factors(R.den_factors, params, s, pole_ref_tau, pz_db, band_tau,
+                         cands, "denominator", R.dropped);
+        drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, band_tau,
+                         cands, "numerator", R.dropped);
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);
@@ -1784,7 +1907,39 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         base = Kt;
     else
         base = Kt + "*" + wrap_compound(Nt);
-    R.text = (Dt == "1") ? base : base + " / " + wrap_compound(Dt);
+    std::string den_txt = (Dt == "1") ? std::string() : wrap_compound(Dt);
+    // A division at depth 0 (i.e. not inside parentheses).
+    auto top_slash = [](const std::string& t) -> size_t {
+        int depth = 0;
+        for (size_t i = 0; i < t.size(); ++i) {
+            if (t[i] == '(') ++depth;
+            else if (t[i] == ')') { if (depth > 0) --depth; }
+            else if (t[i] == '/' && depth == 0) return i;
+        }
+        return std::string::npos;
+    };
+    auto has_toplevel_sign = [](const std::string& t) {
+        int depth = 0;
+        for (size_t i = 0; i < t.size(); ++i) {
+            if (t[i] == '(') ++depth;
+            else if (t[i] == ')') { if (depth > 0) --depth; }
+            else if ((t[i] == '+' || t[i] == '-') && depth == 0) return true;
+        }
+        return false;
+    };
+    const size_t sl = top_slash(base);
+    if (!den_txt.empty() && sl != std::string::npos) {
+        // A gain that is itself a reciprocal must not print as a fraction of a
+        // fraction: "(1/A) / B" has to read as one fraction, "1/(A*B)".
+        std::string p = base.substr(0, sl);
+        std::string q = base.substr(sl + 1);
+        if (q.size() >= 2 && q.front() == '(' && q.back() == ')' &&
+            !has_toplevel_sign(q.substr(1, q.size() - 2)))
+            q = q.substr(1, q.size() - 2);
+        R.text = p + "/(" + q + "*" + den_txt + ")";
+    } else {
+        R.text = den_txt.empty() ? base : base + " / " + den_txt;
+    }
     R.text_poly = pretty_ratio(R.num_poly, R.den_poly, s);
 
     // 10. LaTeX (factored form)
@@ -1793,3 +1948,4 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
 }
 
 } // namespace syms
+

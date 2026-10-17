@@ -1,0 +1,30 @@
+envlp 1
+req "V1" "V(op)" 1 1e+09 0 10 1 1 1
+tech 1 0.6 0.6 1e-16 0.0002 0.0001 1 0 5
+comp "V1" "V" 90 250 0 0 0 0 ""
+comp "U1" "FDOPAMP" 280 240 0 0 0 0 "1k"
+param "U1" "GBW" 0 "1M" 0
+param "U1" "en" 0 "" 0
+comp "R1" "R" 180 210 0 0 0 0 "1k"
+comp "R2" "R" 180 280 0 0 0 0 "" mirror=R1 mult=1 den=1
+comp "R3" "R" 270 310 0 0 0 0 "" mirror=R4 mult=1 den=1
+comp "R4" "R" 270 170 0 0 0 0 "" mirror=R1 mult=1 den=1
+comp "V2" "V" 90 340 0 0 0 0 "" dc=1 ac=0
+comp "GND1" "GND" 90 380 0 0 0 0 ""
+wire 90,220 90,210 150,210 pin:V1:0 pin:R1:0 wp=90,210 wp=120,210 wp=120,210
+wire 210,210 225,210 225,230 240,230 pin:R1:1 pin:U1:0 wp=225,210 wp=225,230
+wire 90,280 150,280 pin:V1:1 pin:R2:0
+wire 210,280 225,280 225,250 240,250 pin:R2:1 pin:U1:1 wp=225,280 wp=225,250
+wire 240,310 240,250 pin:R3:0 pin:U1:1
+wire 300,310 330,310 330,250 314,250 pin:R3:1 pin:U1:2 wp=330,310 wp=330,250
+wire 240,170 240,230 pin:R4:0 pin:U1:0
+wire 300,170 330,170 330,230 314,230 pin:R4:1 pin:U1:3 wp=330,170 wp=330,230
+wire 90,310 90,280 pin:V2:0 pin:V1:1
+wire 90,370 90,380 pin:V2:1 pin:GND1:0
+netlabel 94.7,210 130,200 "inp" 9 0 bind=0:0.21
+netlabel 120,280 130,270 "inn" 9 0 bind=2:0.5
+netlabel 321.42,250 350,250 "op" 9 0 bind=5:0.93
+netlabel 321.42,230 350,220 "on" 9 0 bind=7:0.93
+card "Differential (Adm/Acm/CMRR)" "V1" "V(op)-V(on)" "" 1 1e+09 0 10 1 1 1 "Differential (Adm/Acm/CMRR)" 0 "inp" "inn" 10 1000 0
+card "Transfer function (H(s))" "V1" "V(op)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 1 "" "" 10 1000 0
+card "DC operating point" "V1" "V(op)" "" 1 1e+09 0 10 1 1 1 "DC operating point" 1 "" "" 10 1000 0

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <functional>
 #include <map>
 #include <set>
@@ -220,9 +219,54 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
         if (bit != sys.branch_idx.end()) return solution(bit->second);
         const Component* cp = circ.find(ref);
         if (!cp) throw std::runtime_error("unknown component: " + ref);
+        // A device's terminal current from its small-signal model: the MOSFET
+        // drain (or BJT collector / diode anode) current, so I(M4), I(Q1), I(D1)
+        // are valid probe outputs for every analysis. The symbols must be the
+        // *mirror-aware* ones the MNA stamped (a copy's gm is 4*gm_unit, ...),
+        // or the current will not collapse for a current mirror.
+        auto psym = [&](const Component& c, const char* p) -> ex {
+            std::string nm = param_symbol(c, p);
+            if (!out.params.syms.count(nm) && c.mirror_ref.empty()) return ex(0);
+            return reg_param(out.params, c, p);
+        };
+        if (cp->kind == Kind::NMOS || cp->kind == Kind::PMOS) {
+            if (cp->nodes.size() < 3)
+                throw std::runtime_error("device " + ref + " has too few nodes");
+            ex vd = node_solution(cp->nodes[0]);
+            ex vg = node_solution(cp->nodes[1]);
+            ex vs = node_solution(cp->nodes[2]);
+            ex id = psym(*cp, "gm") * (vg - vs);
+            if (cp->param_enabled("ro")) id += (vd - vs) / psym(*cp, "ro");
+            if (cp->param_enabled("Cgd"))
+                id += s * psym(*cp, "Cgd") * (vg - vd);
+            if (cp->param_enabled("Cds"))
+                id += s * psym(*cp, "Cds") * (vd - vs);
+            if (cp->param_enabled("Cdb"))
+                id += s * psym(*cp, "Cdb") * (vd - vs);
+            return id.normal();
+        }
+        if (cp->kind == Kind::NPN || cp->kind == Kind::PNP) {
+            if (cp->nodes.size() < 3)
+                throw std::runtime_error("device " + ref + " has too few nodes");
+            ex vc = node_solution(cp->nodes[0]);
+            ex vb = node_solution(cp->nodes[1]);
+            ex ve = node_solution(cp->nodes[2]);
+            ex ic = psym(*cp, "gm") * (vb - ve);
+            if (cp->param_enabled("ro")) ic += (vc - ve) / psym(*cp, "ro");
+            if (cp->param_enabled("Cmu"))
+                ic += s * psym(*cp, "Cmu") * (vb - vc);
+            return ic.normal();
+        }
+        if (cp->kind == Kind::D) {
+            ex va = node_solution(cp->nodes[0]);
+            ex vk = node_solution(cp->nodes[1]);
+            ex i = (va - vk) / psym(*cp, "rd");
+            if (cp->param_enabled("Cd")) i += s * psym(*cp, "Cd") * (va - vk);
+            return i.normal();
+        }
         if (cp->kind == Kind::I || pin_count(cp->kind) != 2)
             throw std::runtime_error("branch current not available for " + ref +
-                                     " (supported: R, C, L, V, E)");
+                                     " (supported: R, C, L, V, E, M, Q, D)");
         ex va = node_solution(cp->nodes[0]);
         ex vb = node_solution(cp->nodes[1]);
         ex z;
@@ -252,20 +296,24 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
             if (nd != "0") used.insert(nd);
         }
     MnaDcSupply dc;
-    dc.vth = tech.vth;
+    dc.vthn = tech.vthn;
+    dc.vthp = tech.vthp;
+    dc.vdd = tech.vdd;
+    dc.include_clm = tech.include_clm;
+    dc.lambda = tech.lambda;
     dc.square_law = tech.dc_mode == DcMode::SquareLaw;
     dc.uncox = tech.uncox;
     dc.upcox = tech.upcox;
     MnaSystem sys = build_mna(c, std::string(), used, &dc);
-
-    DcSolution out;
-    out.params = sys.params;
 
     ex det = bareiss_det(sys.Y);
     if (det.expand().is_zero())
         throw std::runtime_error(
             "DC: MNA matrix is singular -- check for floating nodes or missing "
             "ground");
+
+    DcSolution out;
+    out.params = sys.params;
 
     std::map<int, ex> sol;
     auto solution = [&](int k) -> ex {
@@ -297,18 +345,29 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         bool has_vd = sys.branch_idx.count("Vdsat:" + cc.ref) != 0;
         if (!has_id && !has_vd) continue;
         out.mosfets.push_back(cc.ref);
+        ex gm = reg_param(out.params, cc, "gm");
         if (has_id) {
             out.id[cc.ref] = branch_val("Id:", cc.ref);
+            // The saturation voltage Vdsat = 2*Id/gm is a plain report quantity.
+            out.vov[cc.ref] = (2 * out.id[cc.ref] / gm).normal();
         } else {
-            // The Mode 1 unknown is X = 2*Id/gm (Vdsat for an NMOS, Vov for a
-            // PMOS, both signed), so Id = X*gm/2 directly.
-            ex gm = reg_param(out.params, cc, "gm");
-            out.id[cc.ref] = (branch_val("Vdsat:", cc.ref) * gm / 2).normal();
+            // The Mode 1 unknown is X = 2*Id/gm (Vdsat, signed).
+            ex xval = branch_val("Vdsat:", cc.ref);
+            out.vov[cc.ref] = xval.normal();
+            if (tech.dc_mode == DcMode::GmOverId) {
+                double od = 0.0;
+                ex ev = out.params.eval_real(xval);
+                if (GiNaC::is_a<GiNaC::numeric>(ev))
+                    od = GiNaC::ex_to<GiNaC::numeric>(ev).to_double();
+                out.params.set("Vdsat_" + cc.ref, od, UnitClass::Volt);
+                // Report the actual solved current gm*Vdsat/2: for a
+                // current-driven device (a mirror leg) the KCL value collapses
+                // to the input current (I1), just as in the square-law mode.
+                out.id[cc.ref] = (xval * gm / 2).normal();
+            } else {
+                out.id[cc.ref] = (xval * gm / 2).normal();
+            }
         }
-        // The saturation voltage Vdsat = 2*Id/gm is an unknown in Mode 1 and a
-        // plain report quantity in Mode 2.
-        out.vov[cc.ref] = (2 * out.id[cc.ref] / reg_param(out.params, cc, "gm"))
-                              .normal();
     }
 
     // Mode 2 (square law): solve each overdrive from the drain current and the
@@ -327,37 +386,60 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
             auto it = sys.branch_idx.find("Id:" + cc.ref);
             if (it == sys.branch_idx.end()) continue;
             std::string wref = cc.mirror_ref.empty() ? cc.ref : cc.mirror_ref;
-            int mult = cc.multiplicity();
             ex wsym = cc.mirror_ref.empty()
                           ? out.params.get("W_" + wref)
-                          : ex(mult) * out.params.get("W_" + wref);
+                          : ex(cc.mirror_num()) *
+                                out.params.get("W_" + wref) /
+                                ex(cc.mirror_dn());
             ex lsym = out.params.get("L_" + wref);
             ex ucox = out.params.get((cc.kind == Kind::NMOS) ? "unCox"
                                                             : "upCox");
             int sgn = (cc.kind == Kind::NMOS) ? 1 : -1;
-            out.params.set("Vov_" + cc.ref, 0.2, UnitClass::Volt);
-            ex vov = out.params.get("Vov_" + cc.ref);
-            gm_to_vov[out.params.get(param_symbol(cc, "gm"))] =
-                (ucox * wsym * vov / lsym).normal();
+            ex th = out.params.get((cc.kind == Kind::NMOS) ? "Vthn" : "Vthp");
+            // Mode 2 is the square law in the device's gate-source voltage:
+            //   gm = uCox*(W/L)*(Vgs - Vth),  Id = 1/2*uCox*(W/L)*(Vgs - Vth)^2
+            // so no "Vdsat" symbol appears in this mode.
+            ex gm_sym = out.params.get(param_symbol(cc, "gm"));
+            ex vgs_ex = (node_of(cc.nodes[1]) - node_of(cc.nodes[2])).normal();
+            double vgs_est = 0.0;
+            {
+                ex ev = out.params.eval_real(vgs_ex);
+                if (GiNaC::is_a<GiNaC::numeric>(ev))
+                    vgs_est = GiNaC::ex_to<GiNaC::numeric>(ev).to_double();
+            }
+            out.params.set("Vgs_" + cc.ref, vgs_est, UnitClass::Volt);
+            ex vgs_sym = out.params.get("Vgs_" + cc.ref);
+            ex vov = (vgs_sym - sgn * th).normal();
+            gm_to_vov[gm_sym] = (ucox * wsym * vov / lsym).normal();
             // Vov = sqrt(2*Id*L/(uCox*W)) using the KCL current with gm already
             // replaced (so no gm survives). For a current-driven device (a
             // mirror leg) this is clean; for a gate-driven device the current
             // itself depends on Vov, so the sqrt would be self-referential --
             // there Vov stays the symbol and Vgs - Vth is the meaningful form.
             ex id_sub = out.id[cc.ref];
-            ex gm_sym = out.params.get(param_symbol(cc, "gm"));
             id_sub = id_sub.subs(gm_sym == (ucox * wsym * vov / lsym));
             ex r2 = (2 * sgn * id_sub * lsym / (ucox * wsym)).normal();
-            ex vov_val = sqrt(r2);
             if (!r2.has(vov)) {
-                vov_to_val[vov] = vov_val;
-                // A 1/Vov factor would otherwise leave a second radical that
-                // GiNaC will not combine with a numerator sqrt; replace Vov by
-                // the equivalent r2/Vov so every term has at most one radical.
-                vov_recip[vov] = (r2 / vov).normal();
-                out.vov[cc.ref] = vov_val.normal();
+                // Current-driven (a mirror leg): Id comes from KCL and does not
+                // depend on the overdrive, so Vgs = Vth + sqrt(2*Id*L/(uCox*W)).
+                ex ov = sqrt(r2);
+                vov_to_val[vgs_sym] = (ov + sgn * th).normal();
+                // The Vov = r2/Vov identity keeps every term to one radical.
+                vov_recip[vgs_sym] = (r2 / vov + sgn * th).normal();
+                out.vov[cc.ref] = ov.normal();
+            } else if (!vgs_ex.has(gm_sym) && !vgs_ex.has(vgs_sym)) {
+                // Gate driven from a fixed source: Vgs is a plain node
+                // difference, so substitute it and the current collapses to
+                // (V1 - Vthn)^2.
+                vov_to_val[vgs_sym] = vgs_ex.normal();
+                out.vov[cc.ref] = (vgs_ex - sgn * th).normal();
             } else {
-                out.vov[cc.ref] = vov; // gate-driven: keep the overdrive symbol
+                // Source degeneration: the gate-source voltage itself depends on
+                // the device current, so keep it as the named symbol Vgs_<ref>
+                // and present the current as the square law in (Vgs - Vth).
+                out.id[cc.ref] =
+                    (ucox * wsym / lsym * vov * vov / 2).normal();
+                out.vov[cc.ref] = vov;
             }
         }
     }
@@ -390,15 +472,43 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
         ex vgs = (node_of(cc.nodes[1]) - node_of(cc.nodes[2]));
         ex vds = (node_of(cc.nodes[0]) - node_of(cc.nodes[2]));
         if (tech.dc_mode == DcMode::SquareLaw) {
-            // Vgs = Vov + Vth stays in the low-entropy overdrive form; Vds and
+            // Vgs = Vov + sgn*Vth keeps the low-entropy overdrive form; Vds and
             // the node voltages take the solved sqrt(...) values.
-            out.vgs[cc.ref] =
-                (out.params.get("Vth") + out.params.get("Vov_" + cc.ref))
-                    .normal();
+            const int sgn = (cc.kind == Kind::NMOS) ? 1 : -1;
+            ex th = out.params.get((cc.kind == Kind::NMOS) ? "Vthn" : "Vthp");
+            out.vgs[cc.ref] = (sgn * th + out.vov[cc.ref]).normal();
             out.vds[cc.ref] = simplify(vds);
         } else {
             out.vgs[cc.ref] = vgs.normal();
             out.vds[cc.ref] = vds.normal();
+        }
+    }
+
+    // Top-down presentation: solve a second system in which each device is an
+    // ideal current source I(M<ref>) (no gate row), so each node voltage comes
+    // out as a linear, factored combination of the device currents. Skipped when
+    // that system is singular (a node fed only by device currents), in which case
+    // the caller keeps the device-parameter presentation.
+    if (!out.mosfets.empty()) {
+        for (int pass = 0; pass < 2 && !out.have_td; ++pass) {
+            MnaDcSupply tdc = dc;
+            tdc.current_sources = true;
+            tdc.current_sources_ro = (pass == 1);
+            MnaSystem td = build_mna(c, std::string(), used, &tdc);
+            for (const auto& ref : out.mosfets) {
+                double e = 0.0;
+                ex ev = out.params.eval_real(out.id[ref]);
+                if (GiNaC::is_a<GiNaC::numeric>(ev))
+                    e = GiNaC::ex_to<GiNaC::numeric>(ev).to_double();
+                td.params.set("I(" + ref + ")", e, UnitClass::Plain);
+            }
+            ex tdet = bareiss_det(td.Y);
+            if (tdet.expand().is_zero()) continue;
+            for (const auto& kv : td.node_idx)
+                out.node_v_td[kv.first] =
+                    (det_with_column(td.Y, kv.second, td.b) / tdet).normal();
+            out.have_td = true;
+            out.td_used_ro = (pass == 1);
         }
     }
     return out;

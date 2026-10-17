@@ -87,6 +87,13 @@ const char* kHowtoText =
     "      Drives every independent source and superposes the responses,\n"
     "      so there is no 'in' field.\n"
     "\n"
+    "  \"DC operating point\"\n"
+    "      The large-signal bias: node voltages and each device's Id/Vdsat.\n"
+    "      Pick the model with the 'mode' selector and set the supply rail\n"
+    "      (VDD) and Vthn/Vthp (uCox for square law) in 'DC analysis options'.\n"
+    "      A VDD symbol carries no value of its own -- the rail voltage is\n"
+    "      this analysis setting.\n"
+    "\n"
     "  \"PSR / PSRR\"\n"
     "      Ripple on the supply rail referred to the output; set which\n"
     "      supply symbol to perturb.\n"
@@ -114,10 +121,11 @@ const char* kExperimentalText =
     "Analysis panel.\n"
     "\n"
     "  DC analysis\n"
-    "      Large-signal operating point (three model modes). The card also\n"
-    "      holds the process settings: Vth, Is, uCox, the SPICE model file\n"
-    "      and per-device W/L. An ideal current-source output with no\n"
-    "      resistive load is genuinely floating and is reported as such.\n"
+    "      Large-signal operating point (three model modes). Pick the mode\n"
+    "      on the card, then set the supply rail, Vthn/Vthp/uCox and per-device\n"
+    "      W/L in 'DC analysis options'. An ideal\n"
+    "      current-source output with no resistive load is genuinely\n"
+    "      floating and is reported as such.\n"
     "\n"
     "  Differential / common-mode analysis\n"
     "      Adm, Acm and CMRR from the in+ / in- port nodes.\n"
@@ -399,7 +407,9 @@ void MainFrame::on_ignore_neg(wxCommandEvent&) {
                  "A component pair collapses when one is at least this many\n"
                  "times the other (10x = 20 dB): a 10k in parallel with a 1k\n"
                  "collapses to the 1k. A pole/zero is dropped when it is more\n"
-                 "than this many times the reference frequency."),
+                 "than this many times the reference frequency, and anything\n"
+                 "above the top of the sweep is dropped too: it lies outside\n"
+                 "the analysed band."),
              0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
     auto* buttons = new wxStdDialogButtonSizer();
     buttons->AddButton(new wxButton(&dlg, wxID_OK));

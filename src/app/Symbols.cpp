@@ -282,10 +282,11 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.line(-40, -10, -30, -10);
     t.line(-40, 10, -30, 10);
     if (fully_diff) {
-        // short horizontal output leads that start where the slanted edges
-        // meet the output pin heights
-        t.line(-2.3, -10, 22, -10);
-        t.line(-2.3, 10, 22, 10);
+        // Output leads run from the triangle's slanted edge (at y = +/-10 the
+        // edge is at x ~ 4.6) out to the pins, so the lead actually touches the
+        // body instead of floating beside it.
+        t.line(4.6, -10, 34, -10);
+        t.line(4.6, 10, 34, 10);
     } else {
         t.line(21.96, 0, 40, 0);
     }
@@ -293,14 +294,18 @@ void draw_opamp(Ctx& t, bool fully_diff) {
     t.polyline({{-30, -30}, {-30, 30}, {21.96, 0}}, true);
     t.w(kWire);
     if (fully_diff) {
-        // input + / - (inverting input is the lower one)
+        // inputs, marked inside the body near the left edge: + on the upper
+        // pin (in+), - on the lower one (in-)
         t.line(-24, -10, -18, -10);
         t.line(-21, -13, -21, -7);
         t.line(-24, 10, -18, 10);
-        // output marks moved further left: - on the top output, + below
-        t.line(-14, -10, -9, -10);
-        t.line(-12, -13, -12, -7); // plus on the lower output
-        t.line(-14, 10, -9, 10);   // minus on the upper output
+        // outputs, marked inside the body near the right edge: - on the upper
+        // pin (out-), + on the lower one (out+). The sign swap against the
+        // inputs is the standard FD-amp convention: each feedback resistor then
+        // runs straight across from an input to the output it feeds back to.
+        t.line(-8, -10, -3, -10);
+        t.line(-8, 10, -3, 10);
+        t.line(-5.5, 7.5, -5.5, 12.5);
     } else {
         t.line(-27, -10, -21, -10);
         t.line(-24, -13, -24, -7);
@@ -427,8 +432,9 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
     symbol_bbox(c, pl, bx0, by0, bx1, by1, 2.0);
 
     if (c.kind == Kind::VDD) {
-        // "VDD" above the glyph (supply rails read as a label on top), the
-        // DC value below it. Both are centred horizontally on the symbol.
+        // A supply rail always reads just "VDD" above the glyph. Its voltage
+        // is a DC-analysis setting, not a per-symbol value, so nothing is
+        // drawn underneath.
         double fs = 9.0;
         wxFont f = base;
         f.SetPointSize(int(fs));
@@ -439,14 +445,6 @@ void draw_symbol(wxDC& dc, const syms::Component& c, const Placement& pl,
         double cx = (bx0 + bx1) / 2.0;
         dc.SetTextForeground(kRefInk);
         dc.DrawText(ref_text, wxPoint(int(cx - rs.x / 2.0), int(by0 - rs.y)));
-        if (!c.value_text.empty()) {
-            f.SetWeight(wxFONTWEIGHT_NORMAL);
-            dc.SetFont(f);
-            wxString vt = wxString::FromUTF8(c.value_text) + " V";
-            wxSize vs = dc.GetTextExtent(vt);
-            dc.SetTextForeground(kValInk);
-            dc.DrawText(vt, wxPoint(int(cx - vs.x / 2.0), int(by1 + 2)));
-        }
         dc.SetTextForeground(kRefInk);
         dc.SetFont(base);
         return;
