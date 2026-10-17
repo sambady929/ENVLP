@@ -151,6 +151,19 @@ exception ABI.
 **Other 32-bit targets.** This is not specific to wasm: any platform with
 `cl_value_len < 32` has the same trap, so the patch is worth upstreaming.
 
+**Build flag.** CLN is compiled with `-O0`. Under Emscripten's optimiser it
+miscompiles — integer parsing and multiplication read out of bounds at `-O1` and
+`-O2`, and every trap disappears at `-O0`. `alloca` (the malloc-based fallback
+behaves identically), strict aliasing (`-fno-strict-aliasing` changes nothing) and
+the stack size were each ruled out. It is still fast enough in practice: with
+`-O0` a transfer function on a 5-transistor OTA takes about a second in the
+browser, and the RC low-pass about 300 ms.
+
+**Verified in a browser** against this build: `examples/rc_lowpass.scx` gives
+`H(s) = 1 / (1 + s*C1*R1)` and the OTA gives `H(s) = 1 / (1 + s*C1/gm_M1)`, with
+the LaTeX typeset by MathJax and the Bode plot drawn by Plotly; and the editor
+works against the real model (place, wire, marquee-select, rotate, delete, undo).
+
 ## Licensing
 
 GiNaC is GPL-2.0-or-later (CLN GPL-2.0-or-later, GMP LGPL-3.0-or-later). A site
