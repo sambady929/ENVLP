@@ -212,18 +212,22 @@ bool Document::join_wires(int i, int j) {
     return true;
 }
 
-void Document::join_with_neighbours(int wire_index) {
+int Document::join_with_neighbours(int wire_index) {
+    int wi = wire_index;
     for (int guard = 0; guard < 8; ++guard) {
         bool joined = false;
         for (size_t k = 0; k < wires.size(); ++k) {
-            if (int(k) == wire_index) continue;
-            if (join_wires(wire_index, int(k))) {
-                joined = true;
-                break;
-            }
+            if (int(k) == wi) continue;
+            if (!join_wires(wi, int(k))) continue;
+            // The merged wire took the place of the other one, so its index
+            // may have moved.
+            if (int(k) < wi) --wi;
+            joined = true;
+            break;
         }
         if (!joined) break;
     }
+    return wi;
 }
 
 // Remove every net label whose anchor no longer lies on a wire or a pin (e.g.

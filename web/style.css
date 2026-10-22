@@ -146,6 +146,8 @@ kbd {
 .prow.param > span { min-width: 52px; font-size: 12px; color: var(--text); }
 .prow.param input[type="checkbox"] { flex: 0 0 auto; width: auto; }
 .prow.param .mantissa { flex: 0 0 62px; }
+/* the coupling coefficient: a plain number between -1 and +1 */
+.prow.param .coupling { flex: 0 0 86px; }
 .prow.param .suffix { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
 /* a value with its SI suffix */
 .prow .si { display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; }

@@ -46,6 +46,9 @@ std::vector<ClipComp> g_clip_comps;
 std::vector<ClipWire> g_clip_wires;
 // The components the engine wants selected (a paste selects what it pasted).
 std::vector<std::string> g_selected;
+// The wire the last wire operation produced (after any joining), so the
+// front-end can keep extending the right wire.
+int g_last_wire = -1;
 
 // --- tiny JSON helpers (flat objects / arrays of flat objects) ------------
 std::string unesc(const std::string& s) {
@@ -321,6 +324,9 @@ std::string geometry() {
         js << q(g_selected[i]);
     }
     js << "]";
+    // --- the wire the last wire operation produced (after any joining), so
+    // the front-end can keep extending the right one.
+    js << ",\"last_wire\":" << g_last_wire;
     js << "}";
     return js.str();
 }
@@ -508,7 +514,7 @@ const char* envlp_doc_set(const char* ops_json) {
             g_doc.wires.push_back(w);
             g_doc.sync_wire_endpoints();
             // A wire that meets another one end to end becomes a single wire.
-            g_doc.join_with_neighbours(int(g_doc.wires.size()) - 1);
+            g_last_wire = g_doc.join_with_neighbours(int(g_doc.wires.size()) - 1);
         } else if (op == "wire_extend") {
             // Continue the wire that is being drawn: append the routed
             // segment (the desktop extends one wire, it does not start a new
@@ -540,7 +546,7 @@ const char* envlp_doc_set(const char* ops_json) {
             g_doc.bind_wire_ends(w);
             g_doc.sync_wire_endpoints();
             // Same here: the extended wire may meet another one end to end.
-            g_doc.join_with_neighbours(wi);
+            g_last_wire = g_doc.join_with_neighbours(wi);
         } else if (op == "move_wire") {
             // Drag a wire (or one of its segments). A segment moves
             // perpendicular to itself, so its neighbours stretch instead of

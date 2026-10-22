@@ -110,7 +110,9 @@ public:
     // end of another therefore leaves one wire, not a junction.
     bool join_wires(int i, int j);
     // Join a wire to any other wire it meets end to end (at either end).
-    void join_with_neighbours(int wire_index);
+    // Returns the index of the wire that survived: the merged one, which may
+    // have moved when the wire it was joined with was removed.
+    int join_with_neighbours(int wire_index);
     // Drop every net label whose anchor no longer lies on a wire or pin.
     void prune_orphan_labels();
 

@@ -486,19 +486,8 @@ function bindCanvas() {
     }
 
     if (ED.tool === 'wire') {
-      // Pressing on an existing wire drags it; pressing anywhere else starts
-      // a new one. Press and drag draws the wire in one go; a plain click
-      // keeps the click-click routing going.
-      const hit = hitWireSeg(w);
-      if (hit && !ED.wireFrom) {
-        ED.selection.clear();
-        ED.selWire = hit.wire;
-        ED.selSeg = hit.seg;
-        ED.drag = { mode: 'wire', wire: hit.wire, seg: hit.seg, sx: w.x, sy: w.y };
-        docSet([{ op: 'begin' }]);
-        afterChange();
-        return;
-      }
+      // In the wire tool a click always wires: it starts a wire, or commits
+      // the next segment. Moving a wire is the select tool's job.
       const started = !ED.wireFrom;
       wireClick(w);
       if (started) {
@@ -936,7 +925,6 @@ function wireClick(w) {
   const target = pin
     ? { x: pin.x, y: pin.y, pin }
     : { x: snap(w.x), y: snap(w.y), pin: null };
-
   if (!ED.wireFrom) {
     ED.wireFrom = target;
     ED.wirePts = [{ x: target.x, y: target.y }];
@@ -978,6 +966,9 @@ function wireCommit(target) {
   }
   docSet([op]);
   if (ED.wireIndex < 0) ED.wireIndex = (ED.doc.wires || []).length - 1;
+  // The engine may have joined the wire with another one, which moves it.
+  if (typeof ED.doc.last_wire === 'number' && ED.doc.last_wire >= 0)
+    ED.wireIndex = ED.doc.last_wire;
   const wire = ED.doc.wires && ED.doc.wires[ED.wireIndex];
   ED.wirePts = wire
     ? wire.pts.map((p) => ({ x: p[0], y: p[1] }))
@@ -998,12 +989,14 @@ function wireCommit(target) {
 // Commit the segment under the cursor (Enter) and leave wiring mode.
 function commitWireSegment() {
   if (!ED.wireFrom) return;
-  const w = toWorld(ED.mouse.x, ED.mouse.y);
-  const pin = hitPin(w);
-  const target = pin ? { x: pin.x, y: pin.y, pin } : { x: snap(w.x), y: snap(w.y), pin: null };
+  // ED.mouse is already in world coordinates.
+  const pin = hitPin({ x: ED.mouse.x, y: ED.mouse.y });
+  const target = pin
+    ? { x: pin.x, y: pin.y, pin }
+    : { x: snap(ED.mouse.x), y: snap(ED.mouse.y), pin: null };
   const last = ED.wirePts[ED.wirePts.length - 1];
   if (target.x === last.x && target.y === last.y) { endWiring(); return; }
-  wireClick(w);
+  wireClick(target);
   endWiring();
 }
 
@@ -1246,27 +1239,48 @@ function renderProps() {
           d.appendChild(sw);
         }
         const [num, suf] = splitSi(p.text || '');
+        // The coupling coefficient is a plain number between -1 and +1: no
+        // unit, no suffix, and a value outside the range snaps to the nearer
+        // end.
+        const coupling = (c.kind === 'K' && p.name === 'K');
         const val = document.createElement('input');
-        val.className = 'mantissa';
-        val.value = num;
-        val.title = (p.desc || p.name) + (p.unit ? ' [' + p.unit + ']' : '');
+        val.className = coupling ? 'coupling' : 'mantissa';
+        if (coupling) {
+          val.type = 'number';
+          val.min = '-1';
+          val.max = '1';
+          val.step = '0.01';
+          val.title = 'The coupling coefficient, between -1 and +1';
+        }
+        val.value = coupling ? (num || '0.9') : num;
         val.disabled = p.parasitic && !p.on;
         d.appendChild(val);
-        const sel = document.createElement('select');
-        sel.className = 'suffix';
-        for (const s of SI_SUFFIXES) {
-          const o = document.createElement('option');
-          o.value = s.s;
-          o.textContent = s.label;
-          sel.appendChild(o);
+        if (!coupling) {
+          const sel = document.createElement('select');
+          sel.className = 'suffix';
+          for (const s of SI_SUFFIXES) {
+            const o = document.createElement('option');
+            o.value = s.s;
+            o.textContent = s.label;
+            sel.appendChild(o);
+          }
+          sel.value = suf;
+          sel.disabled = p.parasitic && !p.on;
+          d.appendChild(sel);
+          const commit = () => docSet([{ op: 'param', ref: ref, name: p.name,
+                                         text: val.value.trim() + sel.value }]);
+          val.addEventListener('change', commit);
+          sel.addEventListener('change', commit);
+        } else {
+          val.addEventListener('change', () => {
+            let v = parseFloat(val.value);
+            if (!isFinite(v)) v = 0;
+            if (v > 1) v = 1;
+            if (v < -1) v = -1;
+            val.value = String(v);
+            docSet([{ op: 'param', ref: ref, name: p.name, text: String(v) }]);
+          });
         }
-        sel.value = suf;
-        sel.disabled = p.parasitic && !p.on;
-        d.appendChild(sel);
-        const commit = () => docSet([{ op: 'param', ref: ref, name: p.name,
-                                       text: val.value.trim() + sel.value }]);
-        val.addEventListener('change', commit);
-        sel.addEventListener('change', commit);
         host.appendChild(d);
       }
     }

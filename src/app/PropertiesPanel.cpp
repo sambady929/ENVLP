@@ -1,4 +1,5 @@
 #include "PropertiesPanel.h"
+#include "Style.h"
 #include "Theme.h"
 #include "core/Eng.h"
 
@@ -334,6 +335,35 @@ void PropertiesPanel::add_param_row(syms::Component* comp,
                                     const std::string& name,
                                     const std::string& unit, bool parasitic,
                                     const std::string& default_text) {
+    // The coupling coefficient is a plain number between -1 and +1: no unit
+    // and no SI suffix, and a value outside the range snaps to the nearer end.
+    if (comp->kind == syms::Kind::K && name == "K") {
+        auto* host = cards_host();
+        auto* card = new_card(this, wxString::FromUTF8(name));
+        wxString cur = wxString::FromUTF8(default_text);
+        if (comp->param_text.count(name) && !comp->param_text.at(name).empty())
+            cur = wxString::FromUTF8(comp->param_text.at(name));
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        auto* tc = new wxTextCtrl(card, wxID_ANY, cur, wxDefaultPosition,
+                                  wxSize(FromDIP(70), -1));
+        row->Add(tc, 0, wxALIGN_CENTER_VERTICAL);
+        row->Add(new wxStaticText(card, wxID_ANY, "(between -1 and +1)"), 0,
+                 wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+        card->GetSizer()->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
+        host->Add(card, 0, wxALL, FromDIP(4));
+        card->Fit();
+        tc->Bind(wxEVT_TEXT, [this, comp, name, tc](wxCommandEvent&) {
+            if (rebuilding_) return;
+            double v = 0.0;
+            if (!tc->GetValue().ToDouble(&v)) return;
+            if (v > 1.0) { v = 1.0; tc->ChangeValue(wxString("1")); }
+            if (v < -1.0) { v = -1.0; tc->ChangeValue(wxString("-1")); }
+            comp->param_text[name] = wxString::Format("%g", v).ToStdString();
+            doc_->dirty = true;
+            if (on_edited) on_edited();
+        });
+        return;
+    }
     std::string u = unit;
     if (u == "Ohm") u = "\xCE\xA9"; // Ω
     add_mantissa_exp(comp, name, parasitic, wxString::FromUTF8(default_text),
@@ -457,6 +487,7 @@ void PropertiesPanel::refresh(Document* doc, const std::string& selection) {
     // rebuild. The wrapping card container is recreated lazily.
     if (auto* old = GetSizer()) old->Clear(true);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
+    style::polish(this);
     SetSizer(sizer, true);
     cards_ = nullptr;
 

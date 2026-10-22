@@ -1198,9 +1198,20 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             const Component* lb = circ.find(c.links[1]);
             if (la && lb && la->kind == Kind::L && lb->kind == Kind::L &&
                 c.links[0] != c.links[1]) {
-                // coupling coefficient k (plain symbol) times the geometric
-                // mean of the two inductances gives the mutual inductance
+                // Coupling coefficient k (plain symbol) times the geometric
+                // mean of the two inductances gives the mutual inductance.
+                // k is a plain number between -1 and +1: a value outside
+                // that range is snapped to the nearer end, so a hand-typed
+                // 5 or -3 cannot produce a nonsense coupling.
                 ex k_val = reg_param(sys.params, c, "K");
+                {
+                    double kv = c.param_estimate("K");
+                    if (kv > 1.0 || kv < -1.0) {
+                        kv = (kv > 1.0) ? 1.0 : -1.0;
+                        sys.params.set(param_symbol(c, "K"), kv,
+                                       UnitClass::Plain);
+                    }
+                }
                 // Use each inductor's own value symbol (the L case may not have
                 // run yet: component order is arbitrary).
                 ex l1 = value_symbol_scaled(sys.params, circ, *la);
