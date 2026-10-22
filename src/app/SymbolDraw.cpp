@@ -308,19 +308,38 @@ void draw_amp(Ctx& t) {
     t.polyline({{-26, -26}, {-26, 26}, {21, 0}}, true);
 }
 
-// The transconductance blocks: the same triangles as the op-amp and the
-// amplifier, but marked "gm" so it is clear they convert a voltage into a
-// current.
-void draw_ota(Ctx& t) {
-    draw_opamp(t, false);
+// The transconductance blocks: a trapezoid -- a tall input side and a short
+// output side, the shape a current-output amplifier is drawn with -- with a
+// "gm" label inside.
+void draw_tranconductance(Ctx& t, bool differential) {
+    t.w(kWire);
+    if (differential) {
+        t.line(-30, -10, -20, -10);
+        t.line(-30, 10, -20, 10);
+    } else {
+        t.line(-30, 0, -20, 0);
+    }
     t.w(kBody);
-    t.text("gm", -4, 0, true);
+    t.polyline({{-20, -35}, {20, -17.5}, {20, 17.5}, {-20, 35}}, true);
+    t.w(kWire);
+    t.line(20, 0, 30, 0);
+    if (differential) {
+        // The polarity marks inside the body near the input edge: + on the
+        // upper input, - on the lower one.
+        t.line(-13, -10, -7, -10);
+        t.line(-10, -13, -10, -7);
+        t.line(-13, 10, -7, 10);
+    }
+    t.w(kBody);
+    t.text("gm", differential ? 3 : 0, 0, true);
+}
+
+void draw_ota(Ctx& t) {
+    draw_tranconductance(t, true);
 }
 
 void draw_gm(Ctx& t) {
-    draw_amp(t);
-    t.w(kBody);
-    t.text("gm", -3, 0, true);
+    draw_tranconductance(t, false);
 }
 
 void draw_ratio(Ctx& t, const std::string& mark) {

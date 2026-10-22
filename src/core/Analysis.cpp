@@ -1398,14 +1398,52 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr = analyze_ac(cs, s2);
     cr.kind = AnalysisKind::ShortCircuitCurrent;
     cr.title = "Short-circuit current at " + node;
-    cr.summary = "Isc(" + node + ") = " + cr.text;
-    cr.text = "Isc(" + node + ") = " + cr.text;
+
+    // The AC card names the internal branch it measures. That name is an
+    // implementation detail, so the report says what the current is instead.
+    const std::string branch = "I(__SHORT__)";
+    const std::string branch_tex = "I(\\_\\_SHORT\\_\\_)";
+    const std::string nice = "Isc(" + node + ")";
+    auto swap = [&](std::string t) {
+        size_t p;
+        while ((p = t.find(branch_tex)) != std::string::npos)
+            t.replace(p, branch_tex.size(), nice);
+        while ((p = t.find(branch)) != std::string::npos)
+            t.replace(p, branch.size(), nice);
+        return t;
+    };
+    cr.report = swap(cr.report);
+    cr.latex_report = swap(cr.latex_report);
     // The AC card's report header says "AC analysis"; this is the short-
     // circuit current, so the header is replaced.
     const std::string ac_head = "AC analysis -- superposition of source AC values\n";
     if (cr.report.compare(0, ac_head.size(), ac_head) == 0)
         cr.report = "Short-circuit current at " + node + "\n" +
                     cr.report.substr(ac_head.size());
+    const std::string ac_tex = "AC (superposition of source AC values):\n";
+    if (cr.latex_report.compare(0, ac_tex.size(), ac_tex) == 0)
+        cr.latex_report = "Short-circuit current at " + node + ":\n" +
+                          cr.latex_report.substr(ac_tex.size());
+    // ... and the short itself is not one of the circuit's sources, so it has
+    // no line in the per-source contributions.
+    {
+        size_t p;
+        while ((p = cr.report.find("  __SHORT__:")) != std::string::npos) {
+            const size_t e = cr.report.find('\n', p);
+            if (e == std::string::npos) {
+                cr.report.erase(p);
+                break;
+            }
+            cr.report.erase(p, e - p + 1);
+        }
+    }
+    // The AC card's text is "<branch> = <value>"; keep the value, drop the
+    // branch name.
+    std::string value = cr.text;
+    const size_t eq = value.find(" = ");
+    if (eq != std::string::npos) value = value.substr(eq + 3);
+    cr.text = nice + " = " + value;
+    cr.summary = nice + " = " + value;
     return cr;
 }
 

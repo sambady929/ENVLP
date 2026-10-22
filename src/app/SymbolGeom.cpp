@@ -57,10 +57,13 @@ std::vector<Pt> pin_offsets(Kind k) {
         // p+ , p- , s+ , s-
         return {{-40, -20}, {-40, 20}, {40, -20}, {40, 20}};
     case Kind::OPAMP:
-    case Kind::OTA:
         // in+ , in- , out. The inputs sit at +/-10 (one grid step) so a
         // grid-placed op-amp lands its pins on the grid too.
         return {{-40, -10}, {-40, 10}, {40, 0}};
+    case Kind::OTA:
+        // in+ , in- , out on the transconductance trapezoid: the inputs
+        // sit on the tall left side, the output on the short right one.
+        return {{-30, -10}, {-30, 10}, {30, 0}};
     case Kind::FDOPAMP:
         // in+ , in- , out+ , out-.
         //
@@ -195,11 +198,11 @@ LocalBox body_local_box(Kind k) {
     case Kind::CCCS:
     case Kind::CCVS: return {-26, -20, 26, 20};
     case Kind::OPAMP: return {-26, -22, 30, 22};
-    case Kind::OTA: return {-26, -22, 30, 22};
+    case Kind::OTA: return {-20, -35, 30, 35};
     case Kind::NULLOR: return {-26, -20, 26, 20};
     case Kind::FDOPAMP: return {-26, -22, 34, 22};
     case Kind::AMP: return {-26, -20, 30, 20};
-    case Kind::GM: return {-26, -20, 30, 20};
+    case Kind::GM: return {-20, -35, 30, 35};
     case Kind::IS: return {-16, -16, 16, 16};
     case Kind::SBLK: return {-16, -16, 16, 16};
     case Kind::T: return {-40, -22, 40, 22};
