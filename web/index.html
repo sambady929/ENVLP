@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=13">
+<link rel="stylesheet" href="style.css?v=15">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -253,27 +253,74 @@
   <section>
     <h3>Getting started</h3>
     <ol>
-      <li>Pick a part in the <b>palette</b> (left), then click the canvas to
-        place it. <kbd>Space</kbd> rotates the ghost,
-        <kbd>Shift+Space</kbd> flips it, <kbd>Esc</kbd> cancels.</li>
-      <li><b>Wire</b> (<kbd>W</kbd>): click to start, click the destination —
-        a pin or any grid point. <kbd>Space</kbd> while wiring swaps the route
-        between horizontal-first and vertical-first, <kbd>Enter</kbd> ends the
-        wire and <kbd>Esc</kbd> cancels. Moving a part drags the wires
-        attached to its pins; a wire segment can be dragged on its own.</li>
-      <li><b>Net labels</b> (<kbd>N</kbd>): type space-separated names
-        (<code>out in</code>), then click each net. Click a label to select
-        it and press <kbd>Del</kbd> to remove it.</li>
-      <li>Place at least one <b>GND</b> symbol.</li>
-      <li>Choose an <b>analysis</b> on the right, fill in the fields it asks
-        for, and press <b>Run analysis</b> (<kbd>Ctrl+Enter</kbd>).</li>
-      <li>Read the typeset <b>Math</b> and the <b>Report</b> on the left, the
-        <b>Plot</b> on the right.</li>
+      <li><b>Place the parts.</b> Click a part in the palette on the left, then
+        click the canvas to drop it. The letter keys do the same: R resistor,
+        C capacitor, L inductor, V voltage source, B current source,
+        O op-amp, M MOSFET (press M again for the P-channel), Q BJT (again for
+        the PNP), G ground, Shift+G supply rail, D diode, T transformer,
+        I for the full list. While you are placing, Space rotates the part
+        and Shift+Space flips it; Esc cancels.</li>
+
+      <li><b>Wire them up.</b> Press W, click a pin or any grid point to
+        start a wire, then click the destination. Every click commits a
+        segment and the wire carries on from where it stopped. Space swaps
+        the route between horizontal-first and vertical-first, Enter ends the
+        wire, Esc cancels it. Moving a part takes the wires attached to its
+        pins with it, and a wire can be dragged: the segment under the
+        cursor moves sideways and the rest of the route stretches to
+        follow.</li>
+
+      <li><b>Name the nets.</b> Press N, type one or more names separated by
+        spaces, then click each net in turn. Click a name to select it and
+        press Del to remove it.</li>
+
+      <li><b>Ground the circuit.</b> At least one GND symbol is required. The
+        supply rail (VDD) is optional; its voltage is an operating-point
+        setting, not a value on the symbol.</li>
+
+      <li><b>Run an analysis.</b> Pick one on the right, fill in the fields it
+        asks for, and press <b>Run analysis</b> (Ctrl+Enter). The left pane
+        shows the result typeset (Math) and as text (Report); the right pane
+        shows the Bode, Nyquist, Nichols or noise plot.</li>
+
+      <li><b>Adjust the parts.</b> Click a part to edit its value, its model
+        parameters (gm, ro, Cgs, and the passives' parasitics) and its
+        copies. Each model parameter has its own switch: a transistor's
+        capacitors are off until you turn them on, and a passive is ideal
+        until you give it a stray capacitance or a winding resistance.</li>
     </ol>
-    <p class="note">Drag the thin dividers between the panels to resize them.
-      A part's <b>model parameters</b> (gm, ro, Cgs and the passives'
-      parasitics) are in the properties panel on the right — click the part
-      first.</p>
+    <p class="note">Drag the thin dividers between the panels to resize
+      them.</p>
+  </section>
+
+  <section>
+    <h3>Ignoring negligible terms</h3>
+    <p>ENVLP reports the <i>low-entropy</i> form of a result: every term is
+      ranked by its worst-case magnitude over the sweep, and the terms far
+      below the dominant one are dropped. The answer then reads like the
+      expression a designer would write by hand instead of a page of
+      negligible products.</p>
+    <p>Two thresholds decide what counts as negligible. They live in the
+      <i>negligible terms</i> section under the analysis options:</p>
+    <dl class="analyses">
+      <dt>Component value threshold</dt>
+      <dd>A series or parallel pair collapses when one element is at least
+        this many times the other. 10 (which is 20 dB) means a 10k in
+        parallel with a 1k is reported as the 1k.</dd>
+      <dt>Pole / zero threshold</dt>
+      <dd>A pole or a zero is dropped when it is more than this many times
+        the reference frequency. A pole above the top of the sweep is
+        dropped as well — it lies outside the analysed band.</dd>
+      <dt>Reference</dt>
+      <dd>What the pole/zero threshold is measured against: the
+        <i>dominant pole / zero</i>, or the <i>unity-gain bandwidth</i> (the
+        latter drops everything beyond a multiple of the crossover
+        frequency).</dd>
+    </dl>
+    <p><i>Ignore negligible terms</i> switches the whole reduction on and
+      off; with it off you get the exact, fully expanded expression.
+      <i>Approx roots</i> is independent: it lets a factor that cannot be
+      factored exactly be given by its numeric roots instead.</p>
   </section>
 
   <section>
@@ -281,16 +328,16 @@
     <table class="keys">
       <tr><td><kbd>R</kbd> <kbd>C</kbd> <kbd>L</kbd></td><td>resistor, capacitor, inductor</td></tr>
       <tr><td><kbd>V</kbd> <kbd>B</kbd></td><td>voltage source, current source</td></tr>
-      <tr><td><kbd>M</kbd></td><td>N-MOSFET (press <kbd>M</kbd> again) P-MOSFET</td></tr>
-      <tr><td><kbd>Q</kbd></td><td>NPN (press <kbd>Q</kbd> again) PNP</td></tr>
-      <tr><td><kbd>D</kbd> or <kbd>Y</kbd></td><td>diode</td></tr>
+      <tr><td><kbd>M</kbd> / <kbd>Shift+M</kbd></td><td>N-MOSFET / P-MOSFET (press M again to switch)</td></tr>
+      <tr><td><kbd>Q</kbd> / <kbd>Shift+Q</kbd></td><td>NPN / PNP (press Q again to switch)</td></tr>
+      <tr><td><kbd>D</kbd></td><td>diode</td></tr>
       <tr><td><kbd>O</kbd></td><td>op-amp</td></tr>
-      <tr><td><kbd>G</kbd></td><td>ground (<kbd>Shift+G</kbd>) supply rail (VDD)</td></tr>
+      <tr><td><kbd>G</kbd> / <kbd>Shift+G</kbd></td><td>ground / supply rail (VDD)</td></tr>
       <tr><td><kbd>T</kbd> <kbd>K</kbd></td><td>transformer, coupled inductors</td></tr>
       <tr><td><kbd>I</kbd></td><td>component menu (every part)</td></tr>
       <tr><td><kbd>W</kbd></td><td>wire tool</td></tr>
       <tr><td><kbd>N</kbd></td><td>place net label(s)</td></tr>
-      <tr><td><kbd>Space</kbd></td><td>rotate the ghost / selection 90°
+      <tr><td><kbd>Space</kbd></td><td>rotate the part being placed or the selection by 90°
         (while wiring: swap the route)</td></tr>
       <tr><td><kbd>Shift+Space</kbd></td><td>flip horizontally</td></tr>
       <tr><td><kbd>Ctrl+Space</kbd></td><td>flip vertically</td></tr>
@@ -310,42 +357,60 @@
     <h3>What each analysis does</h3>
     <dl class="analyses">
       <dt>Transfer function H(s)</dt>
-      <dd>the small-signal gain V(out)/V(in). Reports the DC gain, the pole/zero
-        corner frequencies and the dominant time constant.</dd>
+      <dd>The small-signal gain from the input source to the output, as a
+        rational function of s. It reports the DC gain, the pole and zero
+        corner frequencies, the dominant time constant and the factored
+        form of the result.</dd>
 
       <dt>AC (small-signal)</dt>
-      <dd>drives every independent source and superposes the responses, so
-        there is no <i>in</i> field.</dd>
+      <dd>The small-signal response of the whole circuit: every independent
+        source is excited with its own AC value and the responses are
+        superposed. There is no input source to name, so the analysis has no
+        <i>in</i> field.</dd>
 
       <dt>DC operating point</dt>
-      <dd>the large-signal bias: node voltages and each device's Id/Vdsat.
-        The model, the supply rail and the thresholds are set in the
-        <i>operating point</i> section below the analysis options.</dd>
+      <dd>The large-signal bias of the circuit: the voltage at every node and
+        the operating point of every device (its drain current and its
+        saturation voltage). The device model, the supply rail and the
+        threshold voltages are set in the <i>operating point</i> section,
+        which belongs to this analysis alone.</dd>
 
       <dt>PSR / PSRR</dt>
-      <dd>ripple on the supply rail referred to the output.</dd>
+      <dd>How much of the ripple on the supply rail reaches the output: the
+        power supply rejection, referred to the output.</dd>
 
       <dt>Loop gain (return ratio)</dt>
-      <dd>Rosenstark return ratio: name the amplifier in <i>ref. amplifier</i>
-        — the part whose gain is set to zero to break the loop.</dd>
+      <dd>The return ratio of the feedback loop, by the Rosenstark method.
+        Name the amplifier in <i>ref. amplifier</i>: it is the part whose
+        gain is set to zero to break the loop. The report gives the
+        asymptotic gain, the return ratio, the feedback factor and the
+        closed-loop gain.</dd>
 
       <dt>Short-circuit current</dt>
-      <dd>the output current into a short.</dd>
+      <dd>The current that flows into the output node when it is shorted to
+        ground. The short is the excitation, so this analysis has no input
+        source to name either.</dd>
 
-      <dt>Input impedance / Output impedance</dt>
-      <dd>Zin at the input port; Zout with every source turned off (the
-        output-impedance analysis has no <i>in</i> field).</dd>
+      <dt>Input impedance</dt>
+      <dd>The impedance seen by the input source: the voltage across it per
+        amp of drive. It is the source's own response, so it needs the input
+        source and no output.</dd>
+
+      <dt>Output impedance</dt>
+      <dd>The impedance seen looking back into the output, with every source
+        turned off. It needs the output node and no input source.</dd>
 
       <dt>Noise</dt>
-      <dd>output and input-referred noise density, integrated over the sweep
-        band, with a per-source contribution breakdown.</dd>
+      <dd>The output noise density and the input-referred noise, integrated
+        over the sweep band, with the contribution of each source broken
+        out.</dd>
 
-      <dt>Differential (Adm/Acm/CMRR)</dt>
-      <dd>a differential drive (<i>in+</i> / <i>in−</i>) and a differential
-        output, given as a port such as <code>V(a)-V(b)</code>.</dd>
+      <dt>Differential (Adm / Acm / CMRR)</dt>
+      <dd>The differential gain, the common-mode gain and the common-mode
+        rejection ratio of a differential pair. The input is a differential
+        port (<i>in+</i> and <i>in−</i>) and the output is a port too, given
+        as two nodes.</dd>
     </dl>
-    <p class="note"><i>ignore negligible terms</i> drops terms far below the
-      dominant one, so the result stays readable — the low-entropy form.</p>
   </section>
 </dialog>
 
@@ -374,8 +439,8 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=13"></script>
-<script src="editor.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script src="envlp.js?v=15"></script>
+<script src="editor.js?v=15"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

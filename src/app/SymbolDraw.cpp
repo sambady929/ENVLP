@@ -308,6 +308,21 @@ void draw_amp(Ctx& t) {
     t.polyline({{-26, -26}, {-26, 26}, {21, 0}}, true);
 }
 
+// The transconductance blocks: the same triangles as the op-amp and the
+// amplifier, but marked "gm" so it is clear they convert a voltage into a
+// current.
+void draw_ota(Ctx& t) {
+    draw_opamp(t, false);
+    t.w(kBody);
+    t.text("gm", -4, 0, true);
+}
+
+void draw_gm(Ctx& t) {
+    draw_amp(t);
+    t.w(kBody);
+    t.text("gm", -3, 0, true);
+}
+
 void draw_ratio(Ctx& t, const std::string& mark) {
     t.w(kWire);
     t.line(-30, 0, -22, 0);
@@ -384,8 +399,10 @@ void draw_body(Ctx& t, Kind k) {
     case Kind::PNP: draw_bjt(t, k); break;
     case Kind::NULLOR: draw_nullor(t); break;
     case Kind::OPAMP: draw_opamp(t, false); break;
+    case Kind::OTA: draw_ota(t); break;
     case Kind::FDOPAMP: draw_opamp(t, true); break;
     case Kind::AMP: draw_amp(t); break;
+    case Kind::GM: draw_gm(t); break;
     case Kind::IS: draw_ratio(t, "1/s"); break;
     case Kind::SBLK: draw_ratio(t, "s"); break;
     case Kind::T: draw_transformer(t); break;

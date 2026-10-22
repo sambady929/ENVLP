@@ -103,9 +103,10 @@ const char* envlp_symbol_art() {
         syms::Kind::NMOS,    syms::Kind::PMOS,    syms::Kind::NPN,
         syms::Kind::PNP,     syms::Kind::GND,     syms::Kind::VDD,
         syms::Kind::E,       syms::Kind::G,       syms::Kind::OPAMP,
-        syms::Kind::FDOPAMP, syms::Kind::AMP,     syms::Kind::T,
-        syms::Kind::K,       syms::Kind::NULLOR,  syms::Kind::IS,
-        syms::Kind::SBLK,    syms::Kind::CCCS,    syms::Kind::CCVS};
+        syms::Kind::OTA,     syms::Kind::FDOPAMP, syms::Kind::AMP,
+        syms::Kind::GM,      syms::Kind::T,       syms::Kind::K,
+        syms::Kind::NULLOR,  syms::Kind::IS,      syms::Kind::SBLK,
+        syms::Kind::CCCS,    syms::Kind::CCVS};
     std::string js = "{\"ok\":true,\"kinds\":{";
     bool first = true;
     for (syms::Kind k : kinds) {

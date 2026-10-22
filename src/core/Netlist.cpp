@@ -26,6 +26,8 @@ std::string kind_token(Kind k) {
         case Kind::K: return "K";
         case Kind::NULLOR: return "NULLOR";
         case Kind::OPAMP: return "OPAMP";
+        case Kind::OTA: return "OTA";
+        case Kind::GM: return "GM";
         case Kind::FDOPAMP: return "FDOPAMP";
         case Kind::AMP: return "AMP";
         case Kind::IS: return "IS";
@@ -56,6 +58,8 @@ std::string kind_display(Kind k) {
         case Kind::K: return "Inductor coupling";
         case Kind::NULLOR: return "Nullor";
         case Kind::OPAMP: return "Op-amp";
+        case Kind::OTA: return "OTA";
+        case Kind::GM: return "Gm";
         case Kind::FDOPAMP: return "Fully differential op-amp";
         case Kind::AMP: return "Amplifier";
         case Kind::IS: return "1/s block";
@@ -86,6 +90,8 @@ std::string ref_prefix(Kind k) {
         case Kind::K: return "K";
         case Kind::NULLOR: return "X";
         case Kind::OPAMP: return "U";
+        case Kind::OTA: return "U";
+        case Kind::GM: return "A";
         case Kind::FDOPAMP: return "U";
         case Kind::AMP: return "A";
         case Kind::IS: return "IS";
@@ -101,7 +107,8 @@ bool kind_from_token(const std::string& t, Kind& out) {
         Kind::R,    Kind::C,   Kind::L,     Kind::V,  Kind::I,  Kind::E,
         Kind::G,    Kind::NMOS, Kind::PMOS, Kind::NPN, Kind::PNP, Kind::GND,
         Kind::VDD,  Kind::D,   Kind::T,     Kind::K,  Kind::NULLOR,
-        Kind::OPAMP, Kind::FDOPAMP, Kind::AMP, Kind::IS, Kind::SBLK,
+        Kind::OPAMP, Kind::OTA, Kind::FDOPAMP, Kind::AMP, Kind::GM,
+        Kind::IS, Kind::SBLK,
         Kind::CCCS, Kind::CCVS};
     for (Kind k : all) {
         if (kind_token(k) == t) {
@@ -121,6 +128,7 @@ int pin_count(Kind k) {
         case Kind::I:
         case Kind::D:
         case Kind::AMP:
+        case Kind::GM:
         case Kind::IS:
         case Kind::SBLK: return 2;
         case Kind::E:
@@ -136,6 +144,7 @@ int pin_count(Kind k) {
         case Kind::T: return 4;
         case Kind::K: return 0;
         case Kind::OPAMP: return 3;
+        case Kind::OTA: return 3;
         case Kind::NULLOR: return 4;
         case Kind::FDOPAMP: return 4;
     }
@@ -151,7 +160,9 @@ int branch_count(Kind k) {
         case Kind::IS:
         case Kind::SBLK:
         case Kind::OPAMP:
+        case Kind::OTA:
         case Kind::AMP:
+        case Kind::GM:
         case Kind::NULLOR:
         case Kind::T:
         case Kind::FDOPAMP:
@@ -192,7 +203,9 @@ std::vector<std::string> pin_names(Kind k) {
         case Kind::CCVS: return {"ctrl+", "ctrl-", "out+", "out-"};
         case Kind::NULLOR: return {"in+", "in-", "out+", "out-"};
         case Kind::OPAMP: return {"in+", "in-", "out"};
+        case Kind::OTA: return {"in+", "in-", "out"};
         case Kind::FDOPAMP: return {"in+", "in-", "out+", "out-"};        case Kind::AMP:
+        case Kind::GM:
         case Kind::IS:
         case Kind::SBLK: return {"in", "out"};
     }
@@ -317,8 +330,10 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         case Kind::L: return inductor;
         case Kind::T: return transformer;
         case Kind::OPAMP:
+        case Kind::OTA:
         case Kind::FDOPAMP:
-        case Kind::AMP: return opamp;
+        case Kind::AMP:
+        case Kind::GM: return opamp;
         default: return none;
     }
 }

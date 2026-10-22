@@ -339,8 +339,10 @@ const char* envlp_doc_serialize() {
     return dup("{\"ok\":true,\"scx\":" + q(g_doc.serialize()) + "}");
 }
 
-// The palette: one entry per placeable kind, with its display name and the
-// reference prefix the document will hand out.
+    // The palette: one entry per placeable kind, with its display name and the
+    // reference prefix the document will hand out. The order is the one the
+    // palette shows: the passives and the transistors, then the amplifiers,
+    // then the controlled sources together, then the ideal blocks.
 const char* envlp_doc_palette() {
     std::ostringstream js;
     js << "{\"ok\":true,\"kinds\":[";
@@ -349,10 +351,12 @@ const char* envlp_doc_palette() {
                          syms::Kind::V, syms::Kind::I, syms::Kind::D,
                          syms::Kind::NMOS, syms::Kind::PMOS, syms::Kind::NPN,
                          syms::Kind::PNP, syms::Kind::GND, syms::Kind::VDD,
-                         syms::Kind::E, syms::Kind::G, syms::Kind::OPAMP,
-                         syms::Kind::FDOPAMP, syms::Kind::AMP, syms::Kind::T,
-                         syms::Kind::K, syms::Kind::NULLOR, syms::Kind::IS,
-                         syms::Kind::SBLK, syms::Kind::CCCS, syms::Kind::CCVS}) {
+                         syms::Kind::OPAMP, syms::Kind::OTA,
+                         syms::Kind::FDOPAMP, syms::Kind::AMP, syms::Kind::GM,
+                         syms::Kind::T, syms::Kind::K, syms::Kind::NULLOR,
+                         syms::Kind::E, syms::Kind::G,
+                         syms::Kind::CCCS, syms::Kind::CCVS,
+                         syms::Kind::IS, syms::Kind::SBLK}) {
         if (!first) js << ",";
         first = false;
         js << "{\"token\":" << q(syms::kind_token(k)) << ",\"label\":"

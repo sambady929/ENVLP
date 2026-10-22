@@ -128,6 +128,19 @@ ex amp_gain(ParamTable& pt, const Component& c) {
     return (a < 0.0) ? -sym : sym;
 }
 
+// A transconductance amplifier's gain: the symbol gm_<ref>, with the
+// component's own value (e.g. "1m" = 1 mS). A negative value_text makes the
+// symbol negative, like the op-amp's gain.
+ex amp_gm(ParamTable& pt, const Component& c) {
+    std::string name = "gm_" + c.ref;
+    ex sym = pt.get(name);
+    double g = c.estimate();
+    double mag = std::fabs(g);
+    if (!(mag > 0.0) || !std::isfinite(mag)) mag = 1e-3;
+    pt.set(name, mag, UnitClass::Plain);
+    return (g < 0.0) ? -sym : sym;
+}
+
 // The op-amp's gain-bandwidth product as a symbol GBW_<ref>, in *rad/s* (the
 // user enters Hz, so we convert: the symbol is the unity-gain angular
 // frequency). This keeps the symbolic pole A/GBW free of explicit 2*pi terms.
@@ -1036,6 +1049,47 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             if (on >= 0) sys.Y(on, k) -= 1;
             if (ip >= 0) sys.Y(k, ip) += 1;
             if (im >= 0) sys.Y(k, im) -= 1;
+            break;
+        }
+        case Kind::OTA: {
+            // A transconductance amplifier: the output current is
+            // gm*(v(in+) - v(in-)), delivered to the output node. Unlike the
+            // op-amp (a Thevenin source with its output resistance in
+            // series), the output resistance is a *parallel* resistance.
+            ex gm = amp_gm(sys.params, c);
+            ex gbw = amp_gbw(sys.params, c);
+            int ip = idx(nd[0]), im = idx(nd[1]), o = idx(nd[2]);
+            int k = sys.branch_idx.at(c.ref);
+            // The branch current i_k leaves the output node; the row says
+            // i_k + gm*(v(ip) - v(im)) = 0, so the amplifier *delivers*
+            // gm*(v(ip) - v(im)) into the load.
+            if (o >= 0) sys.Y(o, k) += 1;
+            sys.Y(k, k) += 1;
+            if (ip >= 0) sys.Y(k, ip) += gm;
+            if (im >= 0) sys.Y(k, im) -= gm;
+            // The dominant pole sits in the transconductance itself:
+            // i_k*(1 + s*gm/GBW) = -gm*(v(ip) - v(im)).
+            if (c.param_enabled("GBW") && c.param_estimate("GBW") > 0.0)
+                sys.Y(k, k) += s * gm / gbw;
+            // The output resistance, in parallel with the output.
+            if (c.param_enabled("Rout") && o >= 0)
+                stamp_adm(o, -1, ex(1) / reg_param(sys.params, c, "Rout"));
+            break;
+        }
+        case Kind::GM: {
+            // A transconductance: the same as the amplifier, but it converts
+            // the input voltage into an output current.
+            ex gm = amp_gm(sys.params, c);
+            ex gbw = amp_gbw(sys.params, c);
+            int a = idx(nd[0]), o = idx(nd[1]);
+            int k = sys.branch_idx.at(c.ref);
+            if (o >= 0) sys.Y(o, k) += 1;
+            sys.Y(k, k) += 1;
+            if (a >= 0) sys.Y(k, a) += gm;
+            if (c.param_enabled("GBW") && c.param_estimate("GBW") > 0.0)
+                sys.Y(k, k) += s * gm / gbw;
+            if (c.param_enabled("Rout") && o >= 0)
+                stamp_adm(o, -1, ex(1) / reg_param(sys.params, c, "Rout"));
             break;
         }
         case Kind::FDOPAMP: {

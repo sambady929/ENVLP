@@ -229,7 +229,9 @@ dialog.help::backdrop { background: rgba(31, 36, 48, .38); }
 table.keys { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.keys td { padding: 3px 8px 3px 0; vertical-align: top; }
 table.keys td:first-child { white-space: nowrap; width: 1%; }
-table.keys kbd { float: none; background: var(--muted); }
+/* In the help dialog the key sits next to its description, not floated to the
+   right -- that made "Wire (W)" read as "Wire ()". */
+.help kbd { float: none; background: var(--muted); }
 .help code { font-family: var(--mono); font-size: 12px; }
 
 /* the component menu (the I key) */

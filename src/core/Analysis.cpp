@@ -20,6 +20,20 @@ using GiNaC::is_a;
 
 namespace {
 
+// An underscore starts a subscript in LaTeX, so a name that carries one
+// (a branch like I(__SHORT__)) has to be escaped before it goes into the
+// typeset report -- otherwise MathJax reports "Missing open brace for
+// subscript".
+std::string latex_escape_underscores(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (char c : s) {
+        if (c == '_') out += "\\_";
+        else out += c;
+    }
+    return out;
+}
+
 PruneOptions opts_of(const AnalysisSpec& s) {
     PruneOptions o;
     o.f0_hz = s.f0_hz;
@@ -263,7 +277,12 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     {
         std::ostringstream lr;
         lr << "AC (superposition of source AC values):\n";
-        lr << out_desc << " = " << latex_rhs(p.latex) << "\n";
+        // The output description can carry a branch name with underscores
+        // (I(__SHORT__)); in LaTeX an underscore starts a subscript, so it
+        // has to be escaped or MathJax reports "Missing open brace for
+        // subscript".
+        lr << latex_escape_underscores(out_desc) << " = " << latex_rhs(p.latex)
+           << "\n";
         cr.latex_report = lr.str();
     }
     return cr;
