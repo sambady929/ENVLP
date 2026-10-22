@@ -1,0 +1,134 @@
+name: pages
+
+# Builds the WebAssembly engine and publishes the browser app to GitHub Pages.
+#
+# The site is entirely static -- index.html, app.js, envlp.js + envlp.wasm,
+# the MathJax/Plotly bundles and the example circuits -- so Pages needs no
+# server of its own. The WordPress embed then points at the Pages URL, which
+# means nothing has to be uploaded to the WordPress host at all.
+#
+# One-time setup (Settings -> Pages -> Build and deployment -> Source):
+#   "GitHub Actions"
+#
+# The site lands on https://sambady929.github.io/ENVLP/ and every path in the
+# page is relative, so it also works under any other sub-path.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  EMSDK_QUIET: '1'
+  # Pinned so the CI build matches the verified local one. Bump deliberately:
+  # the cache key includes it, so a new version rebuilds the dependencies.
+  EMSDK_VERSION: '6.0.12'
+
+jobs:
+  build:
+    name: Build the WebAssembly engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v2
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+
+      - name: Activate Emscripten
+        shell: bash
+        run: |
+          set -euo pipefail
+          # setup-emsdk usually puts emcc on PATH already; if it does not, find
+          # the SDK the same way tools/build_web.sh does -- node and python come
+          # with the SDK and emcc spawns both.
+          if ! command -v em++ >/dev/null 2>&1; then
+            for d in "${EMSDK:-}" "$HOME/emsdk" /emsdk /opt/emsdk /usr/local/emsdk; do
+              [ -n "$d" ] || continue
+              [ -f "$d/upstream/emscripten/em++.py" ] || continue
+              export EMSDK="$d"
+              for n in "$d"/node/*_64bit "$d"/python/*_64bit; do
+                if [ -d "$n" ]; then PATH="$n:$PATH"; fi
+              done
+              PATH="$d/upstream/emscripten:$PATH"
+              export EM_CONFIG="${EM_CONFIG:-$d/.emscripten}"
+              break
+            done
+          fi
+          command -v em++ >/dev/null 2>&1 || { echo "emsdk not found"; exit 1; }
+          em++ --version
+
+      - name: Cache the wasm dependency build
+        uses: actions/cache@v4
+        with:
+          # The prefix (build-web/deps) holds the installed GMP/CLN/GiNaC, and
+          # build-web/emscripten holds their sources *and* their object files,
+          # so a cache hit turns the whole dependency build into a no-op.
+          path: |
+            build-web/deps
+            build-web/emscripten
+          key: wasm-deps-${{ env.EMSDK_VERSION }}-${{ hashFiles('tools/build_deps.sh', 'tools/cln-int-ctor-patch.awk') }}
+          restore-keys: |
+            wasm-deps-${{ env.EMSDK_VERSION }}-
+
+      - name: Build the engine and lay out the site
+        shell: bash
+        run: |
+          set -euo pipefail
+          JOBS=$(nproc) bash tools/build_web.sh
+          ls -la web
+          test -s web/envlp.wasm
+          test -s web/envlp.js
+          test -s web/index.html
+          test -s web/mathjax/tex-svg.js
+          test -s web/plotly/plotly-basic.min.js
+          test -s web/examples/index.json
+
+      - name: Probe CLN on wasm32
+        shell: bash
+        run: bash tools/wasm-probes/run.sh
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        # No `enablement` here on purpose: that option refuses the default
+        # GITHUB_TOKEN and needs a PAT with the `repo` scope. Pages is turned
+        # on once by hand instead -- Settings -> Pages -> Source ->
+        # "GitHub Actions". This step then just reads the site's base path.
+        # A "Failed to get Pages site" error here means that setting is still
+        # on "Deploy from a branch".
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
