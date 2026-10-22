@@ -431,9 +431,8 @@ function hitWire(w) {
   const h = hitWireSeg(w);
   return h ? h.wire : -1;
 }
-// The wire *and* the segment under the cursor. Grabbing the body of a wire
-// moves the whole wire; grabbing it right at a vertex moves that segment (it
-// then moves perpendicular to itself, so its neighbours stretch).
+// The wire *and* the segment under the cursor: dragging a wire moves that
+// segment, perpendicular to itself, the way the desktop app does.
 function hitWireSeg(w) {
   let best = null, bd = 8 / ED.zoom;
   for (const wire of ED.doc.wires || []) {
@@ -446,11 +445,6 @@ function hitWireSeg(w) {
       if (d < bd) { bd = d; best = { wire: wire.i, seg: i - 1 }; }
     }
   }
-  if (!best) return null;
-  // Is the grab right on a vertex? Then it is that segment that moves.
-  const pts = (ED.doc.wires || [])[best.wire].pts;
-  const near = (p) => Math.hypot(p[0] - w.x, p[1] - w.y) < 8 / ED.zoom;
-  best.vertex = pts.some(near);
   return best;
 }
 // A net label under the cursor (so it can be selected and deleted).
@@ -495,12 +489,11 @@ function bindCanvas() {
       // a new one. Press and drag draws the wire in one go; a plain click
       // keeps the click-click routing going.
       const hit = hitWireSeg(w);
-      if (hit && !ED.wireFrom && !hit.vertex) {
+      if (hit && !ED.wireFrom) {
         ED.selection.clear();
         ED.selWire = hit.wire;
         ED.selSeg = hit.seg;
-        ED.drag = { mode: 'wire', wire: hit.wire, seg: -1, corner: null,
-                    sx: w.x, sy: w.y };
+        ED.drag = { mode: 'wire', wire: hit.wire, seg: hit.seg, sx: w.x, sy: w.y };
         docSet([{ op: 'begin' }]);
         afterChange();
         return;
@@ -559,15 +552,10 @@ function bindCanvas() {
       ED.selection.clear();
       ED.selWire = wh.wire;
       ED.selSeg = wh.seg;
-      // Grabbing a corner drags that corner (the neighbours stretch); grabbing
-      // the body of a wire drags the whole wire.
-      const pts = (ED.doc.wires || [])[wh.wire].pts;
-      let corner = null;
-      for (const p of pts) {
-        if (Math.hypot(p[0] - w.x, p[1] - w.y) < 8 / ED.zoom) { corner = p; break; }
-      }
-      ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.vertex ? wh.seg : -1,
-                  corner: corner, sx: w.x, sy: w.y };
+      // Grabbing a wire drags the *segment* under the cursor: it moves
+      // perpendicular to itself, so its neighbours stretch instead of the
+      // whole route going diagonal.
+      ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.seg, sx: w.x, sy: w.y };
       docSet([{ op: 'begin' }]);
       afterChange();
       return;
@@ -620,13 +608,7 @@ function bindCanvas() {
       if (!ddx && !ddy) return;
       ED.drag.lastDx = dx;
       ED.drag.lastDy = dy;
-      if (ED.drag.corner) {
-        // A corner: it moves, and the neighbours stretch to follow.
-        docSet([{ op: 'move_vertex', wire: ED.drag.wire,
-                  x: ED.drag.corner[0], y: ED.drag.corner[1], dx: ddx, dy: ddy }]);
-      } else {
-        docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: ddx, dy: ddy }]);
-      }
+      docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: ddx, dy: ddy }]);
       return;
     }
     if (ED.drag.mode === 'marquee') {

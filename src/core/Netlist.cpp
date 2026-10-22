@@ -43,8 +43,8 @@ std::string kind_display(Kind k) {
         case Kind::L: return "Inductor";
         case Kind::V: return "Voltage source";
         case Kind::I: return "Current source";
-        case Kind::E: return "VCVS (E)";
-        case Kind::G: return "VCCS (G)";
+        case Kind::E: return "VCVS";
+        case Kind::G: return "VCCS";
         case Kind::NMOS: return "N-MOSFET";
         case Kind::PMOS: return "P-MOSFET";
         case Kind::NPN: return "NPN BJT";
@@ -60,8 +60,8 @@ std::string kind_display(Kind k) {
         case Kind::AMP: return "Amplifier";
         case Kind::IS: return "1/s block";
         case Kind::SBLK: return "s block";
-        case Kind::CCCS: return "CCCS (F)";
-        case Kind::CCVS: return "CCVS (H)";
+        case Kind::CCCS: return "CCCS";
+        case Kind::CCVS: return "CCVS";
     }
     return "?";
 }

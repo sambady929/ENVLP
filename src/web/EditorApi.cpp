@@ -612,47 +612,6 @@ const char* envlp_doc_set(const char* ops_json) {
                 }
             }
             g_doc.sync_label_anchors();
-        } else if (op == "move_vertex") {
-            // Drag one corner of a wire. The route is rebuilt from the
-            // authored waypoints, so the neighbouring segments stretch to
-            // follow instead of the whole wire moving.
-            const int wi = int(getn(o, "wire", -1));
-            if (wi < 0 || wi >= int(g_doc.wires.size())) {
-                error = "no such wire";
-                continue;
-            }
-            const double dx = getn(o, "dx", 0), dy = getn(o, "dy", 0);
-            const envlp::Pt at{getn(o, "x", 0), getn(o, "y", 0)};
-            envlp::Wire& w = g_doc.wires[wi];
-            // The corner the user grabbed: the nearest authored waypoint.
-            int best = -1;
-            double bd = 15.0;
-            for (size_t i = 0; i < w.waypoints.size(); ++i) {
-                const double d = std::hypot(w.waypoints[i].first - at.first,
-                                           w.waypoints[i].second - at.second);
-                if (d < bd) { bd = d; best = int(i); }
-            }
-            if (best >= 0) {
-                w.waypoints[best].first += dx;
-                w.waypoints[best].second += dy;
-            } else {
-                // A free end: move it (a pin-bound end stays on its pin).
-                const size_t n = w.pts.size();
-                if (n >= 2) {
-                    const double d0 = std::hypot(w.pts.front().first - at.first,
-                                                w.pts.front().second - at.second);
-                    const double d1 = std::hypot(w.pts.back().first - at.first,
-                                                w.pts.back().second - at.second);
-                    if (d0 < d1 && w.a.kind != envlp::WireEnd::Kind::Pin) {
-                        w.pts.front().first += dx;
-                        w.pts.front().second += dy;
-                    } else if (w.b.kind != envlp::WireEnd::Kind::Pin) {
-                        w.pts.back().first += dx;
-                        w.pts.back().second += dy;
-                    }
-                }
-            }
-            g_doc.sync_wire_endpoints();
         } else if (op == "param") {
             // A model parameter's value (a parasitic, gm, ro, ...).
             const std::string ref = get(o, "ref");
