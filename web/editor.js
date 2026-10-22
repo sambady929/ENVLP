@@ -31,8 +31,14 @@ const ED = {
   placeFlipV: false,
   selection: new Set(), // selected component refs
   selWire: -1,          // selected wire index
-  drag: null,           // {mode:'move'|'marquee'|'pan', ...}
-  wireFrom: null,       // {x,y,pin:{ref,index}|null}
+  selSeg: -1,           // the segment of that wire (a wire drag moves it)
+  selLabel: -1,         // selected net label
+  drag: null,           // {mode:'move'|'marquee'|'pan'|'wire', ...}
+  wireFrom: null,       // {x,y,pin:{ref,index}|null} -- the point a wire starts from
+  wireIndex: -1,        // the wire being extended (the desktop extends one wire)
+  wirePts: [],          // its points so far
+  wireHFirst: true,     // Space swaps the route: horizontal-first or vertical-first
+  labelQueue: [],       // net names waiting to be placed (the N key)
   pan: { x: 0, y: 0 },  // view offset in world units
   zoom: 1,
   mouse: { x: 0, y: 0 },
@@ -150,9 +156,42 @@ function draw() {
   drawComponents(ctx, doc);
   drawLabels(ctx, doc);
   if (ED.wireFrom) drawWirePreview(ctx);
+  if (ED.placing) drawGhost(ctx);
 
   ctx.restore();
   drawHud(ctx, W, H);
+}
+
+// The part that is about to be placed, drawn under the cursor -- so the user
+// can see what they are placing and how it is oriented.
+function drawGhost(ctx) {
+  const art = ED.art && ED.art[ED.placing];
+  if (!art) return;
+  ctx.save();
+  ctx.translate(ED.mouse.x, ED.mouse.y);
+  ctx.rotate((ED.placeRot || 0) * Math.PI / 180);
+  ctx.scale(ED.placeFlipH ? -1 : 1, ED.placeFlipV ? -1 : 1);
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#2f6fed';
+  for (const f of art.fill) ctx.fill(f);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#2f6fed';
+  for (const s of art.stroke) {
+    ctx.lineWidth = s.w;
+    ctx.stroke(s.p);
+  }
+  ctx.globalAlpha = 1;
+  for (const t of art.text) {
+    ctx.save();
+    ctx.fillStyle = '#2f6fed';
+    ctx.font = (t.b ? 'bold 15px ' : '12px ') + "'Segoe UI', sans-serif";
+    ctx.textAlign = t.c ? 'center' : 'left';
+    ctx.textBaseline = t.c ? 'middle' : 'alphabetic';
+    ctx.fillText(t.s, t.x, t.y);
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 function drawGrid(ctx, W, H) {
@@ -298,13 +337,11 @@ function drawWirePreview(ctx) {
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
-  // orthogonal preview, like the router produces
-  if (Math.abs(b.x - a.x) > Math.abs(b.y - a.y)) {
-    ctx.lineTo((a.x + b.x) / 2, a.y);
-    ctx.lineTo((a.x + b.x) / 2, b.y);
-  } else {
-    ctx.lineTo(a.x, (a.y + b.y) / 2);
-    ctx.lineTo(b.x, (a.y + b.y) / 2);
+  // The same orthogonal route the router will produce, so the preview is
+  // what you get. Space swaps which leg comes first.
+  if (Math.abs(b.x - a.x) > 1e-9 && Math.abs(b.y - a.y) > 1e-9) {
+    if (ED.wireHFirst) ctx.lineTo(b.x, a.y);
+    else ctx.lineTo(a.x, b.y);
   }
   ctx.lineTo(b.x, b.y);
   ctx.stroke();
@@ -358,7 +395,13 @@ function hitPin(w) {
   return best;
 }
 function hitWire(w) {
-  let best = -1, bd = 8 / ED.zoom;
+  const h = hitWireSeg(w);
+  return h ? h.wire : -1;
+}
+// The wire *and* the segment under the cursor: a segment can be dragged on
+// its own (it moves perpendicular to itself), like in the desktop app.
+function hitWireSeg(w) {
+  let best = null, bd = 8 / ED.zoom;
   for (const wire of ED.doc.wires || []) {
     for (let i = 1; i < wire.pts.length; ++i) {
       const [x0, y0] = wire.pts[i - 1], [x1, y1] = wire.pts[i];
@@ -366,10 +409,21 @@ function hitWire(w) {
       let t = L2 ? ((w.x - x0) * vx + (w.y - y0) * vy) / L2 : 0;
       t = Math.max(0, Math.min(1, t));
       const d = Math.hypot(w.x - (x0 + t * vx), w.y - (y0 + t * vy));
-      if (d < bd) { bd = d; best = wire.i; }
+      if (d < bd) { bd = d; best = { wire: wire.i, seg: i - 1 }; }
     }
   }
   return best;
+}
+// A net label under the cursor (so it can be selected and deleted).
+function hitLabel(w) {
+  const ctx = canvas().getContext('2d');
+  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  for (let i = (ED.doc.labels || []).length - 1; i >= 0; --i) {
+    const l = ED.doc.labels[i];
+    const tw = ctx.measureText(l.name || '').width + 8;
+    if (Math.abs(w.x - l.x) <= tw / 2 && Math.abs(w.y - l.y) <= 9) return i;
+  }
+  return -1;
 }
 
 /* ----------------------------------------------------------- the events --- */
@@ -398,29 +452,26 @@ function bindCanvas() {
     }
 
     if (ED.tool === 'wire') {
-      const pin = hitPin(w);
-      if (!ED.wireFrom) {
-        ED.wireFrom = pin ? { x: pin.x, y: pin.y, pin } : { x: snap(w.x), y: snap(w.y), pin: null };
-        draw();
-        return;
-      }
-      const endPin = hitPin(w);
-      const to = endPin ? { x: endPin.x, y: endPin.y } : { x: snap(w.x), y: snap(w.y) };
-      const op = {
-        op: 'wire',
-        x0: ED.wireFrom.x, y0: ED.wireFrom.y,
-        x1: to.x, y1: to.y,
-        start_pin: ED.wireFrom.pin ? 'true' : 'false',
-        start_ref: ED.wireFrom.pin ? ED.wireFrom.pin.ref : '',
-        start_index: ED.wireFrom.pin ? String(ED.wireFrom.pin.index) : '0',
-        end_pin: endPin ? 'true' : 'false',
-        end_ref: endPin ? endPin.ref : '',
-        end_index: endPin ? String(endPin.index) : '0',
-      };
-      ED.wireFrom = null;
-      docSet([op]);
+      wireClick(w);
       return;
     }
+
+    // Placing net names: every click on a net takes the next name.
+    if (ED.labelQueue.length) {
+      placeLabelAt(w);
+      return;
+    }
+
+    // A net label: click it to select it (Del removes it).
+    const li = hitLabel(w);
+    if (li >= 0) {
+      ED.selection.clear();
+      ED.selWire = -1; ED.selSeg = -1;
+      ED.selLabel = li;
+      afterChange();
+      return;
+    }
+    ED.selLabel = -1;
 
     // select / start a move
     const comp = hitComponent(w);
@@ -432,7 +483,7 @@ function bindCanvas() {
         ED.selection.clear();
         ED.selection.add(comp.ref);
       }
-      ED.selWire = -1;
+      ED.selWire = -1; ED.selSeg = -1;
       ED.drag = {
         mode: 'move', sx: w.x, sy: w.y,
         origin: new Map(Array.from(ED.selection).map((r) => {
@@ -446,10 +497,14 @@ function bindCanvas() {
       afterChange();
       return;
     }
-    const wire = hitWire(w);
-    if (wire >= 0) {
+    const wh = hitWireSeg(w);
+    if (wh) {
       ED.selection.clear();
-      ED.selWire = wire;
+      ED.selWire = wh.wire;
+      ED.selSeg = wh.seg;
+      // A wire (or one of its segments) can be dragged, like in the desktop.
+      ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.seg, sx: w.x, sy: w.y };
+      docSet([{ op: 'begin' }]);
       afterChange();
       return;
     }
@@ -479,6 +534,12 @@ function bindCanvas() {
       docSet(ops);
       return;
     }
+    if (ED.drag.mode === 'wire') {
+      const dx = snap(w.x - ED.drag.sx), dy = snap(w.y - ED.drag.sy);
+      if (!dx && !dy) return;
+      docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: dx, dy: dy }]);
+      return;
+    }
     if (ED.drag.mode === 'marquee') {
       ED.drag.x1 = w.x; ED.drag.y1 = w.y;
       const ctx = canvas().getContext('2d');
@@ -506,6 +567,7 @@ function bindCanvas() {
       }
     }
     if (ED.drag && ED.drag.mode === 'move') docSet([{ op: 'end' }]);
+    if (ED.drag && ED.drag.mode === 'wire') docSet([{ op: 'end' }]);
     if (ED.drag) { ED.drag = null; afterChange(); }
   });
 
@@ -547,11 +609,33 @@ function bindKeys() {
     const k = e.key;
 
     if (k === 'Escape') {
-      ED.placing = null; ED.wireFrom = null; ED.tool = 'select';
-      syncTools(); syncPalette(); draw();
+      // Cancel whatever is in progress: the armed part, the wire being
+      // drawn, the queued net names and the selection -- the desktop's Esc.
+      ED.placing = null;
+      endWiring();
+      ED.labelQueue = [];
+      ED.tool = 'select';
+      ED.selection.clear();
+      ED.selWire = -1; ED.selSeg = -1; ED.selLabel = -1;
+      setStatus('');
+      syncTools(); syncPalette(); afterChange();
       return;
     }
-    if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSel(); return; }
+    if (k === 'Delete' || k === 'Backspace') {
+      e.preventDefault();
+      if (ED.selLabel >= 0) {
+        docSet([{ op: 'delete_label', i: ED.selLabel }]);
+        ED.selLabel = -1;
+        return;
+      }
+      deleteSel();
+      return;
+    }
+    if (k === 'Enter' && ED.tool === 'wire' && ED.wireFrom) {
+      e.preventDefault();
+      commitWireSegment();
+      return;
+    }
     if (k === 'F1') { e.preventDefault(); showHelp(); return; }
     if (ctrl && k === 'Enter') { e.preventDefault(); window.runAnalysis(); return; }
     if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); docUndo(); return; }
@@ -561,9 +645,16 @@ function bindKeys() {
 
     // Space rotates, Shift+Space flips horizontally, Ctrl+Space flips
     // vertically -- the desktop's scheme. The armed part is rotated while
-    // placing, otherwise the selection is.
+    // placing, otherwise the selection is. While wiring, Space swaps the
+    // route (horizontal-first or vertical-first).
     if (k === ' ') {
       e.preventDefault();
+      if (ED.tool === 'wire' && ED.wireFrom) {
+        ED.wireHFirst = !ED.wireHFirst;
+        setStatus('Wire route: press Space again to swap.');
+        draw();
+        return;
+      }
       if (ctrl) flipGhost(false);
       else if (shift) flipGhost(true);
       else rotateGhost(90);
@@ -587,6 +678,8 @@ function bindKeys() {
       return;
     }
     if (lower === 'n') { labelWire(); return; }
+    // The component menu: every part, as a list.
+    if (lower === 'i') { openComponentList(); return; }
 
     // Frame every component.
     if (lower === 'f' && !shift) { frameAll(); return; }
@@ -652,11 +745,116 @@ function deleteSel() {
   docSet(ops);
 }
 function labelWire() {
-  const i = ED.selWire >= 0 ? ED.selWire : hitWire(ED.mouse);
-  if (i < 0) { setStatus('click a wire first, then press N', true); return; }
-  const name = window.prompt('Net name:', '');
-  if (name === null) return;
-  docSet([{ op: 'label', i: i, name: name, x: ED.mouse.x, y: ED.mouse.y }]);
+  // The desktop's flow: type the names (space separated), then click each net
+  // to place them one by one.
+  const answer = window.prompt('Net name(s) to place, separated by spaces:', '');
+  if (answer === null) return;
+  const names = answer.split(/\s+/).filter(Boolean);
+  if (!names.length) return;
+  ED.labelQueue = names;
+  ED.tool = 'select';
+  syncTools();
+  setStatus('Net label: click a net to place "' + names[0] + '" — Esc stops.');
+  draw();
+}
+
+// Place the next queued net name on the net under the cursor.
+function placeLabelAt(w) {
+  const wi = hitWire(w);
+  if (wi < 0) {
+    setStatus('click a wire to place the net name', true);
+    return;
+  }
+  const name = ED.labelQueue.shift();
+  docSet([{ op: 'label', i: wi, name: name, x: ED.mouse.x, y: ED.mouse.y }]);
+  if (!ED.labelQueue.length) {
+    setStatus('');
+    draw();
+  } else {
+    setStatus('Net label: click a net to place "' + ED.labelQueue[0] + '".');
+  }
+}
+
+// Leave wiring mode. Whatever is already committed stays on the canvas; only
+// the segment in progress is dropped.
+function endWiring() {
+  ED.wireFrom = null;
+  ED.wireIndex = -1;
+  ED.wirePts = [];
+  draw();
+}
+
+// A click in the wire tool: the first one starts the wire, every later one
+// commits a segment and continues from there (the desktop's behaviour).
+function wireClick(w) {
+  const pin = hitPin(w);
+  const target = pin
+    ? { x: pin.x, y: pin.y, pin }
+    : { x: snap(w.x), y: snap(w.y), pin: null };
+
+  if (!ED.wireFrom) {
+    ED.wireFrom = target;
+    ED.wirePts = [{ x: target.x, y: target.y }];
+    ED.wireIndex = -1;
+    draw();
+    return;
+  }
+  const last = ED.wirePts[ED.wirePts.length - 1];
+  if (target.x === last.x && target.y === last.y) return;
+
+  const endPin = {
+    end_pin: target.pin ? 'true' : 'false',
+    end_ref: target.pin ? target.pin.ref : '',
+    end_index: target.pin ? String(target.pin.index) : '0',
+  };
+  let op;
+  if (ED.wireIndex < 0) {
+    op = Object.assign({
+      op: 'wire',
+      x0: ED.wireFrom.x, y0: ED.wireFrom.y,
+      x1: target.x, y1: target.y,
+      h_first: ED.wireHFirst ? 1 : 0,
+      start_pin: ED.wireFrom.pin ? 'true' : 'false',
+      start_ref: ED.wireFrom.pin ? ED.wireFrom.pin.ref : '',
+      start_index: ED.wireFrom.pin ? String(ED.wireFrom.pin.index) : '0',
+    }, endPin);
+  } else {
+    op = Object.assign({
+      op: 'wire_extend',
+      wire: ED.wireIndex,
+      x: target.x, y: target.y,
+      h_first: ED.wireHFirst ? 1 : 0,
+    }, endPin);
+  }
+  docSet([op]);
+  if (ED.wireIndex < 0) ED.wireIndex = (ED.doc.wires || []).length - 1;
+  const wire = ED.doc.wires && ED.doc.wires[ED.wireIndex];
+  ED.wirePts = wire
+    ? wire.pts.map((p) => ({ x: p[0], y: p[1] }))
+    : [{ x: target.x, y: target.y }];
+  ED.wireFrom = { x: target.x, y: target.y, pin: target.pin };
+
+  // Landing on a pin finishes the wire, like in the desktop; clicking empty
+  // canvas simply continues the route.
+  if (target.pin) {
+    ED.tool = 'select';
+    syncTools();
+    endWiring();
+  } else {
+    draw();
+  }
+}
+
+// Commit the segment under the cursor (Enter) and leave wiring mode.
+function commitWireSegment() {
+  if (!ED.wireFrom) return;
+  const w = toWorld(ED.mouse.x, ED.mouse.y);
+  const pin = hitPin(w);
+  const target = pin ? { x: pin.x, y: pin.y, pin } : { x: snap(w.x), y: snap(w.y), pin: null };
+  const last = ED.wirePts[ED.wirePts.length - 1];
+  if (target.x === last.x && target.y === last.y) { endWiring(); return; }
+  wireClick(w);
+  endWiring();
 }
 
 /* ------------------------------------------------------------ palette --- */
@@ -668,7 +866,7 @@ function buildPalette() {
     const b = document.createElement('button');
     b.className = 'part';
     b.dataset.token = k.token;
-    b.title = k.label + ' (' + k.prefix + ')';
+    b.title = k.label + ' — reference prefix ' + k.prefix;
     const cv = document.createElement('canvas');
     cv.width = 74; cv.height = 44;
     const ctx = cv.getContext('2d');
@@ -691,7 +889,9 @@ function buildPalette() {
     ctx.restore();
     b.appendChild(cv);
     const t = document.createElement('span');
-    t.textContent = k.prefix;
+    // The *name* of the part, not its reference prefix: a bare "U" under the
+    // op-amp reads like a shortcut, and U is undo.
+    t.textContent = k.label;
     b.appendChild(t);
     b.addEventListener('click', () => {
       armPlacement(k.token);
@@ -708,6 +908,27 @@ function syncTools() {
   document.querySelectorAll('.tool').forEach((b) => {
     b.classList.toggle('armed', b.dataset.tool === ED.tool);
   });
+}
+
+// The component menu (the I key): every part in one list, the way the
+// desktop's "instance" menu works.
+function openComponentList() {
+  const dlg = document.getElementById('components');
+  if (!dlg) return;
+  const host = dlg.querySelector('.clist');
+  host.innerHTML = '';
+  for (const k of ED.palette) {
+    const b = document.createElement('button');
+    b.className = 'citem';
+    b.textContent = k.label;
+    b.title = 'reference prefix ' + k.prefix;
+    b.addEventListener('click', () => {
+      armPlacement(k.token);
+      dlg.close();
+    });
+    host.appendChild(b);
+  }
+  if (!dlg.open) dlg.showModal();
 }
 
 /* --------------------------------------------------------- properties --- */
@@ -750,6 +971,48 @@ function renderProps() {
                   den: parseInt(m2[1] || '1', 10) || 1 }]);
       });
       row('×', m);
+    }
+
+    // The model parameters: gm, ro, Cgs, and the passives' parasitics. They
+    // are off by default (a component is ideal unless you ask otherwise), so
+    // each one has its own switch, exactly as in the desktop app.
+    const params = c.params || [];
+    if (params.length) {
+      const h = document.createElement('div');
+      h.className = 'ttl';
+      h.textContent = 'model';
+      host.appendChild(h);
+      for (const p of params) {
+        const d = document.createElement('div');
+        d.className = 'prow param';
+        const name = document.createElement('span');
+        name.textContent = p.name;
+        name.title = p.desc || p.name;
+        d.appendChild(name);
+        if (p.parasitic) {
+          const sw = document.createElement('input');
+          sw.type = 'checkbox';
+          sw.checked = !!p.on;
+          sw.title = 'switch ' + p.name + ' on or off';
+          sw.addEventListener('change', () =>
+            docSet([{ op: 'param_on', ref: ref, name: p.name, on: sw.checked ? 'true' : 'false' }]));
+          d.appendChild(sw);
+        }
+        const val = document.createElement('input');
+        val.value = p.text || '';
+        val.title = (p.desc || p.name) + (p.unit ? ' [' + p.unit + ']' : '');
+        val.disabled = p.parasitic && !p.on;
+        val.addEventListener('change', () =>
+          docSet([{ op: 'param', ref: ref, name: p.name, text: val.value }]));
+        d.appendChild(val);
+        if (p.unit) {
+          const u = document.createElement('span');
+          u.className = 'unit';
+          u.textContent = p.unit;
+          d.appendChild(u);
+        }
+        host.appendChild(d);
+      }
     }
   } else if (ED.selWire >= 0) {
     const w = (ED.doc.wires || [])[ED.selWire];

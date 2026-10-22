@@ -199,6 +199,28 @@ std::string geometry() {
         js << ",\"value\":" << q(c.value_text);
         js << ",\"mirror\":" << q(c.mirror_ref);
         js << ",\"mult\":" << c.mirror_num() << ",\"den\":" << c.mirror_dn();
+        // The model parameters of this kind (gm, ro, Cgs, the passives'
+        // parasitics...), with the value in force and whether it is enabled.
+        {
+            const auto& defs = syms::param_defs(c.kind);
+            js << ",\"params\":[";
+            bool f2 = true;
+            for (const auto& pd : defs) {
+                if (!f2) js << ",";
+                f2 = false;
+                auto tit = c.param_text.find(pd.name);
+                const std::string txt =
+                    (tit != c.param_text.end() && !tit->second.empty())
+                        ? tit->second
+                        : pd.default_text;
+                js << "{\"name\":" << q(pd.name) << ",\"text\":" << q(txt)
+                   << ",\"unit\":" << q(pd.unit) << ",\"parasitic\":"
+                   << (pd.parasitic ? "true" : "false") << ",\"on\":"
+                   << (c.param_enabled(pd.name) ? "true" : "false") << ",\"desc\":"
+                   << q(pd.desc) << "}";
+            }
+            js << "]";
+        }
         double x0, y0, x1, y1;
         envlp::symbol_bbox(c, pl, x0, y0, x1, y1, 0.0);
         js << ",\"bbox\":[" << num(x0) << "," << num(y0) << "," << num(x1) << ","
@@ -411,6 +433,17 @@ const char* envlp_doc_set(const char* ops_json) {
             envlp::Pt a{getn(o, "x0", 0), getn(o, "y0", 0)};
             envlp::Pt b{getn(o, "x1", 0), getn(o, "y1", 0)};
             w.pts = {a, b};
+            // The route is orthogonal, like the desktop's: the corner is the
+            // horizontal-first or the vertical-first leg, and Space swaps it.
+            if (getb(o, "h_first", true)) {
+                if (std::fabs(b.first - a.first) > 1e-9 &&
+                    std::fabs(b.second - a.second) > 1e-9)
+                    w.pts.push_back(envlp::Pt{b.first, a.second});
+            } else {
+                if (std::fabs(b.first - a.first) > 1e-9 &&
+                    std::fabs(b.second - a.second) > 1e-9)
+                    w.pts.push_back(envlp::Pt{a.first, b.second});
+            }
             if (get(o, "start_pin") == "true") {
                 w.a.kind = envlp::WireEnd::Kind::Pin;
                 w.a.ref = get(o, "start_ref");
@@ -425,9 +458,142 @@ const char* envlp_doc_set(const char* ops_json) {
             } else {
                 w.b.kind = envlp::WireEnd::Kind::Free;
             }
+            if (w.pts.size() > 2)
+                w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
             g_doc.bind_wire_ends(w);
             g_doc.wires.push_back(w);
             g_doc.sync_wire_endpoints();
+        } else if (op == "wire_extend") {
+            // Continue the wire that is being drawn: append the routed
+            // segment (the desktop extends one wire, it does not start a new
+            // one for every click).
+            const int wi = int(getn(o, "wire", -1));
+            if (wi < 0 || wi >= int(g_doc.wires.size())) {
+                error = "no such wire";
+                continue;
+            }
+            envlp::Wire& w = g_doc.wires[wi];
+            if (w.pts.empty()) continue;
+            const envlp::Pt last = w.pts.back();
+            const envlp::Pt b{getn(o, "x", 0), getn(o, "y", 0)};
+            if (std::fabs(b.first - last.first) > 1e-9 &&
+                std::fabs(b.second - last.second) > 1e-9) {
+                if (getb(o, "h_first", true))
+                    w.pts.push_back(envlp::Pt{b.first, last.second});
+                else
+                    w.pts.push_back(envlp::Pt{last.first, b.second});
+            }
+            w.pts.push_back(b);
+            if (w.pts.size() > 2)
+                w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
+            if (get(o, "end_pin") == "true") {
+                w.b.kind = envlp::WireEnd::Kind::Pin;
+                w.b.ref = get(o, "end_ref");
+                w.b.pin = int(getn(o, "end_index", 0));
+            }
+            g_doc.bind_wire_ends(w);
+            g_doc.sync_wire_endpoints();
+        } else if (op == "move_wire") {
+            // Drag a wire (or one of its segments). A segment moves
+            // perpendicular to itself, so its neighbours stretch instead of
+            // the whole route going diagonal, and a pin-bound end gets a jog
+            // inserted beside the pin -- the desktop's behaviour.
+            const int wi = int(getn(o, "wire", -1));
+            if (wi < 0 || wi >= int(g_doc.wires.size())) {
+                error = "no such wire";
+                continue;
+            }
+            const int seg = int(getn(o, "seg", -1));
+            double dx = getn(o, "dx", 0);
+            double dy = getn(o, "dy", 0);
+            envlp::Wire& w = g_doc.wires[wi];
+            const size_t npts = w.pts.size();
+            if (npts < 2) continue;
+            const bool segment = (seg >= 0 && seg + 1 < int(npts));
+            int seg_a = -1, seg_b = -1;
+            if (segment) {
+                seg_a = seg;
+                seg_b = seg + 1;
+                const envlp::Pt& sa = w.pts[seg_a];
+                const envlp::Pt& sb = w.pts[seg_b];
+                const bool horizontal =
+                    std::fabs(sa.second - sb.second) < std::fabs(sa.first - sb.first);
+                if (horizontal) dx = 0.0;
+                else dy = 0.0;
+            }
+            const bool a_pin = (w.a.kind == envlp::WireEnd::Kind::Pin);
+            const bool b_pin = (w.b.kind == envlp::WireEnd::Kind::Pin);
+            const std::vector<envlp::Pt> backup = w.pts;
+            std::vector<envlp::Pt> nw;
+            nw.reserve(backup.size() + 2);
+            for (size_t k = 0; k < npts; ++k) {
+                envlp::Pt p = backup[k];
+                const bool moved_k = !segment || int(k) == seg_a || int(k) == seg_b;
+                const bool pin_k = (k == 0 && a_pin) || (k + 1 == npts && b_pin);
+                if (moved_k && pin_k) {
+                    envlp::Pt m{p.first + dx, p.second + dy};
+                    if (k == 0) {
+                        nw.push_back(p);
+                        nw.push_back(m);
+                    } else {
+                        nw.push_back(m);
+                        nw.push_back(p);
+                    }
+                } else {
+                    if (moved_k) {
+                        p.first += dx;
+                        p.second += dy;
+                    }
+                    nw.push_back(p);
+                }
+            }
+            // Other wires that share a moved vertex follow it.
+            std::map<std::pair<double, double>, envlp::Pt> moved;
+            for (size_t k = 0; k < npts; ++k) {
+                if (segment && int(k) != seg_a && int(k) != seg_b) continue;
+                const bool pin_k = (k == 0 && a_pin) || (k + 1 == npts && b_pin);
+                if (pin_k) continue;
+                const envlp::Pt o = backup[k];
+                if (dx != 0.0 || dy != 0.0)
+                    moved[{o.first, o.second}] = envlp::Pt{o.first + dx, o.second + dy};
+            }
+            w.pts = nw;
+            if (nw.size() > 2) w.waypoints.assign(nw.begin() + 1, nw.end() - 1);
+            else w.waypoints.clear();
+            for (size_t other = 0; other < g_doc.wires.size(); ++other) {
+                if (int(other) == wi) continue;
+                envlp::Wire& ow = g_doc.wires[other];
+                bool any = false;
+                for (auto& v : ow.pts) {
+                    auto it = moved.find({v.first, v.second});
+                    if (it != moved.end()) {
+                        v = it->second;
+                        any = true;
+                    }
+                }
+                if (any) {
+                    if (ow.pts.size() > 2)
+                        ow.waypoints.assign(ow.pts.begin() + 1, ow.pts.end() - 1);
+                    else
+                        ow.waypoints.clear();
+                }
+            }
+            g_doc.sync_label_anchors();
+        } else if (op == "param") {
+            // A model parameter's value (a parasitic, gm, ro, ...).
+            const std::string ref = get(o, "ref");
+            for (auto& c : g_doc.circuit.comps) {
+                if (c.ref != ref) continue;
+                c.param_text[get(o, "name")] = get(o, "text");
+            }
+            g_doc.dirty = true;
+        } else if (op == "param_on") {
+            const std::string ref = get(o, "ref");
+            for (auto& c : g_doc.circuit.comps) {
+                if (c.ref != ref) continue;
+                c.param_on[get(o, "name")] = getb(o, "on", true);
+            }
+            g_doc.dirty = true;
         } else if (op == "delete_wire") {
             g_doc.remove_wire(int(getn(o, "i", -1)));
         } else if (op == "label") {

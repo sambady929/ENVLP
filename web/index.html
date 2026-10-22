@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
-  window.MathJax = { svg: { fontCache: 'global' }, options: { enableMenu: false } };
+  window.MathJax = { svg: { fontCache: 'global' },
+                     options: { enableMenu: false },
+                     displayAlign: 'left' };
 </script>
 <script src="mathjax/tex-svg.js"></script>
 <script src="plotly/plotly-basic.min.js"></script>
@@ -16,6 +18,7 @@
 <body>
 
 <header>
+  <button id="btn-help" class="ghost" title="Help and shortcuts (F1)">?</button>
   <h1>ENVLP</h1>
   <span class="tag">symbolic circuit analyser</span>
   <span class="spacer"></span>
@@ -23,7 +26,6 @@
   <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
   <button id="btn-open" class="ghost">Open .scx…</button>
   <button id="btn-save" class="ghost">Save .scx…</button>
-  <button id="btn-help" class="ghost" title="Help and shortcuts (F1)">?</button>
   <input type="file" id="file" accept=".scx,.txt" hidden>
 </header>
 
@@ -36,11 +38,11 @@
     <button class="tool" data-tool="wire">Wire <kbd>W</kbd></button>
     <div class="hint">
       <b>Place</b> pick a part, click the canvas.<br>
-      <b>Keys</b> R C L V B O M Q G place parts.<br>
+      <b>Keys</b> R C L V B O M Q G place parts, I lists them all.<br>
       <b>Wire</b> W, click start, click end.<br>
       <b>Move</b> drag a part (wires follow).<br>
       <b>Rotate</b> Space &nbsp; <b>Flip</b> Shift+Space<br>
-      <b>Label a net</b> N, click a wire.<br>
+      <b>Label a net</b> N, then click each net.<br>
       <b>Delete</b> Del &nbsp; <b>Fit</b> F &nbsp; <b>Undo</b> U<br>
       <b>Help</b> F1
     </div>
@@ -55,18 +57,26 @@
       <div id="hud" class="hud"></div>
     </div>
 
-    <div class="gutter gutter-h" data-target="--results-h" data-dir="1"
+    <div class="gutter gutter-h" data-target="--results-h" data-dir="-1"
          title="Drag to resize the results pane"></div>
 
     <div class="results">
-      <nav class="tabs">
-        <button data-tab="text" class="active">Report</button>
-        <button data-tab="math">Math</button>
-        <button data-tab="plot">Plot</button>
-      </nav>
-      <div id="tab-text" class="tab active"><pre id="report"></pre></div>
-      <div id="tab-math" class="tab"><div id="math" class="math"></div></div>
-      <div id="tab-plot" class="tab">
+      <div class="results-left">
+        <nav class="tabs">
+          <button data-tab="math" class="active">Math</button>
+          <button data-tab="text">Report</button>
+          <span class="spacer"></span>
+          <button id="copy-latex" class="ghost" title="Copy the typeset result (LaTeX)">Copy LaTeX</button>
+          <button id="copy-text" class="ghost" title="Copy the report as plain text">Copy text</button>
+        </nav>
+        <div id="tab-math" class="tab active"><div id="math" class="math"></div></div>
+        <div id="tab-text" class="tab"><pre id="report"></pre></div>
+      </div>
+
+      <div class="gutter gutter-v rgutter" data-target="--plot-w" data-dir="-1"
+           title="Drag to resize the plot pane"></div>
+
+      <div class="results-right">
         <div class="row">
           <label for="plot-mode">plot</label>
           <select id="plot-mode">
@@ -137,7 +147,7 @@
         <option value="linear">linear</option>
       </select>
 
-      <label class="check" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
+      <label class="check" data-kinds="TransferFunction AC DC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
         <input type="checkbox" id="prune" checked> ignore negligible terms
       </label>
     </div>
@@ -181,6 +191,7 @@
 <dialog id="help" class="help">
   <div class="help-head">
     <h2>ENVLP</h2>
+    <span class="spacer"></span>
     <button id="help-close" class="ghost">Close</button>
   </div>
 
@@ -192,18 +203,22 @@
         <kbd>Shift+Space</kbd> flips it, <kbd>Esc</kbd> cancels.</li>
       <li><b>Wire</b> (<kbd>W</kbd>): click to start, click the destination —
         a pin or any grid point. <kbd>Space</kbd> while wiring swaps the route
-        between horizontal-first and vertical-first. Moving a part drags the
-        wires attached to its pins.</li>
+        between horizontal-first and vertical-first, <kbd>Enter</kbd> ends the
+        wire and <kbd>Esc</kbd> cancels. Moving a part drags the wires
+        attached to its pins; a wire segment can be dragged on its own.</li>
       <li><b>Net labels</b> (<kbd>N</kbd>): type space-separated names
-        (<code>out in</code>) and click each net.</li>
+        (<code>out in</code>), then click each net. Click a label to select
+        it and press <kbd>Del</kbd> to remove it.</li>
       <li>Place at least one <b>GND</b> symbol.</li>
       <li>Choose an <b>analysis</b> on the right, fill in the fields it asks
         for, and press <b>Run analysis</b> (<kbd>Ctrl+Enter</kbd>).</li>
-      <li>Read the <b>Report</b>, the typeset <b>Math</b>, and the
-        <b>Plot</b> (Bode, Nyquist, Nichols, noise).</li>
+      <li>Read the typeset <b>Math</b> and the <b>Report</b> on the left, the
+        <b>Plot</b> on the right.</li>
     </ol>
-    <p class="note">Drag the thin dividers between the palette, the canvas and
-      the analysis panel to resize them.</p>
+    <p class="note">Drag the thin dividers between the panels to resize them.
+      A part's <b>model parameters</b> (gm, ro, Cgs and the passives'
+      parasitics) are in the properties panel on the right — click the part
+      first.</p>
   </section>
 
   <section>
@@ -217,13 +232,16 @@
       <tr><td><kbd>O</kbd></td><td>op-amp</td></tr>
       <tr><td><kbd>G</kbd></td><td>ground (<kbd>Shift+G</kbd>) supply rail (VDD)</td></tr>
       <tr><td><kbd>T</kbd> <kbd>K</kbd></td><td>transformer, coupled inductors</td></tr>
+      <tr><td><kbd>I</kbd></td><td>component menu (every part)</td></tr>
       <tr><td><kbd>W</kbd></td><td>wire tool</td></tr>
       <tr><td><kbd>N</kbd></td><td>place net label(s)</td></tr>
-      <tr><td><kbd>Space</kbd></td><td>rotate the ghost / selection 90°</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>rotate the ghost / selection 90°
+        (while wiring: swap the route)</td></tr>
       <tr><td><kbd>Shift+Space</kbd></td><td>flip horizontally</td></tr>
       <tr><td><kbd>Ctrl+Space</kbd></td><td>flip vertically</td></tr>
       <tr><td><kbd>F</kbd></td><td>fit the components to the view</td></tr>
       <tr><td><kbd>Del</kbd></td><td>delete the selection</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>end the wire being drawn</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>cancel the current action</td></tr>
       <tr><td><kbd>U</kbd> / <kbd>Shift+U</kbd></td><td>undo / redo</td></tr>
       <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>undo / redo</td></tr>
@@ -276,8 +294,17 @@
   </section>
 </dialog>
 
-<script src="envlp.js?v=4"></script>
-<script src="editor.js?v=4"></script>
-<script src="app.js?v=4"></script>
+<dialog id="components" class="help components">
+  <div class="help-head">
+    <h2>Components</h2>
+    <span class="spacer"></span>
+    <button id="components-close" class="ghost">Close</button>
+  </div>
+  <div class="clist"></div>
+</dialog>
+
+<script src="envlp.js?v=5"></script>
+<script src="editor.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

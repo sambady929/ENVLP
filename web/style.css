@@ -14,6 +14,7 @@
   --palette-w: 132px;
   --dock-w: 340px;
   --results-h: 34%;
+  --plot-w: 46%;
 }
 
 * { box-sizing: border-box; }
@@ -108,19 +109,24 @@ kbd {
 .hud { position: absolute; right: 8px; top: 6px; color: var(--dim); font-size: 11px; }
 
 .results {
-  display: flex; flex-direction: column; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7px var(--plot-w);
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; padding: 6px;
+  border-radius: 8px; padding: 6px; min-height: 0;
 }
-.tabs { display: flex; gap: 5px; padding-bottom: 5px; }
+.results-left { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.results-right { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.tabs { display: flex; gap: 5px; padding-bottom: 5px; align-items: center; }
 .tabs button { border-radius: 6px; padding: 3px 10px; font-size: 12.5px; }
 .tabs button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .tab { display: none; flex: 1 1 auto; min-height: 0; overflow: auto; }
 .tab.active { display: block; }
-#tab-plot.active { display: flex; flex-direction: column; }
 #report { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
-.math .line { margin: 4px 0; overflow-x: auto; }
-#plot { flex: 1 1 auto; min-height: 260px; }
+/* the typeset result is left justified, like the desktop's math panel */
+.math, .math .line { text-align: left; }
+.math mjx-container[jax="CHTML"][display="true"] { text-align: left !important; }
+.math mjx-container[display="true"] { text-align: left !important; }
+#plot { flex: 1 1 auto; min-height: 220px; }
 
 /* --- dock ------------------------------------------------------------- */
 .dock { display: flex; flex-direction: column; gap: 6px; }
@@ -133,6 +139,11 @@ kbd {
 .prow { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .prow > span { color: var(--dim); min-width: 54px; }
 .prow input, .prow select { flex: 1 1 auto; min-width: 0; }
+/* a model parameter: a switch (for the parasitics), a value and its unit */
+.prow.param { gap: 4px; }
+.prow.param > span { min-width: 52px; font-size: 12px; color: var(--text); }
+.prow.param input[type="checkbox"] { flex: 0 0 auto; width: auto; }
+.prow.param .unit { min-width: 0; color: var(--dim); font-size: 11px; }
 
 /* The operating point lives in its own section: it is a property of the
    circuit, not of the analysis that happens to be selected. */
@@ -196,6 +207,13 @@ table.keys td { padding: 3px 8px 3px 0; vertical-align: top; }
 table.keys td:first-child { white-space: nowrap; width: 1%; }
 table.keys kbd { float: none; background: var(--muted); }
 .help code { font-family: var(--mono); font-size: 12px; }
+
+/* the component menu (the I key) */
+.components .clist {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px; padding: 12px 16px 16px;
+}
+.citem { text-align: left; }
 
 /* Narrow windows: the side panels shrink but stay usable (the app is often
    embedded in an iframe), and below that they stack above and below the

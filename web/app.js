@@ -262,6 +262,14 @@ function drawPlot() {
   Plotly.react(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
 }
 
+// The plot follows its pane when the layout changes (the gutters).
+window.addEventListener('resize', () => {
+  const el = $('plot');
+  if (window.Plotly && el && el.children.length) {
+    try { Plotly.Plots.resize(el); } catch (e) { /* no plot yet */ }
+  }
+});
+
 /* ----------------------------------------------------------- the exports --- */
 function download(name, text, mime) {
   const blob = new Blob([text], { type: mime || 'text/plain' });
@@ -365,7 +373,37 @@ function bindPanel() {
   });
   $('btn-help').addEventListener('click', showHelp);
   $('help-close').addEventListener('click', () => $('help').close());
+  $('components-close').addEventListener('click', () => $('components').close());
+  $('copy-text').addEventListener('click', () => {
+    copyToClipboard($('report').textContent, 'report copied');
+  });
+  $('copy-latex').addEventListener('click', () => {
+    const l = last ? ((last.latex_report || '') + '\n' + (last.latex || '')).trim() : '';
+    copyToClipboard(l || $('report').textContent, 'LaTeX copied');
+  });
   initGutters();
+}
+
+// Copy to the clipboard, with a fallback for browsers that refuse the async
+// clipboard API (an insecure context, say).
+function copyToClipboard(text, what) {
+  if (!text) { setStatus('nothing to copy yet', true); return; }
+  const done = () => setStatus(what || 'copied');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { setStatus('could not copy', true); }
+  document.body.removeChild(ta);
 }
 
 /* ------------------------------------------------------------- the help --- */
@@ -381,12 +419,14 @@ function showHelp() {
 // dividers that can be dragged; the sizes are remembered between visits.
 function initGutters() {
   const root = document.documentElement;
-  const vars = ['--palette-w', '--dock-w', '--results-h'];
+  const vars = ['--palette-w', '--dock-w', '--results-h', '--plot-w'];
 
-  // The results pane starts as a percentage; make it a pixel value so it can
-  // be dragged, and restore any remembered sizes.
+  // The results pane and the plot pane start as percentages; make them pixel
+  // values so they can be dragged, and restore any remembered sizes.
   const res = document.querySelector('.results');
   if (res) root.style.setProperty('--results-h', res.getBoundingClientRect().height + 'px');
+  const plotPane = document.querySelector('.results-right');
+  if (plotPane) root.style.setProperty('--plot-w', plotPane.getBoundingClientRect().width + 'px');
   try {
     vars.forEach((v) => {
       const s = localStorage.getItem('envlp' + v);
@@ -415,8 +455,7 @@ function initGutters() {
         root.style.setProperty(name, v + 'px');
         // the canvas has to follow its box
         window.dispatchEvent(new Event('resize'));
-      };
-      const up = (ev) => {
+      };      const up = (ev) => {
         g.classList.remove('dragging');
         try { g.releasePointerCapture(ev.pointerId); } catch (err) { /* already gone */ }
         g.removeEventListener('pointermove', move);
