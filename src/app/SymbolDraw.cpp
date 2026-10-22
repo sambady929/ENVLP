@@ -183,6 +183,10 @@ void draw_vcvs(Ctx& t, Kind k) {
     t.line(-40, 10, -26, 10);
     t.w(kBody);
     t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // The name of the source inside the box, so the four of them are told
+    // apart: in SPICE a VCCS is also called a "G source", and a letter in
+    // the box only reads as a keyboard shortcut.
+    t.text(k == Kind::E ? "VCVS" : "VCCS", 0, 0, true);
     // polarity marks just outside the box, at the pin rows
     t.w(kWire);
     t.line(-23, -10, -19, -10);
@@ -201,6 +205,8 @@ void draw_body_ccvs_cccs(Ctx& t, Kind k) {
     t.line(-40, 10, -26, 10);
     t.w(kBody);
     t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // The name of the source inside the box (see draw_vcvs).
+    t.text(k == Kind::CCVS ? "CCVS" : "CCCS", 0, 0, true);
     // input port polarity marks just outside the box
     t.w(kWire);
     t.line(-23, -10, -19, -10);

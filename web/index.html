@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=12">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -165,9 +165,9 @@
       </label>
     </div>
 
-    <!-- The operating point is a property of the circuit, not of one
-         analysis, so it lives in its own (collapsed) section instead of
-         being repeated under every analysis. -->
+    <!-- The operating point is a property of the circuit, not of one analysis,
+         so it lives in its own section -- and, like the app, it is the DC
+         operating point analysis' own options, so it is only shown for it. -->
     <details id="dcbox" class="dcbox">
       <summary>operating point (DC)</summary>
       <div class="grid">
@@ -177,15 +177,30 @@
           <option value="2">2. square law (symbolic)</option>
         </select>
 
-        <label for="vdd">VDD / Vthn / Vthp</label>
-        <div class="inline">
-          <input id="vdd" value="5" title="supply [V]">
-          <input id="vthn" value="0.6" title="Vthn [V]">
-          <input id="vthp" value="0.6" title="Vthp [V]">
-        </div>
+        <label for="vdd">VDD (V)</label>
+        <input id="vdd" value="5" title="supply [V]">
 
-        <label class="check"><input type="checkbox" id="assume_sat" checked>
-          assume all devices saturated</label>
+        <label for="vthn">Vthn (V)</label>
+        <input id="vthn" value="0.6" title="NMOS threshold voltage">
+
+        <label for="vthp">Vthp (V)</label>
+        <input id="vthp" value="0.6" title="PMOS threshold voltage">
+
+        <!-- the square-law mode -->
+        <label for="uncox" data-mode="square">uN*Cox (A/V²)</label>
+        <input id="uncox" value="200e-6" data-mode="square"
+               title="NMOS transconductance parameter (square law)">
+
+        <label for="upcox" data-mode="square">uP*Cox (A/V²)</label>
+        <input id="upcox" value="100e-6" data-mode="square"
+               title="PMOS transconductance parameter (square law)">
+
+        <label class="check" data-mode="square">
+          <input type="checkbox" id="assume_sat" checked> assume all in saturation</label>
+
+        <!-- the gm/Id mode -->
+        <label class="check" data-mode="gmoverid">
+          <input type="checkbox" id="include_clm"> include channel-length modulation</label>
       </div>
     </details>
 
@@ -349,8 +364,8 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=11"></script>
-<script src="editor.js?v=11"></script>
-<script src="app.js?v=11"></script>
+<script src="envlp.js?v=12"></script>
+<script src="editor.js?v=12"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

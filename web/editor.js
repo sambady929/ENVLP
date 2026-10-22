@@ -780,6 +780,10 @@ function bindKeys() {
     // Parts.
     if (shift) {
       if (lower === 'g') { armPlacement('VDD'); return; }
+      // Shift+M / Shift+Q pick the P-type straight away; pressing M or Q
+      // again while placing switches to the P-type.
+      if (lower === 'm') { armPlacement('PMOS'); return; }
+      if (lower === 'q') { armPlacement('PNP'); return; }
       return;
     }
     if (lower === 'm') {
@@ -977,7 +981,7 @@ function commitWireSegment() {
 // are shown with one -- the op-amp is "O", not "U" (U is undo).
 const PALETTE_SHORTCUTS = {
   R: 'R', C: 'C', L: 'L', V: 'V', I: 'B', D: 'D',
-  NMOS: 'M', PMOS: 'M', NPN: 'Q', PNP: 'Q',
+  NMOS: 'M', PMOS: 'Shift+M', NPN: 'Q', PNP: 'Shift+Q',
   OPAMP: 'O', GND: 'G', VDD: 'Shift+G', T: 'T', K: 'K',
 };
 

@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '11';
+const BUILD = '12';
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,10 +38,14 @@ function options() {
     vthp: parseFloat($('vthp').value) || 0.6,
     prune: $('prune').checked,
     assume_saturation: $('assume_sat').checked,
-    // the low-entropy thresholds
+    // The low-entropy thresholds
     comp_ratio: parseFloat($('comp_ratio').value) || 10,
     pz_ratio: parseFloat($('pz_ratio').value) || 1000,
     pole_ref: $('pole_ref').value,
+    // the operating point
+    uncox: parseFloat($('uncox').value) || 200e-6,
+    upcox: parseFloat($('upcox').value) || 100e-6,
+    include_clm: $('include_clm').checked,
   };
 }
 
@@ -57,10 +61,21 @@ function applyKind() {
     const kinds = (el.getAttribute('data-kinds') || '').split(/\s+/);
     el.hidden = kinds.indexOf(k) < 0;
   });
-  // The DC operating point *is* the DC analysis' own options, so open them.
+  // The operating point is the DC operating point analysis' own options, so
+  // it is only shown for it -- as in the app, where it sits on the DC card.
   const box = $('dcbox');
-  if (box && k === 'DC') box.open = true;
+  if (box) {
+    box.hidden = (k !== 'DC');
+    if (k === 'DC') box.open = true;
+  }
+  // The DC model decides which of its fields apply: the square law has the
+  // uCox pair and the saturation switch, the gm/Id mode the CLM switch.
+  const mode = parseInt($('dc_mode').value, 10) === 2 ? 'square' : 'gmoverid';
+  document.querySelectorAll('#dcbox [data-mode]').forEach((el) => {
+    el.hidden = el.getAttribute('data-mode') !== mode;
+  });
 }
+$('dc_mode').addEventListener('change', applyKind);
 
 
 let last = null;   // the last analysis result
