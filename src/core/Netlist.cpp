@@ -212,11 +212,11 @@ const std::vector<ParamDef>& param_defs(Kind k) {
          "output resistance (channel-length modulation); also the DC bias rds"},
         {"W", "10u", false, true, "m", "gate width (numeric DC mode)"},
         {"L", "1u", false, true, "m", "gate length (numeric DC mode)"},
-        {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
-        {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
+        {"Cgs", "100f", true, false, "F", "gate-source capacitance"},
+        {"Cgd", "20f", true, false, "F", "gate-drain (Miller) capacitance"},
         // Cds defaults to the same value as Cgd (see param_estimate); listed
         // right after Cgd so the editor reads Cgs / Cgd / Cds together.
-        {"Cds", "20f", true, true, "F", "drain-source capacitance"},
+        {"Cds", "20f", true, false, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
         {"fcn", "10k", true, true, "Hz",
@@ -228,9 +228,9 @@ const std::vector<ParamDef>& param_defs(Kind k) {
          "output resistance (channel-length modulation); also the DC bias rds"},
         {"W", "10u", false, true, "m", "gate width (numeric DC mode)"},
         {"L", "1u", false, true, "m", "gate length (numeric DC mode)"},
-        {"Cgs", "100f", true, true, "F", "gate-source capacitance"},
-        {"Cgd", "20f", true, true, "F", "gate-drain (Miller) capacitance"},
-        {"Cds", "20f", true, true, "F", "drain-source capacitance"},
+        {"Cgs", "100f", true, false, "F", "gate-source capacitance"},
+        {"Cgd", "20f", true, false, "F", "gate-drain (Miller) capacitance"},
+        {"Cds", "20f", true, false, "F", "drain-source capacitance"},
         {"Cdb", "20f", true, false, "F", "drain junction capacitance"},
         {"Csb", "20f", true, false, "F", "source junction capacitance"},
         {"fcn", "10k", true, true, "Hz",
@@ -241,8 +241,8 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"rpi", "2.5k", true, true, "Ohm",
          "base-emitter input resistance (= beta/gm)"},
         {"ro", "50k", true, true, "Ohm", "output resistance (Early effect)"},
-        {"Cpi", "10p", true, true, "F", "base-emitter capacitance"},
-        {"Cmu", "1p", true, true, "F", "base-collector (Miller) capacitance"},
+        {"Cpi", "10p", true, false, "F", "base-emitter capacitance"},
+        {"Cmu", "1p", true, false, "F", "base-collector (Miller) capacitance"},
         {"fcn", "1k", true, true, "Hz",
          "1/f noise corner frequency (flicker = thermal below this)"},
     };
@@ -288,6 +288,10 @@ const std::vector<ParamDef>& param_defs(Kind k) {
     // "Gain"); GBW is the gain-bandwidth product (Hz) that sets the single
     // dominant pole at w0 = 2*pi*GBW/gain. It is optional: switch it off for
     // an ideal (infinite-bandwidth) amplifier.
+    //
+    // The amplifier's own input and output impedance and capacitance are
+    // parasitics: they are off by default, so an amplifier is ideal until the
+    // user asks for the loading of the real thing.
     static const std::vector<ParamDef> opamp = {
         {"GBW", "1M", true, true, "Hz", "gain-bandwidth product"},
         // input-referred noise voltage density (V/sqrt(Hz)); the optional
@@ -295,6 +299,10 @@ const std::vector<ParamDef>& param_defs(Kind k) {
         {"en", "10n", true, true, "V", "input voltage noise density"},
         {"en_flicker", "100n", true, false, "V",
          "1/f input voltage noise density at 1 Hz"},
+        {"Rin", "1G", true, false, "Ohm", "input resistance"},
+        {"Rout", "100", true, false, "Ohm", "output resistance"},
+        {"Cin", "1p", true, false, "F", "input capacitance"},
+        {"Cout", "1p", true, false, "F", "output capacitance"},
     };
 
     switch (k) {

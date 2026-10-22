@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=8">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -18,7 +18,7 @@
 <body>
 
 <header>
-  <button id="btn-help" class="ghost" title="Help and shortcuts (F1)">?</button>
+  <button id="btn-help" class="howto" title="Help and shortcuts (F1)">How To Use</button>
   <h1>ENVLP</h1>
   <span class="tag">symbolic circuit analyser</span>
   <span class="spacer"></span>
@@ -26,6 +26,8 @@
   <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
   <button id="btn-open" class="ghost">Open .scx…</button>
   <button id="btn-save" class="ghost">Save .scx…</button>
+  <a id="btn-positivefb" class="linkbtn" href="https://positivefb.com" target="_blank"
+     rel="noopener">PositiveFB</a>
   <input type="file" id="file" accept=".scx,.txt" hidden>
 </header>
 
@@ -65,12 +67,15 @@
         <nav class="tabs">
           <button data-tab="math" class="active">Math</button>
           <button data-tab="text">Report</button>
-          <span class="spacer"></span>
-          <button id="copy-latex" class="ghost" title="Copy the typeset result (LaTeX)">Copy LaTeX</button>
-          <button id="copy-text" class="ghost" title="Copy the report as plain text">Copy text</button>
         </nav>
         <div id="tab-math" class="tab active"><div id="math" class="math"></div></div>
         <div id="tab-text" class="tab"><pre id="report"></pre></div>
+        <!-- the app's button bar: under the text, as it is there -->
+        <div class="copybar">
+          <button id="copy-text">Copy all</button>
+          <button id="copy-latex">Copy LaTeX</button>
+          <button id="clear-results">Clear</button>
+        </div>
       </div>
 
       <div class="gutter gutter-v rgutter" data-target="--plot-w" data-dir="-1"
@@ -320,8 +325,24 @@
   <div class="clist"></div>
 </dialog>
 
-<script src="envlp.js?v=6"></script>
-<script src="editor.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<dialog id="netlabel" class="help">
+  <div class="help-head">
+    <h2>Place net label(s)</h2>
+    <span class="spacer"></span>
+    <button id="netlabel-cancel" class="ghost">Cancel</button>
+  </div>
+  <div class="help-body">
+    <p>Type one or more net names, separated by spaces. Each name is placed on
+       the next net you click; <kbd>Esc</kbd> stops.</p>
+    <input id="netlabel-input" type="text" placeholder="out in" autocomplete="off">
+    <div class="help-actions">
+      <button id="netlabel-ok" class="primary">Place names</button>
+    </div>
+  </div>
+</dialog>
+
+<script src="envlp.js?v=8"></script>
+<script src="editor.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

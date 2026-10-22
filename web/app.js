@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '6';
+const BUILD = '8';
 
 const $ = (id) => document.getElementById(id);
 
@@ -384,6 +384,28 @@ function bindPanel() {
   $('copy-latex').addEventListener('click', () => {
     const l = last ? ((last.latex_report || '') + '\n' + (last.latex || '')).trim() : '';
     copyToClipboard(l || $('report').textContent, 'LaTeX copied');
+  });
+  $('clear-results').addEventListener('click', () => {
+    last = null;
+    $('report').textContent = '';
+    $('math').innerHTML = '';
+    $('plot').innerHTML = '';
+    setStatus('');
+  });
+  // The net-label dialog: type the names, then click the nets.
+  $('netlabel-cancel').addEventListener('click', () => $('netlabel').close());
+  $('netlabel-ok').addEventListener('click', () => {
+    const names = $('netlabel-input').value.split(/\s+/).filter(Boolean);
+    $('netlabel').close();
+    if (!names.length) return;
+    ED.labelQueue = names;
+    ED.tool = 'select';
+    syncTools();
+    setStatus('Net label: click a net to place "' + names[0] + '" — Esc stops.');
+    draw();
+  });
+  $('netlabel-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); $('netlabel-ok').click(); }
   });
   initGutters();
 }

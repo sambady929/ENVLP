@@ -317,16 +317,18 @@ function drawLabels(ctx, doc) {
   ctx.textBaseline = 'middle';
   for (const l of doc.labels || []) {
     const text = l.name || '(unnamed)';
-    const w = ctx.measureText(text).width + 8;
-    ctx.fillStyle = '#e8f0fe';
-    ctx.strokeStyle = '#2f6fed';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.rect(l.x - w / 2, l.y - 9, w, 18);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = '#1f2430';
+    const sel = l.i === ED.selLabel;
+    // Plain text, like the desktop: a net name is not a highlight.
+    ctx.fillStyle = sel ? '#2f6fed' : '#1f2430';
     ctx.fillText(text, l.x, l.y);
+    if (sel) {
+      const w = ctx.measureText(text).width;
+      ctx.strokeStyle = '#2f6fed';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(l.x - w / 2 - 3, l.y - 9, w + 6, 18);
+      ctx.stroke();
+    }
   }
 }
 
@@ -517,7 +519,11 @@ function bindCanvas() {
   c.addEventListener('mousemove', (e) => {
     const w = toWorld(e.clientX, e.clientY);
     ED.mouse = { x: snap(w.x), y: snap(w.y) };
-    if (!ED.drag) { if (ED.wireFrom) draw(); return; }
+    if (!ED.drag) {
+      // The ghost follows the cursor, and the wire preview follows it too.
+      if (ED.wireFrom || ED.placing) draw();
+      return;
+    }
     if (ED.drag.mode === 'pan') {
       ED.pan.x = ED.drag.px + (e.clientX - ED.drag.sx);
       ED.pan.y = ED.drag.py + (e.clientY - ED.drag.sy);
@@ -537,7 +543,14 @@ function bindCanvas() {
     if (ED.drag.mode === 'wire') {
       const dx = snap(w.x - ED.drag.sx), dy = snap(w.y - ED.drag.sy);
       if (!dx && !dy) return;
-      docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: dx, dy: dy }]);
+      // The move is relative, so send only what has changed since the last
+      // step -- otherwise the drag compounds and the wire flies away.
+      const ddx = dx - (ED.drag.lastDx || 0);
+      const ddy = dy - (ED.drag.lastDy || 0);
+      if (!ddx && !ddy) return;
+      ED.drag.lastDx = dx;
+      ED.drag.lastDy = dy;
+      docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: ddx, dy: ddy }]);
       return;
     }
     if (ED.drag.mode === 'marquee') {
@@ -774,17 +787,14 @@ function pasteClipboard() {
   if (sel.length) setStatus('Pasted ' + sel.length + ' component(s)');
 }
 function labelWire() {
-  // The desktop's flow: type the names (space separated), then click each net
-  // to place them one by one.
-  const answer = window.prompt('Net name(s) to place, separated by spaces:', '');
-  if (answer === null) return;
-  const names = answer.split(/\s+/).filter(Boolean);
-  if (!names.length) return;
-  ED.labelQueue = names;
-  ED.tool = 'select';
-  syncTools();
-  setStatus('Net label: click a net to place "' + names[0] + '" — Esc stops.');
-  draw();
+  // The desktop's flow, in an in-app dialog: type the names (space
+  // separated), then click each net to place them one by one.
+  const dlg = document.getElementById('netlabel');
+  if (!dlg) return;
+  const input = $('netlabel-input');
+  input.value = '';
+  dlg.showModal();
+  input.focus();
 }
 
 // Place the next queued net name on the net under the cursor.
@@ -887,6 +897,15 @@ function commitWireSegment() {
 }
 
 /* ------------------------------------------------------------ palette --- */
+
+// The parts that really have a shortcut key (the desktop's set). Only these
+// are shown with one -- the op-amp is "O", not "U" (U is undo).
+const PALETTE_SHORTCUTS = {
+  R: 'R', C: 'C', L: 'L', V: 'V', I: 'B', D: 'D / Y',
+  NMOS: 'M', PMOS: 'M', NPN: 'Q', PNP: 'Q',
+  OPAMP: 'O', GND: 'G', VDD: 'Shift+G', T: 'T', K: 'K',
+};
+
 function buildPalette() {
   const p = backend('envlp_doc_palette');
   ED.palette = p.kinds;
@@ -918,9 +937,10 @@ function buildPalette() {
     ctx.restore();
     b.appendChild(cv);
     const t = document.createElement('span');
-    // The *name* of the part, not its reference prefix: a bare "U" under the
-    // op-amp reads like a shortcut, and U is undo.
-    t.textContent = k.label;
+    // The name of the part, and its shortcut when it has one: "Resistor (R)".
+    // A bare "U" under the op-amp read like a shortcut, and U is undo.
+    const sc = PALETTE_SHORTCUTS[k.token];
+    t.textContent = sc ? k.label + ' (' + sc + ')' : k.label;
     b.appendChild(t);
     b.addEventListener('click', () => {
       armPlacement(k.token);
@@ -961,6 +981,42 @@ function openComponentList() {
 }
 
 /* --------------------------------------------------------- properties --- */
+
+// The SI suffixes, the same list (and the same labels) as the desktop's
+// value editor.
+const SI_SUFFIXES = [
+  { s: 'T', label: 'T  tera  (e+12)' },
+  { s: 'G', label: 'G  giga  (e+9)' },
+  { s: 'M', label: 'M  mega  (e+6)' },
+  { s: 'k', label: 'k  kilo  (e+3)' },
+  { s: '', label: '(none)  (e0)' },
+  { s: 'm', label: 'm  milli (e-3)' },
+  { s: 'µ', label: 'µ  micro (e-6)' },
+  { s: 'n', label: 'n  nano  (e-9)' },
+  { s: 'p', label: 'p  pico  (e-12)' },
+  { s: 'f', label: 'f  femto (e-15)' },
+];
+
+// Split a value into its number and its SI suffix ("10k" -> ["10", "k"]).
+function splitSi(text) {
+  const m = /^([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*(.*)$/.exec(text || '');
+  if (!m) return [text || '', ''];
+  const num = m[1];
+  let suf = (m[2] || '').trim();
+  const alias = { Meg: 'M', meg: 'M', MEG: 'M', u: 'µ', K: 'k', T: 'T' };
+  if (alias[suf]) suf = alias[suf];
+  const known = SI_SUFFIXES.some((x) => x.s === suf);
+  return known ? [num, suf] : [num, suf];
+}
+
+// The name the desktop gives a component's value field.
+function valueFieldName(kind) {
+  if (kind === 'OPAMP' || kind === 'FDOPAMP' || kind === 'AMP') return 'Gain';
+  if (kind === 'V' || kind === 'I') return 'DC';
+  return 'Value';
+}
+const isSource = (kind) => kind === 'V' || kind === 'I';
+
 function renderProps() {
   const host = document.getElementById('props');
   host.innerHTML = '';
@@ -975,10 +1031,28 @@ function renderProps() {
       d.appendChild(html);
       host.appendChild(d);
     };
-    const val = document.createElement('input');
-    val.value = c.value || '';
-    val.addEventListener('change', () => docSet([{ op: 'value', ref: ref, text: val.value }]));
-    row(c.ref, val);
+    // The value: the gain of an amplifier, the DC level of a source, the
+    // resistance of a resistor -- the desktop names it the same way.
+    if (isSource(c.kind)) {
+      const dc = document.createElement('input');
+      dc.value = c.dc || '';
+      dc.title = 'DC value';
+      dc.addEventListener('change', () =>
+        docSet([{ op: 'value', ref: ref, field: 'dc', text: dc.value }]));
+      row('DC', dc);
+      const ac = document.createElement('input');
+      ac.value = c.ac || '';
+      ac.title = 'AC amplitude';
+      ac.addEventListener('change', () =>
+        docSet([{ op: 'value', ref: ref, field: 'ac', text: ac.value }]));
+      row('AC', ac);
+    } else {
+      const val = document.createElement('input');
+      val.value = c.value || '';
+      val.addEventListener('change', () =>
+        docSet([{ op: 'value', ref: ref, field: 'value', text: val.value }]));
+      row(valueFieldName(c.kind), val);
+    }
 
     // copies: "copy of <unit>", n or n/d
     const units = (ED.doc.components || []).filter((o) => o.ref !== ref && o.kind === c.kind);
@@ -1004,7 +1078,8 @@ function renderProps() {
 
     // The model parameters: gm, ro, Cgs, and the passives' parasitics. They
     // are off by default (a component is ideal unless you ask otherwise), so
-    // each one has its own switch, exactly as in the desktop app.
+    // each one has its own switch, exactly as in the desktop app -- and the
+    // value is a number plus an SI suffix, as it is there.
     const params = c.params || [];
     if (params.length) {
       const h = document.createElement('div');
@@ -1027,19 +1102,28 @@ function renderProps() {
             docSet([{ op: 'param_on', ref: ref, name: p.name, on: sw.checked ? 'true' : 'false' }]));
           d.appendChild(sw);
         }
+        const [num, suf] = splitSi(p.text || '');
         const val = document.createElement('input');
-        val.value = p.text || '';
+        val.className = 'mantissa';
+        val.value = num;
         val.title = (p.desc || p.name) + (p.unit ? ' [' + p.unit + ']' : '');
         val.disabled = p.parasitic && !p.on;
-        val.addEventListener('change', () =>
-          docSet([{ op: 'param', ref: ref, name: p.name, text: val.value }]));
         d.appendChild(val);
-        if (p.unit) {
-          const u = document.createElement('span');
-          u.className = 'unit';
-          u.textContent = p.unit;
-          d.appendChild(u);
+        const sel = document.createElement('select');
+        sel.className = 'suffix';
+        for (const s of SI_SUFFIXES) {
+          const o = document.createElement('option');
+          o.value = s.s;
+          o.textContent = s.label;
+          sel.appendChild(o);
         }
+        sel.value = suf;
+        sel.disabled = p.parasitic && !p.on;
+        d.appendChild(sel);
+        const commit = () => docSet([{ op: 'param', ref: ref, name: p.name,
+                                       text: val.value.trim() + sel.value }]);
+        val.addEventListener('change', commit);
+        sel.addEventListener('change', commit);
         host.appendChild(d);
       }
     }

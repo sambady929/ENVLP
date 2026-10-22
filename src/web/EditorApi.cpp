@@ -214,6 +214,8 @@ std::string geometry() {
         js << ",\"flip_h\":" << (pl.flip_h ? "true" : "false");
         js << ",\"flip_v\":" << (pl.flip_v ? "true" : "false");
         js << ",\"value\":" << q(c.value_text);
+        js << ",\"dc\":" << q(c.dc_text);
+        js << ",\"ac\":" << q(c.ac_text);
         js << ",\"mirror\":" << q(c.mirror_ref);
         js << ",\"mult\":" << c.mirror_num() << ",\"den\":" << c.mirror_dn();
         // The model parameters of this kind (gm, ro, Cgs, the passives'
@@ -444,7 +446,13 @@ const char* envlp_doc_set(const char* ops_json) {
             syms::Component* c = nullptr;
             for (auto& cc : g_doc.circuit.comps)
                 if (cc.ref == get(o, "ref")) c = &cc;
-            if (c) c->value_text = get(o, "text");
+            if (c) {
+                // The field: the value itself, or a source's DC / AC level.
+                const std::string field = get(o, "field", "value");
+                if (field == "dc") c->dc_text = get(o, "text");
+                else if (field == "ac") c->ac_text = get(o, "text");
+                else c->value_text = get(o, "text");
+            }
         } else if (op == "mirror") {
             syms::Component* c = nullptr;
             for (auto& cc : g_doc.circuit.comps)

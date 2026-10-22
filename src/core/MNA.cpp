@@ -987,6 +987,17 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             stamp_branch(o, -1, k);
             if (a >= 0) sys.Y(k, a) -= gain;
             add_gbw_pole(sys, c, gain, gbw, k, o, s);
+            // The block's own parasitics (off by default): the input
+            // impedance and capacitance to ground, and the output impedance
+            // in series with the output branch (v(out) = A*v(in) + Rout*i).
+            if (c.param_enabled("Rin") && a >= 0)
+                stamp_adm(a, -1, ex(1) / reg_param(sys.params, c, "Rin"));
+            if (!dc_mode && c.param_enabled("Cin") && a >= 0)
+                stamp_cap(a, -1, reg_param(sys.params, c, "Cin"));
+            if (c.param_enabled("Rout"))
+                sys.Y(k, k) -= reg_param(sys.params, c, "Rout");
+            if (!dc_mode && c.param_enabled("Cout") && o >= 0)
+                stamp_cap(o, -1, reg_param(sys.params, c, "Cout"));
             break;
         }
         case Kind::OPAMP: {
@@ -999,6 +1010,17 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             if (im >= 0) sys.Y(k, im) += gain;
             if (ip >= 0) sys.Y(k, ip) -= gain;
             add_gbw_pole(sys, c, gain, gbw, k, o, s);
+            // The amplifier's own parasitics (off by default): the
+            // differential input impedance and capacitance, and the output
+            // impedance in series with the output.
+            if (c.param_enabled("Rin") && ip >= 0 && im >= 0)
+                stamp_adm(ip, im, ex(1) / reg_param(sys.params, c, "Rin"));
+            if (!dc_mode && c.param_enabled("Cin") && ip >= 0 && im >= 0)
+                stamp_cap(ip, im, reg_param(sys.params, c, "Cin"));
+            if (c.param_enabled("Rout"))
+                sys.Y(k, k) -= reg_param(sys.params, c, "Rout");
+            if (!dc_mode && c.param_enabled("Cout") && o >= 0)
+                stamp_cap(o, -1, reg_param(sys.params, c, "Cout"));
             break;
         }
         case Kind::NULLOR: {
@@ -1036,6 +1058,19 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             }
             // v(out+) - v(out-) constraint (row kp already couples op-on)
             if (on >= 0) sys.Y(kp, on) -= 1;
+            // The amplifier's own parasitics (off by default): the
+            // differential input impedance and capacitance, and the
+            // differential output impedance and capacitance (between the two
+            // outputs, which is where a fully differential amplifier's output
+            // impedance lives).
+            if (c.param_enabled("Rin") && ip >= 0 && im >= 0)
+                stamp_adm(ip, im, ex(1) / reg_param(sys.params, c, "Rin"));
+            if (!dc_mode && c.param_enabled("Cin") && ip >= 0 && im >= 0)
+                stamp_cap(ip, im, reg_param(sys.params, c, "Cin"));
+            if (c.param_enabled("Rout") && op >= 0 && on >= 0)
+                stamp_adm(op, on, ex(1) / reg_param(sys.params, c, "Rout"));
+            if (!dc_mode && c.param_enabled("Cout") && op >= 0 && on >= 0)
+                stamp_cap(op, on, reg_param(sys.params, c, "Cout"));
             // GBW: add the dominant pole (s/w0)*(v(op) - v(on)) to the kp row.
             // `gbw` is already the *angular* gain-bandwidth (rad/s) -- amp_gbw
             // registers 2*pi*GBW_Hz -- so the extra 2*pi here double-counted it

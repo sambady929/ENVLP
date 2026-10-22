@@ -143,7 +143,8 @@ kbd {
 .prow.param { gap: 4px; }
 .prow.param > span { min-width: 52px; font-size: 12px; color: var(--text); }
 .prow.param input[type="checkbox"] { flex: 0 0 auto; width: auto; }
-.prow.param .unit { min-width: 0; color: var(--dim); font-size: 11px; }
+.prow.param .mantissa { flex: 0 0 62px; }
+.prow.param .suffix { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
 
 /* The operating point lives in its own section: it is a property of the
    circuit, not of the analysis that happens to be selected. */
@@ -177,6 +178,23 @@ button.primary {
 }
 button.primary:hover { background: #2a63d4; }
 button.ghost { background: var(--surface); }
+/* the prominent "How To Use" button */
+button.howto {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  font-weight: 600; padding: 5px 13px;
+}
+button.howto:hover { background: #2a63d4; }
+/* the link out to the author's site */
+a.linkbtn {
+  display: inline-block; text-decoration: none; font-size: 13px;
+  color: var(--accent); border: 1px solid var(--border); background: var(--surface);
+  border-radius: 6px; padding: 5px 11px;
+}
+a.linkbtn:hover { background: var(--muted); }
+
+/* the app's button bar under the result text */
+.copybar { display: flex; gap: 6px; padding-top: 6px; }
+.copybar button { font-size: 12.5px; padding: 4px 10px; }
 
 .status { font-size: 12px; color: var(--dim); min-height: 15px; }
 .status.err { color: #c03131; white-space: pre-wrap; }
@@ -214,6 +232,14 @@ table.keys kbd { float: none; background: var(--muted); }
   gap: 6px; padding: 12px 16px 16px;
 }
 .citem { text-align: left; }
+
+/* the net-label dialog */
+.help-body { padding: 12px 16px 16px; }
+.help-body input[type="text"] {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border);
+  border-radius: 6px; font-family: var(--mono);
+}
+.help-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
 
 /* Narrow windows: the side panels shrink but stay usable (the app is often
    embedded in an iframe), and below that they stack above and below the
