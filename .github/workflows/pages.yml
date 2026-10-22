@@ -49,32 +49,26 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Emscripten
-        uses: mymindstorm/setup-emsdk@v2
+      - name: Cache the Emscripten SDK
+        uses: actions/cache@v4
         with:
-          version: ${{ env.EMSDK_VERSION }}
+          # The SDK is ~1 GB (llvm, node, python), so it is worth keeping.
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+          restore-keys: |
+            emsdk-${{ env.EMSDK_VERSION }}-
 
-      - name: Activate Emscripten
+      - name: Install Emscripten
+        shell: bash
+        run: bash tools/install_emsdk.sh
+
+      - name: Check the Emscripten install
         shell: bash
         run: |
           set -euo pipefail
-          # setup-emsdk usually puts emcc on PATH already; if it does not, find
-          # the SDK the same way tools/build_web.sh does -- node and python come
-          # with the SDK and emcc spawns both.
-          if ! command -v em++ >/dev/null 2>&1; then
-            for d in "${EMSDK:-}" "$HOME/emsdk" /emsdk /opt/emsdk /usr/local/emsdk; do
-              [ -n "$d" ] || continue
-              [ -f "$d/upstream/emscripten/em++.py" ] || continue
-              export EMSDK="$d"
-              for n in "$d"/node/*_64bit "$d"/python/*_64bit; do
-                if [ -d "$n" ]; then PATH="$n:$PATH"; fi
-              done
-              PATH="$d/upstream/emscripten:$PATH"
-              export EM_CONFIG="${EM_CONFIG:-$d/.emscripten}"
-              break
-            done
-          fi
-          command -v em++ >/dev/null 2>&1 || { echo "emsdk not found"; exit 1; }
+          # tools/build_web.sh and tools/wasm-probes/run.sh both find the SDK
+          # at $HOME/emsdk themselves, so this is only a sanity check.
+          source "$HOME/emsdk/emsdk_env.sh"
           em++ --version
 
       - name: Cache the wasm dependency build
