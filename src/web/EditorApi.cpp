@@ -348,7 +348,17 @@ const char* envlp_doc_set(const char* ops_json) {
             c.kind = k;
             c.nodes.assign(syms::pin_count(k), "");
             c.value_text = get(o, "value");
-            g_doc.add(c, getn(o, "x", 0), getn(o, "y", 0));
+            const std::string ref = g_doc.add(c, getn(o, "x", 0), getn(o, "y", 0));
+            // The orientation of the placed part (the ghost's rotation and
+            // flips), so the browser can place a part the way the desktop's
+            // ghost does.
+            auto it = g_doc.placements.find(ref);
+            if (it != g_doc.placements.end()) {
+                it->second.rot = int(getn(o, "rot", 0)) % 360;
+                if (it->second.rot < 0) it->second.rot += 360;
+                it->second.flip_h = getb(o, "flip_h", false);
+                it->second.flip_v = getb(o, "flip_v", false);
+            }
         } else if (op == "remove") {
             g_doc.remove(get(o, "ref"));
         } else if (op == "move") {

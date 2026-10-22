@@ -26,6 +26,9 @@ const ED = {
   art: null,            // symbol artwork, kind -> {stroke:[Path2D],fill:[Path2D]}
   tool: 'select',
   placing: null,        // kind token armed for placement
+  placeRot: 0,          // its rotation, in degrees
+  placeFlipH: false,
+  placeFlipV: false,
   selection: new Set(), // selected component refs
   selWire: -1,          // selected wire index
   drag: null,           // {mode:'move'|'marquee'|'pan', ...}
@@ -218,12 +221,27 @@ function drawComponents(ctx, doc) {
     }
     ctx.restore();
 
-    // reference + value, placed by the front-end
+    // reference + value, placed by the front-end. Ground carries no text at
+    // all and every supply rail is simply called VDD -- the rail is one net,
+    // so numbering it would only be noise.
     const horiz = (c.bbox[2] - c.bbox[0]) >= (c.bbox[3] - c.bbox[1]);
+    const isGnd = c.kind === 'GND';
+    const isVdd = c.kind === 'VDD';
     ctx.fillStyle = selected ? '#2f6fed' : '#10141a';
     ctx.font = "italic bold 12px 'Segoe UI', sans-serif";
     ctx.textAlign = 'center';
-    if (horiz) {
+    if (isGnd) {
+      // no label
+    } else if (isVdd) {
+      if (horiz) {
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('VDD', (c.bbox[0] + c.bbox[2]) / 2, c.bbox[1] - 2);
+      } else {
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('VDD', c.bbox[2] + 4, (c.bbox[1] + c.bbox[3]) / 2 - 1);
+      }
+    } else if (horiz) {
       ctx.textBaseline = 'bottom';
       ctx.fillText(c.ref, (c.bbox[0] + c.bbox[2]) / 2, c.bbox[1] - 2);
       if (c.value) {
@@ -298,11 +316,21 @@ function drawHud(ctx, W, H) {
   ctx.font = '12px "Segoe UI", sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  const hint = ED.placing ? 'click to place ' + ED.placing + '  (Esc to cancel)'
-    : ED.tool === 'wire' ? (ED.wireFrom ? 'click the end point  (Esc cancels)' : 'click a pin or a point to start a wire')
-    : ED.selWire >= 0 ? 'wire selected — Del removes it, N names its net'
-    : ED.selection.size ? ED.selection.size + ' selected — drag to move, R rotate, F flip, Del remove'
-    : 'pick a part on the left, or W to wire';
+  let hint;
+  if (ED.placing) {
+    hint = 'click to place ' + ED.placing +
+      (ED.placeRot ? '  (rotated ' + ED.placeRot + '°' +
+        (ED.placeFlipH ? ', flipped' : '') + (ED.placeFlipV ? ', flipped' : '') + ')' : '') +
+      '  (Space rotates, Esc cancels)';
+  } else if (ED.tool === 'wire') {
+    hint = ED.wireFrom ? 'click the end point  (Esc cancels)' : 'click a pin or a point to start a wire';
+  } else if (ED.selWire >= 0) {
+    hint = 'wire selected — Del removes it, N names its net';
+  } else if (ED.selection.size) {
+    hint = ED.selection.size + ' selected — drag to move, Space rotates, Del removes';
+  } else {
+    hint = 'pick a part on the left (or press R, C, L, V, O…), or W to wire';
+  }
   ctx.fillText(hint, 10, H - 8);
   const d = ED.doc || {};
   ctx.textAlign = 'right';
@@ -358,7 +386,10 @@ function bindCanvas() {
 
     if (ED.placing) {
       const x = snap(w.x), y = snap(w.y);
-      const op = { op: 'add', kind: ED.placing, x: x, y: y };
+      const op = { op: 'add', kind: ED.placing, x: x, y: y,
+                   rot: ED.placeRot,
+                   flip_h: ED.placeFlipH ? 1 : 0,
+                   flip_v: ED.placeFlipV ? 1 : 0 };
       const kindInfo = ED.palette.find((k) => k.token === ED.placing);
       if (kindInfo && (kindInfo.token === 'V' || kindInfo.token === 'I'))
         op.value = '';
@@ -491,25 +522,115 @@ function bindCanvas() {
   c.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
+/* The letter keys place parts, exactly as in the desktop app -- so the two
+ * front-ends feel the same. "g" is ground, Shift+G the supply rail, and
+ * "m"/"q" toggle between the two transistor polarities. */
+const PLACE_KEYS = {
+  r: 'R', c: 'C', l: 'L', v: 'V', b: 'I', d: 'D', y: 'D',
+  t: 'T', k: 'K', o: 'OPAMP', g: 'GND',
+};
+
 function bindKeys() {
   document.addEventListener('keydown', (e) => {
-    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(
-      (document.activeElement || {}).tagName);
-    if (typing) return;
-    if (e.key === 'Escape') {
-      ED.placing = null; ED.wireFrom = null; ED.tool = 'select';
-      syncTools(); draw(); return;
+    // A modal dialog (the help) owns the keyboard while it is open.
+    const dlg = document.querySelector('dialog[open]');
+    if (dlg) {
+      if (e.key === 'Escape') { e.preventDefault(); dlg.close(); }
+      return;
     }
-    if (e.key === 'w' || e.key === 'W') { ED.tool = 'wire'; syncTools(); draw(); return; }
-    if (e.key === 'r' || e.key === 'R') { rotateSel(1); return; }
-    if (e.key === 'f' || e.key === 'F') { flipSel(e.shiftKey ? 'v' : 'h'); return; }
-    if (e.key === 'Delete' || e.key === 'Backspace') { deleteSel(); return; }
-    if (e.key === 'n' || e.key === 'N') { labelWire(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); docUndo(); return; }
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'Z')))
-      { e.preventDefault(); docRedo(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); window.runAnalysis(); }
+    // Text fields keep their own keystrokes.
+    const tag = (document.activeElement || {}).tagName;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+
+    const ctrl = e.ctrlKey || e.metaKey;
+    const shift = e.shiftKey;
+    const k = e.key;
+
+    if (k === 'Escape') {
+      ED.placing = null; ED.wireFrom = null; ED.tool = 'select';
+      syncTools(); syncPalette(); draw();
+      return;
+    }
+    if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); deleteSel(); return; }
+    if (k === 'F1') { e.preventDefault(); showHelp(); return; }
+    if (ctrl && k === 'Enter') { e.preventDefault(); window.runAnalysis(); return; }
+    if (ctrl && (k === 'z' || k === 'Z')) { e.preventDefault(); docUndo(); return; }
+    if (ctrl && (k === 'y' || k === 'Y' || (shift && (k === 'z' || k === 'Z')))) {
+      e.preventDefault(); docRedo(); return;
+    }
+
+    // Space rotates, Shift+Space flips horizontally, Ctrl+Space flips
+    // vertically -- the desktop's scheme. The armed part is rotated while
+    // placing, otherwise the selection is.
+    if (k === ' ') {
+      e.preventDefault();
+      if (ctrl) flipGhost(false);
+      else if (shift) flipGhost(true);
+      else rotateGhost(90);
+      return;
+    }
+    if (ctrl || e.altKey) return;   // leave the other combos to the browser
+
+    const lower = k.length === 1 ? k.toLowerCase() : '';
+    if (!lower) return;
+
+    // "?" opens the help as well.
+    if (k === '?') { showHelp(); return; }
+
+    // Undo / redo, the desktop's bare letters.
+    if (lower === 'u') { shift ? docRedo() : docUndo(); return; }
+
+    // Wire and net labels.
+    if (lower === 'w') {
+      ED.tool = 'wire'; ED.placing = null;
+      syncTools(); syncPalette(); draw();
+      return;
+    }
+    if (lower === 'n') { labelWire(); return; }
+
+    // Frame every component.
+    if (lower === 'f' && !shift) { frameAll(); return; }
+
+    // Parts.
+    if (shift) {
+      if (lower === 'g') { armPlacement('VDD'); return; }
+      return;
+    }
+    if (lower === 'm') {
+      armPlacement(ED.placing === 'NMOS' ? 'PMOS' : 'NMOS'); return;
+    }
+    if (lower === 'q') {
+      armPlacement(ED.placing === 'NPN' ? 'PNP' : 'NPN'); return;
+    }
+    if (PLACE_KEYS[lower]) { armPlacement(PLACE_KEYS[lower]); return; }
   });
+}
+
+// Arm a part for placement (the palette does the same by click).
+function armPlacement(token) {
+  ED.placing = token;
+  ED.placeRot = 0; ED.placeFlipH = false; ED.placeFlipV = false;
+  ED.tool = 'select';
+  syncTools(); syncPalette(); draw();
+}
+
+// Rotate / flip the armed part, or the selection when nothing is armed.
+function rotateGhost(delta) {
+  if (ED.placing) {
+    ED.placeRot = ((ED.placeRot + delta) % 360 + 360) % 360;
+    draw();
+    return;
+  }
+  if (ED.selection.size) rotateSel(1);
+}
+function flipGhost(horizontal) {
+  if (ED.placing) {
+    if (horizontal) ED.placeFlipH = !ED.placeFlipH;
+    else ED.placeFlipV = !ED.placeFlipV;
+    draw();
+    return;
+  }
+  if (ED.selection.size) flipSel(horizontal ? 'h' : 'v');
 }
 
 function rotateSel(dir) {
@@ -573,11 +694,7 @@ function buildPalette() {
     t.textContent = k.prefix;
     b.appendChild(t);
     b.addEventListener('click', () => {
-      ED.placing = k.token;
-      ED.tool = 'select';
-      syncTools();
-      syncPalette();
-      draw();
+      armPlacement(k.token);
     });
     host.appendChild(b);
   }

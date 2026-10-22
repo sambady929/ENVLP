@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=2">
+<link rel="stylesheet" href="style.css?v=4">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -23,6 +23,7 @@
   <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
   <button id="btn-open" class="ghost">Open .scx…</button>
   <button id="btn-save" class="ghost">Save .scx…</button>
+  <button id="btn-help" class="ghost" title="Help and shortcuts (F1)">?</button>
   <input type="file" id="file" accept=".scx,.txt" hidden>
 </header>
 
@@ -35,19 +36,28 @@
     <button class="tool" data-tool="wire">Wire <kbd>W</kbd></button>
     <div class="hint">
       <b>Place</b> pick a part, click the canvas.<br>
+      <b>Keys</b> R C L V B O M Q G place parts.<br>
       <b>Wire</b> W, click start, click end.<br>
       <b>Move</b> drag a part (wires follow).<br>
-      <b>Rotate</b> R &nbsp; <b>Flip</b> F / Shift+F<br>
+      <b>Rotate</b> Space &nbsp; <b>Flip</b> Shift+Space<br>
       <b>Label a net</b> N, click a wire.<br>
-      <b>Delete</b> Del &nbsp; <b>Pan</b> middle-drag &nbsp; <b>Zoom</b> wheel
+      <b>Delete</b> Del &nbsp; <b>Fit</b> F &nbsp; <b>Undo</b> U<br>
+      <b>Help</b> F1
     </div>
   </aside>
+
+  <div class="gutter gutter-v pgutter" data-target="--palette-w" data-dir="1"
+       title="Drag to resize the palette"></div>
 
   <section class="center">
     <div class="canvas-wrap">
       <canvas id="canvas" tabindex="0"></canvas>
       <div id="hud" class="hud"></div>
     </div>
+
+    <div class="gutter gutter-h" data-target="--results-h" data-dir="1"
+         title="Drag to resize the results pane"></div>
+
     <div class="results">
       <nav class="tabs">
         <button data-tab="text" class="active">Report</button>
@@ -73,6 +83,9 @@
     </div>
   </section>
 
+  <div class="gutter gutter-v dgutter" data-target="--dock-w" data-dir="-1"
+       title="Drag to resize the analysis panel"></div>
+
   <aside class="dock">
     <div class="ttl">Analysis</div>
     <div class="grid">
@@ -90,43 +103,69 @@
         <option value="Differential">Differential (Adm/Acm/CMRR)</option>
       </select>
 
-      <label for="input">input</label>
-      <input id="input" value="V1" placeholder="V1 / I1">
+      <!-- Every field below is tagged with the analyses that need it; the
+           panel shows only the ones the chosen analysis actually uses. -->
+      <label for="input" data-kinds="TransferFunction PSRR LoopGain InputImpedance Noise">in</label>
+      <input id="input" value="V1" placeholder="V1 / I1"
+             data-kinds="TransferFunction PSRR LoopGain InputImpedance Noise">
 
-      <label for="output">output</label>
-      <input id="output" value="V(out)" placeholder="V(out) or V(a)-V(b)">
+      <label for="output" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise Differential">out</label>
+      <input id="output" value="V(out)" placeholder="V(out) or V(a)-V(b)"
+             data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise Differential">
 
-      <label for="port_p" class="diff" hidden>port +</label>
-      <input id="port_p" class="diff" hidden placeholder="vin">
+      <label for="port_p" data-kinds="Differential">in+</label>
+      <input id="port_p" placeholder="vin" data-kinds="Differential">
 
-      <label for="port_n" class="diff" hidden>port &minus;</label>
-      <input id="port_n" class="diff" hidden placeholder="vcm">
+      <label for="port_n" data-kinds="Differential">in−</label>
+      <input id="port_n" placeholder="vcm" data-kinds="Differential">
 
-      <label for="sweep">sweep</label>
-      <div class="inline">
+      <label for="probe" data-kinds="LoopGain">ref. amplifier</label>
+      <input id="probe" placeholder="U1" data-kinds="LoopGain"
+             title="The amplifier whose gain is set to zero to break the loop">
+
+      <label for="f0" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">sweep</label>
+      <div class="inline" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
         <input id="f0" value="1" title="start [Hz]">
         <input id="f1" value="1e9" title="stop [Hz]">
         <input id="points" value="10" title="points per interval">
       </div>
 
-      <label for="dc_mode">DC model</label>
-      <select id="dc_mode">
-        <option value="1">1. gm/Id (symbolic)</option>
-        <option value="2">2. square law (symbolic)</option>
+      <label for="sweep_type" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">interval</label>
+      <select id="sweep_type" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
+        <option value="decade">decade</option>
+        <option value="octave">octave</option>
+        <option value="linear">linear</option>
       </select>
 
-      <label for="vdd">VDD / Vthn / Vthp</label>
-      <div class="inline">
-        <input id="vdd" value="5" title="supply [V]">
-        <input id="vthn" value="0.6" title="Vthn [V]">
-        <input id="vthp" value="0.6" title="Vthp [V]">
-      </div>
-
-      <label class="check"><input type="checkbox" id="prune" checked>
-        ignore negligible terms</label>
-      <label class="check"><input type="checkbox" id="assume_sat" checked>
-        assume all devices saturated</label>
+      <label class="check" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
+        <input type="checkbox" id="prune" checked> ignore negligible terms
+      </label>
     </div>
+
+    <!-- The operating point is a property of the circuit, not of one
+         analysis, so it lives in its own (collapsed) section instead of
+         being repeated under every analysis. -->
+    <details id="dcbox" class="dcbox">
+      <summary>operating point (DC)</summary>
+      <div class="grid">
+        <label for="dc_mode">DC model</label>
+        <select id="dc_mode">
+          <option value="1">1. gm/Id (symbolic)</option>
+          <option value="2">2. square law (symbolic)</option>
+        </select>
+
+        <label for="vdd">VDD / Vthn / Vthp</label>
+        <div class="inline">
+          <input id="vdd" value="5" title="supply [V]">
+          <input id="vthn" value="0.6" title="Vthn [V]">
+          <input id="vthp" value="0.6" title="Vthp [V]">
+        </div>
+
+        <label class="check"><input type="checkbox" id="assume_sat" checked>
+          assume all devices saturated</label>
+      </div>
+    </details>
+
     <button id="run" class="primary">Run analysis</button>
     <div id="status" class="status"></div>
     <div class="ttl">Properties</div>
@@ -139,8 +178,106 @@
   every analysis run in your browser; nothing is uploaded.
 </footer>
 
-<script src="envlp.js?v=2"></script>
-<script src="editor.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<dialog id="help" class="help">
+  <div class="help-head">
+    <h2>ENVLP</h2>
+    <button id="help-close" class="ghost">Close</button>
+  </div>
+
+  <section>
+    <h3>Getting started</h3>
+    <ol>
+      <li>Pick a part in the <b>palette</b> (left), then click the canvas to
+        place it. <kbd>Space</kbd> rotates the ghost,
+        <kbd>Shift+Space</kbd> flips it, <kbd>Esc</kbd> cancels.</li>
+      <li><b>Wire</b> (<kbd>W</kbd>): click to start, click the destination —
+        a pin or any grid point. <kbd>Space</kbd> while wiring swaps the route
+        between horizontal-first and vertical-first. Moving a part drags the
+        wires attached to its pins.</li>
+      <li><b>Net labels</b> (<kbd>N</kbd>): type space-separated names
+        (<code>out in</code>) and click each net.</li>
+      <li>Place at least one <b>GND</b> symbol.</li>
+      <li>Choose an <b>analysis</b> on the right, fill in the fields it asks
+        for, and press <b>Run analysis</b> (<kbd>Ctrl+Enter</kbd>).</li>
+      <li>Read the <b>Report</b>, the typeset <b>Math</b>, and the
+        <b>Plot</b> (Bode, Nyquist, Nichols, noise).</li>
+    </ol>
+    <p class="note">Drag the thin dividers between the palette, the canvas and
+      the analysis panel to resize them.</p>
+  </section>
+
+  <section>
+    <h3>Keyboard shortcuts</h3>
+    <table class="keys">
+      <tr><td><kbd>R</kbd> <kbd>C</kbd> <kbd>L</kbd></td><td>resistor, capacitor, inductor</td></tr>
+      <tr><td><kbd>V</kbd> <kbd>B</kbd></td><td>voltage source, current source</td></tr>
+      <tr><td><kbd>M</kbd></td><td>N-MOSFET (press <kbd>M</kbd> again) P-MOSFET</td></tr>
+      <tr><td><kbd>Q</kbd></td><td>NPN (press <kbd>Q</kbd> again) PNP</td></tr>
+      <tr><td><kbd>D</kbd> or <kbd>Y</kbd></td><td>diode</td></tr>
+      <tr><td><kbd>O</kbd></td><td>op-amp</td></tr>
+      <tr><td><kbd>G</kbd></td><td>ground (<kbd>Shift+G</kbd>) supply rail (VDD)</td></tr>
+      <tr><td><kbd>T</kbd> <kbd>K</kbd></td><td>transformer, coupled inductors</td></tr>
+      <tr><td><kbd>W</kbd></td><td>wire tool</td></tr>
+      <tr><td><kbd>N</kbd></td><td>place net label(s)</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>rotate the ghost / selection 90°</td></tr>
+      <tr><td><kbd>Shift+Space</kbd></td><td>flip horizontally</td></tr>
+      <tr><td><kbd>Ctrl+Space</kbd></td><td>flip vertically</td></tr>
+      <tr><td><kbd>F</kbd></td><td>fit the components to the view</td></tr>
+      <tr><td><kbd>Del</kbd></td><td>delete the selection</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>cancel the current action</td></tr>
+      <tr><td><kbd>U</kbd> / <kbd>Shift+U</kbd></td><td>undo / redo</td></tr>
+      <tr><td><kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd></td><td>undo / redo</td></tr>
+      <tr><td><kbd>Ctrl+Enter</kbd></td><td>run the analysis</td></tr>
+      <tr><td><kbd>F1</kbd> / <kbd>?</kbd></td><td>this help</td></tr>
+    </table>
+    <p class="note">Shortcuts are ignored while you are typing in a field.</p>
+  </section>
+
+  <section>
+    <h3>What each analysis does</h3>
+    <dl class="analyses">
+      <dt>Transfer function H(s)</dt>
+      <dd>the small-signal gain V(out)/V(in). Reports the DC gain, the pole/zero
+        corner frequencies and the dominant time constant.</dd>
+
+      <dt>AC (small-signal)</dt>
+      <dd>drives every independent source and superposes the responses, so
+        there is no <i>in</i> field.</dd>
+
+      <dt>DC operating point</dt>
+      <dd>the large-signal bias: node voltages and each device's Id/Vdsat.
+        The model, the supply rail and the thresholds are set in the
+        <i>operating point</i> section below the analysis options.</dd>
+
+      <dt>PSR / PSRR</dt>
+      <dd>ripple on the supply rail referred to the output.</dd>
+
+      <dt>Loop gain (return ratio)</dt>
+      <dd>Rosenstark return ratio: name the amplifier in <i>ref. amplifier</i>
+        — the part whose gain is set to zero to break the loop.</dd>
+
+      <dt>Short-circuit current</dt>
+      <dd>the output current into a short.</dd>
+
+      <dt>Input impedance / Output impedance</dt>
+      <dd>Zin at the input port; Zout with every source turned off (the
+        output-impedance analysis has no <i>in</i> field).</dd>
+
+      <dt>Noise</dt>
+      <dd>output and input-referred noise density, integrated over the sweep
+        band, with a per-source contribution breakdown.</dd>
+
+      <dt>Differential (Adm/Acm/CMRR)</dt>
+      <dd>a differential drive (<i>in+</i> / <i>in−</i>) and a differential
+        output, given as a port such as <code>V(a)-V(b)</code>.</dd>
+    </dl>
+    <p class="note"><i>ignore negligible terms</i> drops terms far below the
+      dominant one, so the result stays readable — the low-entropy form.</p>
+  </section>
+</dialog>
+
+<script src="envlp.js?v=4"></script>
+<script src="editor.js?v=4"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

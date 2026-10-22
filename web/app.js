@@ -4,6 +4,11 @@
  */
 'use strict';
 
+/* The build id: bump it whenever the front-end or the engine changes, so a
+ * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
+ * stale copy of either). */
+const BUILD = '4';
+
 const $ = (id) => document.getElementById(id);
 
 function setStatus(msg, err) {
@@ -20,9 +25,13 @@ function options() {
     input: $('input').value.trim(),
     output: $('output').value.trim(),
     port_p: $('port_p').value.trim(), port_n: $('port_n').value.trim(),
+    // The reference amplifier: the part whose gain is set to zero to break
+    // the loop (the loop-gain analysis calls it the probe).
+    probe: $('probe').value.trim(),
     f0: parseFloat($('f0').value) || 1,
     f1: parseFloat($('f1').value) || 1e9,
     points: parseInt($('points').value, 10) || 10,
+    sweep: $('sweep_type').value,
     dc_mode: parseInt($('dc_mode').value, 10) || 1,
     vdd: parseFloat($('vdd').value) || 5,
     vthn: parseFloat($('vthn').value) || 0.6,
@@ -31,6 +40,24 @@ function options() {
     assume_saturation: $('assume_sat').checked,
   };
 }
+
+/* ------------------------------------------------- which options apply --- */
+//
+// Every option field carries the list of analyses that need it, so the panel
+// shows exactly what the chosen analysis uses -- and nothing else. (The
+// operating point is not one of them: it is a property of the circuit, so it
+// has its own section below the analysis options.)
+function applyKind() {
+  const k = $('kind').value;
+  document.querySelectorAll('[data-kinds]').forEach((el) => {
+    const kinds = (el.getAttribute('data-kinds') || '').split(/\s+/);
+    el.hidden = kinds.indexOf(k) < 0;
+  });
+  // The DC operating point *is* the DC analysis' own options, so open them.
+  const box = $('dcbox');
+  if (box && k === 'DC') box.open = true;
+}
+
 
 let last = null;   // the last analysis result
 
@@ -304,14 +331,8 @@ function htmlSource() {
 /* ------------------------------------------------------------ the wiring --- */
 function bindPanel() {
   $('run').addEventListener('click', run);
-  $('kind').addEventListener('change', () => {
-    const k = $('kind').value;
-    $('output').disabled = (k === 'DC' || k === 'InputImpedance');
-    $('input').disabled = (k === 'AC' || k === 'DC' || k === 'OutputImpedance' ||
-                           k === 'ShortCircuitCurrent' || k === 'Differential');
-    const diff = (k === 'Differential');
-    document.querySelectorAll('.diff').forEach((el) => { el.hidden = !diff; });
-  });
+  $('kind').addEventListener('change', applyKind);
+  applyKind();
   $('plot-mode').addEventListener('change', drawPlot);
   $('save-html').addEventListener('click', () => download('plot.html', htmlSource(), 'text/html'));
   $('save-py').addEventListener('click', () => download('plot.py', pythonSource(), 'text/x-python'));
@@ -342,6 +363,73 @@ function bindPanel() {
   $('btn-save').addEventListener('click', () => {
     download('schematic.scx', docSerialize(), 'text/plain');
   });
+  $('btn-help').addEventListener('click', showHelp);
+  $('help-close').addEventListener('click', () => $('help').close());
+  initGutters();
+}
+
+/* ------------------------------------------------------------- the help --- */
+function showHelp() {
+  const d = $('help');
+  if (!d) return;
+  if (!d.open) d.showModal();
+}
+
+/* ------------------------------------------------- resizable side panels --- */
+//
+// The palette, the canvas and the analysis panel are separated by thin
+// dividers that can be dragged; the sizes are remembered between visits.
+function initGutters() {
+  const root = document.documentElement;
+  const vars = ['--palette-w', '--dock-w', '--results-h'];
+
+  // The results pane starts as a percentage; make it a pixel value so it can
+  // be dragged, and restore any remembered sizes.
+  const res = document.querySelector('.results');
+  if (res) root.style.setProperty('--results-h', res.getBoundingClientRect().height + 'px');
+  try {
+    vars.forEach((v) => {
+      const s = localStorage.getItem('envlp' + v);
+      if (s) root.style.setProperty(v, s);
+    });
+  } catch (e) { /* private mode: no remembered sizes */ }
+
+  document.querySelectorAll('.gutter').forEach((g) => {
+    const name = g.dataset.target;
+    const dir = parseInt(g.dataset.dir || '1', 10);
+    const row = g.classList.contains('gutter-h');
+
+    g.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { g.setPointerCapture(e.pointerId); } catch (err) { /* no capture available */ }
+      g.classList.add('dragging');
+      const start = row ? e.clientY : e.clientX;
+      const cur = parseFloat(getComputedStyle(root).getPropertyValue(name));
+      const base = isNaN(cur) ? 0 : cur;
+
+      const move = (ev) => {
+        const now = row ? ev.clientY : ev.clientX;
+        let v = base + dir * (now - start);
+        const max = row ? window.innerHeight - 200 : window.innerWidth - 420;
+        v = Math.max(row ? 90 : 100, Math.min(max, v));
+        root.style.setProperty(name, v + 'px');
+        // the canvas has to follow its box
+        window.dispatchEvent(new Event('resize'));
+      };
+      const up = (ev) => {
+        g.classList.remove('dragging');
+        try { g.releasePointerCapture(ev.pointerId); } catch (err) { /* already gone */ }
+        g.removeEventListener('pointermove', move);
+        g.removeEventListener('pointerup', up);
+        g.removeEventListener('pointercancel', up);
+        try { localStorage.setItem('envlp' + name, root.style.getPropertyValue(name)); }
+        catch (err) { /* ignore */ }
+      };
+      g.addEventListener('pointermove', move);
+      g.addEventListener('pointerup', up);
+      g.addEventListener('pointercancel', up);
+    });
+  });
 }
 
 /* --------------------------------------------------------------- start-up --- */
@@ -356,14 +444,15 @@ function openExample(name) {
     .catch(() => setStatus('could not load examples/' + name, true));
 }
 
-createEnvLp().then((m) => {
-  window.Module = m;
-  bindPanel();
-  startEditor();
-  openExample('rc_lowpass.scx');
-}).catch((e) => {
-  setStatus('could not start the solver: ' + (e && e.message ? e.message : e), true);
-});
+createEnvLp({ locateFile: (p) => (p.endsWith('.wasm') ? p + '?v=' + BUILD : p) })
+  .then((m) => {
+    window.Module = m;
+    bindPanel();
+    startEditor();
+    openExample('rc_lowpass.scx');
+  }).catch((e) => {
+    setStatus('could not start the solver: ' + (e && e.message ? e.message : e), true);
+  });
 
 function frameAll() {
   const cs = (ED.doc.components || []);
