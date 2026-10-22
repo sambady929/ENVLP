@@ -171,6 +171,38 @@ void draw_gnd(Ctx& t) {
 }
 
 // --- controlled sources ----------------------------------------------------
+//
+// The four controlled sources are told apart by their shape, not by a letter
+// inside the box (in SPICE a VCCS is also a "G source", and the label only
+// reads as a keyboard shortcut):
+//
+//   * a voltage-*controlled* source has its control side open -- the left
+//     edge of the box is missing, so the control port is not shorted;
+//   * a current-*controlled* source has its two control terminals joined by
+//     a line inside the box: a shorted input;
+//   * near the output sits the symbol of the source itself -- a diamond
+//     with + and - for a voltage output, a diamond with an arrow for a
+//     current output.
+
+// The source diamond inside the box, near the output.
+void draw_source_diamond(Ctx& t, bool voltage) {
+    const double cx = 15, cy = 0, hw = 8, hh = 8;
+    t.w(kBody);
+    t.polyline({{cx - hw, cy}, {cx, cy - hh}, {cx + hw, cy}, {cx, cy + hh}}, true);
+    if (voltage) {
+        // "+" above the diamond, "-" below it
+        t.w(kWire);
+        t.line(cx - 3.5, cy - hh - 4, cx + 3.5, cy - hh - 4);
+        t.line(cx, cy - hh - 8, cx, cy - hh - 1);
+        t.line(cx - 3.5, cy + hh + 4, cx + 3.5, cy + hh + 4);
+    } else {
+        // an arrow through the diamond, pointing out of the output
+        t.w(kWire);
+        t.line(cx, cy + hh - 2, cx, cy - hh + 4);
+        t.arrow(cx, cy - hh + 4, cx, cy - hh + 9, 6);
+    }
+}
+
 void draw_vcvs(Ctx& t, Kind k) {
     t.w(kWire);
     t.line(40, -10, 26, -10);
@@ -178,7 +210,8 @@ void draw_vcvs(Ctx& t, Kind k) {
     t.line(-40, -10, -26, -10);
     t.line(-40, 10, -26, 10);
     t.w(kBody);
-    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // The control side is open: the box is drawn without its left edge.
+    t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, false);
     // polarity marks just outside the box, at the pin rows
     t.w(kWire);
     t.line(-23, -10, -19, -10);
@@ -187,8 +220,9 @@ void draw_vcvs(Ctx& t, Kind k) {
     t.line(19, -10, 23, -10);
     t.line(21, -12, 21, -8);
     t.line(19, 10, 23, 10);
-    // No letter inside the box: in SPICE a VCCS is also called a "G source",
-    // and the label only reads as a keyboard shortcut.
+    // The output is a voltage source (V) for the VCVS, a current source (G)
+    // for the VCCS.
+    draw_source_diamond(t, k == Kind::E);
 }
 
 void draw_body_ccvs_cccs(Ctx& t, Kind k) {
@@ -199,6 +233,10 @@ void draw_body_ccvs_cccs(Ctx& t, Kind k) {
     t.line(-40, 10, -26, 10);
     t.w(kBody);
     t.polyline({{-26, -20}, {26, -20}, {26, 20}, {-26, 20}}, true);
+    // The two control terminals are shorted: a line inside the box joins
+    // them, so the control current has no path.
+    t.w(kWire);
+    t.line(-20, -10, -20, 10);
     // input port polarity marks just outside the box
     t.w(kWire);
     t.line(-23, -10, -19, -10);
@@ -208,8 +246,9 @@ void draw_body_ccvs_cccs(Ctx& t, Kind k) {
     t.line(19, -10, 23, -10);
     t.line(21, -12, 21, -8);
     t.line(19, 10, 23, 10);
-    // No letter inside the box: in SPICE these are the "F" and "H" sources,
-    // and the label only reads as a keyboard shortcut.
+    // The output is a voltage source (H) for the CCVS, a current source (F)
+    // for the CCCS.
+    draw_source_diamond(t, k == Kind::CCVS);
 }
 
 // --- transistors -----------------------------------------------------------

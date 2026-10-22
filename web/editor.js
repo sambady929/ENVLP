@@ -499,7 +499,8 @@ function bindCanvas() {
         ED.selection.clear();
         ED.selWire = hit.wire;
         ED.selSeg = hit.seg;
-        ED.drag = { mode: 'wire', wire: hit.wire, seg: -1, sx: w.x, sy: w.y };
+        ED.drag = { mode: 'wire', wire: hit.wire, seg: -1, corner: null,
+                    sx: w.x, sy: w.y };
         docSet([{ op: 'begin' }]);
         afterChange();
         return;
@@ -558,10 +559,15 @@ function bindCanvas() {
       ED.selection.clear();
       ED.selWire = wh.wire;
       ED.selSeg = wh.seg;
-      // Grabbing the body of a wire moves the whole wire; grabbing it at a
-      // vertex moves that one segment.
+      // Grabbing a corner drags that corner (the neighbours stretch); grabbing
+      // the body of a wire drags the whole wire.
+      const pts = (ED.doc.wires || [])[wh.wire].pts;
+      let corner = null;
+      for (const p of pts) {
+        if (Math.hypot(p[0] - w.x, p[1] - w.y) < 8 / ED.zoom) { corner = p; break; }
+      }
       ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.vertex ? wh.seg : -1,
-                  sx: w.x, sy: w.y };
+                  corner: corner, sx: w.x, sy: w.y };
       docSet([{ op: 'begin' }]);
       afterChange();
       return;
@@ -614,7 +620,13 @@ function bindCanvas() {
       if (!ddx && !ddy) return;
       ED.drag.lastDx = dx;
       ED.drag.lastDy = dy;
-      docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: ddx, dy: ddy }]);
+      if (ED.drag.corner) {
+        // A corner: it moves, and the neighbours stretch to follow.
+        docSet([{ op: 'move_vertex', wire: ED.drag.wire,
+                  x: ED.drag.corner[0], y: ED.drag.corner[1], dx: ddx, dy: ddy }]);
+      } else {
+        docSet([{ op: 'move_wire', wire: ED.drag.wire, seg: ED.drag.seg, dx: ddx, dy: ddy }]);
+      }
       return;
     }
     if (ED.drag.mode === 'marquee') {
