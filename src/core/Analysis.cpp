@@ -1371,14 +1371,22 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
     vs.value_text = "0";
     cs.comps.push_back(vs);
 
-    // current through the 0 V source = current into the node
+    // The short-circuit current is driven like the AC card: every independent
+    // source is excited in turn and the responses superpose. There is no
+    // "input" to name -- the short is the excitation.
     AnalysisSpec s2 = s;
     s2.output = "I(__SHORT__)";
-    CardResult cr = analyze_tf(cs, s2);
+    CardResult cr = analyze_ac(cs, s2);
     cr.kind = AnalysisKind::ShortCircuitCurrent;
     cr.title = "Short-circuit current at " + node;
     cr.summary = "Isc(" + node + ") = " + cr.text;
     cr.text = "Isc(" + node + ") = " + cr.text;
+    // The AC card's report header says "AC analysis"; this is the short-
+    // circuit current, so the header is replaced.
+    const std::string ac_head = "AC analysis -- superposition of source AC values\n";
+    if (cr.report.compare(0, ac_head.size(), ac_head) == 0)
+        cr.report = "Short-circuit current at " + node + "\n" +
+                    cr.report.substr(ac_head.size());
     return cr;
 }
 

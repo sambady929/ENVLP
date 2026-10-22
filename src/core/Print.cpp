@@ -237,6 +237,47 @@ std::string p(const ex& e, int prec) {
 
 } // namespace
 
+// Split a sum into its terms, each with the power of s it carries and the
+// rest as its coefficient. The expression is *not* expanded, so an authored
+// grouping (R1*(Cds + C1)) stays grouped.
+std::vector<STerm> split_in_s(const ex& e, const ex& s) {
+    std::vector<STerm> out;
+    std::vector<ex> terms;
+    if (is_a<GiNaC::add>(e))
+        for (size_t i = 0; i < e.nops(); ++i) terms.push_back(e.op(i));
+    else
+        terms.push_back(e);
+
+    for (const ex& t : terms) {
+        ex coeff = 1;
+        int k = 0;
+        if (is_a<GiNaC::mul>(t)) {
+            for (size_t j = 0; j < t.nops(); ++j) {
+                const ex& f = t.op(j);
+                if (is_a<GiNaC::symbol>(f) && f.is_equal(s)) {
+                    k = 1;
+                    continue;
+                }
+                if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1)) &&
+                    f.op(0).is_equal(s)) {
+                    k = int(GiNaC::ex_to<numeric>(f.op(1)).to_int());
+                    continue;
+                }
+                coeff = coeff * f;
+            }
+        } else if (t.is_equal(s)) {
+            k = 1;
+        } else if (is_a<GiNaC::power>(t) && is_a<numeric>(t.op(1)) &&
+                   t.op(0).is_equal(s)) {
+            k = int(GiNaC::ex_to<numeric>(t.op(1)).to_int());
+        } else {
+            coeff = t;
+        }
+        out.push_back({coeff, k});
+    }
+    return out;
+}
+
 // Largest a with a^2 | n (n a positive integer), and the square-free leftover.
 static void int_square_part(long n, long& a, long& r) {
     a = 1;
@@ -323,30 +364,27 @@ std::string pretty_product(const std::vector<ex>& factors) {
 }
 
 std::string pretty_in_s(const ex& e, const ex& s) {
-    ex pe = e.expand();
-    if (!pe.has(s)) return p(pe, 0);
+    if (!e.has(s)) return p(e, 0);
 
-    int deg = 0;
-    try {
-        deg = pe.degree(s);
-    } catch (...) {
-        return p(pe, 0);
-    }
-    if (deg < 0 || deg > 64) return p(pe, 0);
+    // The terms, in decreasing order of the power of s, and each term with
+    // its coefficient first: "C1*s^2 + R1*s" (and "R1*C1*s", not
+    // "R1*s*C1"). The terms are split without expanding, so an authored
+    // grouping (R1*(Cds + C1)) stays grouped.
+    std::vector<STerm> terms = split_in_s(e, s);
+    std::stable_sort(terms.begin(), terms.end(),
+                     [](const STerm& a, const STerm& b) { return a.k > b.k; });
 
     std::string out;
     bool first = true;
-    // ascending powers: constant term first reads as "1 + s*R1*C1"
-    for (int k = 0; k <= deg; ++k) {
-        ex c = pe.coeff(s, k);
-        if (c.is_zero()) continue;
+    for (const STerm& t : terms) {
+        if (t.coeff.is_zero()) continue;
         // Factor common terms out of the coefficient so s*(R1*ro*Cds +
         // C1*R1*ro) reads s*R1*ro*(Cds + C1) instead of the expanded sum.
-        c = factor_sum(c);
+        ex c = factor_sum(t.coeff);
 
         std::string body;
         bool neg = false;
-        if (k == 0) {
+        if (t.k == 0) {
             std::string cs = p(c, 1);
             neg = !cs.empty() && cs[0] == '-';
             if (neg) cs.erase(0, 1);
@@ -355,13 +393,13 @@ std::string pretty_in_s(const ex& e, const ex& s) {
             std::string cs = p(c, 2);
             neg = !cs.empty() && cs[0] == '-';
             if (neg) cs.erase(0, 1);
-            // the power belongs to s, not to the coefficient:
-            //   k=1 -> "s*R1*C1",  k=2 -> "s^2*R1*C1"
-            std::string spow = (k == 1) ? "s" : ("s" + sup(k));
+            // the power belongs to s, and comes after the coefficient:
+            //   k=1 -> "R1*C1*s",  k=2 -> "C1*s^2"
+            std::string spow = (t.k == 1) ? "s" : ("s" + sup(t.k));
             if (cs == "1")
                 body = spow;
             else
-                body = spow + kDot + cs;
+                body = cs + kDot + spow;
         }
         if (body.empty()) continue;
         if (first) {

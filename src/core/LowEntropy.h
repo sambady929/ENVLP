@@ -46,6 +46,7 @@ struct Root {
 
 struct LowEntropy {
     GiNaC::ex gain;
+    GiNaC::ex s;                    // the Laplace variable (for the printers)
     GiNaC::ex num_poly, den_poly;      // pruned polynomials, den c0 == 1
     std::vector<Factor> num_factors, den_factors;
     std::vector<Root> zeros, poles;

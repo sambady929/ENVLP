@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=13">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -132,9 +132,16 @@
       <input id="input" value="V1" placeholder="V1 / I1"
              data-kinds="TransferFunction PSRR LoopGain InputImpedance Noise">
 
-      <label for="output" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise Differential">out</label>
-      <input id="output" value="V(out)" placeholder="V(out) or V(a)-V(b)"
-             data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise Differential">
+      <label for="output" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise">out</label>
+      <input id="output" value="V(out)" placeholder="V(out)"
+             data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise">
+
+      <!-- the differential analysis measures an output PORT: two nodes -->
+      <label for="out_p" data-kinds="Differential">out+</label>
+      <input id="out_p" placeholder="outp" data-kinds="Differential">
+
+      <label for="out_n" data-kinds="Differential">out−</label>
+      <input id="out_n" placeholder="outn" data-kinds="Differential">
 
       <label for="port_p" data-kinds="Differential">in+</label>
       <input id="port_p" placeholder="vin" data-kinds="Differential">
@@ -162,6 +169,9 @@
 
       <label class="check" data-kinds="TransferFunction AC DC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
         <input type="checkbox" id="prune" checked> ignore negligible terms
+      </label>
+      <label class="check" data-kinds="TransferFunction AC DC PSRR LoopGain ShortCircuitCurrent InputImpedance OutputImpedance Noise Differential">
+        <input type="checkbox" id="approx_factor" checked> approx roots
       </label>
     </div>
 
@@ -364,8 +374,8 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=12"></script>
-<script src="editor.js?v=12"></script>
-<script src="app.js?v=12"></script>
+<script src="envlp.js?v=13"></script>
+<script src="editor.js?v=13"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

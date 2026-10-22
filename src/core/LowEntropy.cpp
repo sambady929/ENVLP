@@ -1269,6 +1269,47 @@ std::string wrap_compound(const std::string& t) {
 
 // ---------------------------------------------------------------------------
 namespace {
+// A polynomial in s, printed the same way as the plain-text printer in
+// Print.cpp: the terms in decreasing order of the power, and the coefficient
+// before the power ("C1*s^2 + R1*s", and "R1*C1*s", not "R1*s*C1"). The
+// terms are split without expanding, so an authored grouping stays grouped.
+std::string poly_in_s_latex(const ex& e, const ex& s) {
+    if (!e.has(s)) return to_latex_cdot(e);
+
+    std::vector<STerm> terms = split_in_s(e, s);
+    std::stable_sort(terms.begin(), terms.end(),
+                     [](const STerm& a, const STerm& b) { return a.k > b.k; });
+
+    std::string out;
+    bool first = true;
+    for (const STerm& t : terms) {
+        if (t.coeff.is_zero()) continue;
+        std::string cs = to_latex_cdot(t.coeff);
+        // A coefficient that is itself a sum has to be parenthesised, or the
+        // power of s would bind to its last term only.
+        if (is_a<GiNaC::add>(t.coeff) || is_a<GiNaC::add>(t.coeff.expand()))
+            cs = "\\left(" + cs + "\\right)";
+        bool neg = !cs.empty() && cs[0] == '-';
+        if (neg) cs.erase(0, 1);
+        std::string body;
+        if (t.k == 0) {
+            body = cs;
+        } else {
+            const std::string spow =
+                (t.k == 1) ? "s" : ("s^{" + std::to_string(t.k) + "}");
+            body = (cs == "1") ? spow : (cs + "\\cdot " + spow);
+        }
+        if (body.empty()) continue;
+        if (first) {
+            out += (neg ? "-" : "") + body;
+            first = false;
+        } else {
+            out += (neg ? " - " : " + ") + body;
+        }
+    }
+    return out.empty() ? "0" : out;
+}
+
 // LaTeX printer that inserts an explicit `\cdot` between every multiplied
 // factor, so `Cds_M1 ro_M1` (juxtaposition) becomes `Cds_M1\cdot ro_M1` and
 // never reads as a single term. Fractions and everything GiNaC already
@@ -1443,7 +1484,14 @@ std::string low_entropy_latex_rhs(const LowEntropy& le) {
                GiNaC::is_a<GiNaC::add>(f.expand());
     };
     auto factor_tex = [&](const GiNaC::ex& f) {
-        std::string tex = to_latex_cdot(f);
+        // A factor that is a polynomial in s gets the polynomial printer, so
+        // its terms are in decreasing order and the coefficient comes before
+        // the power of s.
+        std::string tex;
+        if (f.has(le.s))
+            tex = poly_in_s_latex(f, le.s);
+        else
+            tex = to_latex_cdot(f);
         if (is_sum(f)) return "\\left(" + tex + "\\right)";
         return tex;
     };
@@ -1504,6 +1552,7 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                        const LowEntropyOptions& opts) {
     LowEntropy R;
     ex s = params.get("s");
+    R.s = s;
     R.gain = ex(1);
 
     // Resolve the pruning thresholds. The public interface expresses them as

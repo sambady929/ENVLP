@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '12';
+const BUILD = '13';
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,10 +20,18 @@ function setStatus(msg, err) {
 
 /* ------------------------------------------------------------- the call --- */
 function options() {
+  const kind = $('kind').value;
+  let output = $('output').value.trim();
+  // The differential analysis measures an output port: two nodes, given as
+  // V(a)-V(b) -- the way the app's out+ / out- fields compose.
+  if (kind === 'Differential') {
+    const p = $('out_p').value.trim(), n = $('out_n').value.trim();
+    if (p || n) output = 'V(' + p + ')' + (n ? '-V(' + n + ')' : '');
+  }
   return {
-    kind: $('kind').value,
+    kind: kind,
     input: $('input').value.trim(),
-    output: $('output').value.trim(),
+    output: output,
     port_p: $('port_p').value.trim(), port_n: $('port_n').value.trim(),
     // The reference amplifier: the part whose gain is set to zero to break
     // the loop (the loop-gain analysis calls it the probe).
@@ -37,6 +45,7 @@ function options() {
     vthn: parseFloat($('vthn').value) || 0.6,
     vthp: parseFloat($('vthp').value) || 0.6,
     prune: $('prune').checked,
+    approx_factor: $('approx_factor').checked,
     assume_saturation: $('assume_sat').checked,
     // The low-entropy thresholds
     comp_ratio: parseFloat($('comp_ratio').value) || 10,

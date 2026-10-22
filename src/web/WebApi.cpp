@@ -220,6 +220,8 @@ const char* envlp_run(const char* scx_text, const char* options_json) {
     sp.tech.assume_saturation = get_b(o, "assume_saturation", true);
     sp.tech.include_clm = get_b(o, "include_clm", false);
     sp.prune = get_b(o, "prune", true);
+    // Numeric factoring when the exact factoring fails ("approx roots").
+    sp.approx_factor = get_b(o, "approx_factor", true);
     sp.component_threshold_ratio = get_n(o, "comp_ratio", 10.0);
     sp.pole_zero_threshold_ratio = get_n(o, "pz_ratio", 1000.0);
     // Which pole/zero the pruning threshold is judged against: the dominant

@@ -22,6 +22,18 @@ std::string pretty(const GiNaC::ex& e);
 // `s` must be the s symbol registered in the ParamTable.
 std::string pretty_in_s(const GiNaC::ex& e, const GiNaC::ex& s);
 
+// A term of a polynomial in s: the coefficient and the power of s.
+struct STerm {
+    GiNaC::ex coeff;
+    int k;
+};
+
+// Split a sum into its terms, each with the power of s it carries and the
+// rest as its coefficient -- *without* expanding, so an authored grouping
+// like R1*(Cds + C1) stays grouped. A term that is not a product of s is a
+// constant (k = 0).
+std::vector<STerm> split_in_s(const GiNaC::ex& e, const GiNaC::ex& s);
+
 // Like pretty(), but parenthesized when the expression is a sum.
 std::string pretty_factor(const GiNaC::ex& e);
 
