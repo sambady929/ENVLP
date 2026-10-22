@@ -221,6 +221,12 @@ const char* envlp_run(const char* scx_text, const char* options_json) {
     sp.prune = get_b(o, "prune", true);
     sp.component_threshold_ratio = get_n(o, "comp_ratio", 10.0);
     sp.pole_zero_threshold_ratio = get_n(o, "pz_ratio", 1000.0);
+    // Which pole/zero the pruning threshold is judged against: the dominant
+    // one, or the unity-gain bandwidth.
+    sp.pole_ref = (get_s(o, "pole_ref", "dominant") == "ugbw")
+                      ? syms::AnalysisSpec::PoleRef::UgBw
+                      : syms::AnalysisSpec::PoleRef::Dominant;
+    sp.global_ref = get_b(o, "global_ref", false);
 
     syms::CardResult cr;
     try {

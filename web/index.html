@@ -176,6 +176,23 @@
       </div>
     </details>
 
+    <details id="entropybox" class="dcbox">
+      <summary>negligible terms (low entropy)</summary>
+      <div class="grid">
+        <label for="comp_ratio">component</label>
+        <input id="comp_ratio" value="10" title="a series/parallel pair collapses when one element is this many times the other">
+
+        <label for="pz_ratio">pole / zero</label>
+        <input id="pz_ratio" value="1000" title="a pole or zero is dropped when it is this many times the reference frequency">
+
+        <label for="pole_ref">reference</label>
+        <select id="pole_ref">
+          <option value="dominant">dominant pole / zero</option>
+          <option value="ugbw">unity-gain bandwidth</option>
+        </select>
+      </div>
+    </details>
+
     <button id="run" class="primary">Run analysis</button>
     <div id="status" class="status"></div>
     <div class="ttl">Properties</div>

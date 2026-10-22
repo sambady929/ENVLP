@@ -158,10 +158,14 @@ The app itself still works with the wrong type — it falls back to
 |---|---|
 | ✅ the symbolic engine (DC, AC, transfer function, PSRR, loop gain, Zin/Zout, noise, differential) | `src/core` |
 | ✅ the schematic editor's **model**: components, wire bindings, waypoints, the orthogonal router, net naming, labels, copies, undo, `.scx` round-trip | `src/app/Document.cpp`, exposed by `src/web/EditorApi.cpp` |
-| ✅ the schematic editor's **canvas**: palette, place, wire, select/marquee, drag, rotate, flip, delete, net labels, pan, zoom | `web/editor.js` |
+| ✅ the schematic editor's **canvas**: palette, place (with a ghost), wire (orthogonal, Space swaps the route), select/marquee, drag, rotate, flip, delete, net labels, pan, zoom | `web/editor.js` |
+| ✅ the **model parameters** — gm, ro, W/L, Cgs/Cgd/Cds, the passives' parasitics (Cpar, Lser, Rser, …) — with their switches | `src/core/Netlist.cpp` → `web/editor.js` |
+| ✅ the **low-entropy thresholds**: the component ratio, the pole/zero ratio and the reference (dominant pole/zero or the unity-gain bandwidth) | `web/index.html` → `src/web/WebApi.cpp` |
+| ✅ copy / paste of components and of the wires between them | `src/web/EditorApi.cpp` |
 | ✅ the symbol artwork, shared with the desktop app | `src/app/SymbolDraw.cpp` → `src/web/SymbolArt.cpp` |
 | ✅ MathJax typesetting and Plotly plots | `resources/mathjax`, `resources/plotly` |
 | ❌ the wxWidgets desktop shell | replaced by the web UI |
+| ❌ several open schematics (the desktop's tabs) | the browser build edits one schematic at a time |
 | ❌ the Lua console | JavaScript is the scripting layer in the browser |
 
 The editor is deliberately *not* a JavaScript re-implementation of the

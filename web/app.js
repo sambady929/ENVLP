@@ -38,6 +38,10 @@ function options() {
     vthp: parseFloat($('vthp').value) || 0.6,
     prune: $('prune').checked,
     assume_saturation: $('assume_sat').checked,
+    // the low-entropy thresholds
+    comp_ratio: parseFloat($('comp_ratio').value) || 10,
+    pz_ratio: parseFloat($('pz_ratio').value) || 1000,
+    pole_ref: $('pole_ref').value,
   };
 }
 

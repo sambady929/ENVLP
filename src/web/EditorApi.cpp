@@ -30,6 +30,23 @@ envlp::NetMap g_nets;
 // one gesture must collapse into a single undo step, not one per mouse move.
 bool g_in_batch = false;
 
+// --- the in-app clipboard (copy / paste) -----------------------------------
+//
+// The desktop keeps the copied components and the wires between them in the
+// canvas; the browser build keeps them here, next to the document.
+struct ClipComp {
+    syms::Component comp;
+    envlp::Placement place;
+};
+struct ClipWire {
+    std::vector<envlp::Pt> pts;
+    envlp::WireEnd a, b;
+};
+std::vector<ClipComp> g_clip_comps;
+std::vector<ClipWire> g_clip_wires;
+// The components the engine wants selected (a paste selects what it pasted).
+std::vector<std::string> g_selected;
+
 // --- tiny JSON helpers (flat objects / arrays of flat objects) ------------
 std::string unesc(const std::string& s) {
     std::string o;
@@ -286,7 +303,16 @@ std::string geometry() {
             js << "{\"name\":" << q(kv.second) << "}";
         }
     }
-    js << "]}";
+    js << "]";
+
+    // --- the components the engine wants selected (a paste)
+    js << ",\"selected\":[";
+    for (size_t i = 0; i < g_selected.size(); ++i) {
+        if (i) js << ",";
+        js << q(g_selected[i]);
+    }
+    js << "]";
+    js << "}";
     return js.str();
 }
 
@@ -594,6 +620,88 @@ const char* envlp_doc_set(const char* ops_json) {
                 c.param_on[get(o, "name")] = getb(o, "on", true);
             }
             g_doc.dirty = true;
+        } else if (op == "copy") {
+            // Copy the selected components (and the wires that connect only
+            // them) into the clipboard.
+            g_clip_comps.clear();
+            g_clip_wires.clear();
+            std::vector<std::string> refs;
+            const std::string list = get(o, "refs");
+            size_t pos = 0;
+            while (pos < list.size()) {
+                size_t comma = list.find(',', pos);
+                if (comma == std::string::npos) comma = list.size();
+                const std::string r = list.substr(pos, comma - pos);
+                if (!r.empty()) refs.push_back(r);
+                pos = comma + 1;
+            }
+            for (const auto& r : refs) {
+                const syms::Component* c = g_doc.circuit.find(r);
+                auto pl = g_doc.placements.find(r);
+                if (!c || pl == g_doc.placements.end()) continue;
+                g_clip_comps.push_back({*c, pl->second});
+            }
+            for (const auto& w : g_doc.wires) {
+                auto pin_in = [&](const envlp::WireEnd& e) {
+                    if (e.kind != envlp::WireEnd::Kind::Pin) return false;
+                    for (const auto& r : refs) if (r == e.ref) return true;
+                    return false;
+                };
+                if (pin_in(w.a) && pin_in(w.b))
+                    g_clip_wires.push_back({w.pts, w.a, w.b});
+            }
+        } else if (op == "paste") {
+            // Paste the clipboard at the cursor: new references, the wires
+            // rebound to the new pins, and the mirror fields carried over.
+            if (g_clip_comps.empty()) continue;
+            const envlp::Pt at{getn(o, "x", 0), getn(o, "y", 0)};
+            double ox = 1e300, oy = 1e300;
+            for (const auto& cc : g_clip_comps) {
+                ox = std::min(ox, cc.place.x);
+                oy = std::min(oy, cc.place.y);
+            }
+            const double dx = at.first - ox, dy = at.second - oy;
+            std::map<std::string, std::string> remap;
+            std::vector<std::string> new_refs;
+            for (const auto& cc : g_clip_comps) {
+                const std::string nr =
+                    g_doc.add(cc.comp, cc.place.x + dx, cc.place.y + dy);
+                auto pl = g_doc.placements.find(nr);
+                if (pl != g_doc.placements.end()) {
+                    pl->second.rot = cc.place.rot;
+                    pl->second.flip_h = cc.place.flip_h;
+                    pl->second.flip_v = cc.place.flip_v;
+                }
+                remap[cc.comp.ref] = nr;
+                new_refs.push_back(nr);
+            }
+            // A pasted copy of a unit points at the pasted unit, not the old one.
+            for (const auto& r : new_refs) {
+                for (auto& dst : g_doc.circuit.comps) {
+                    if (dst.ref != r) continue;
+                    if (!dst.mirror_ref.empty() && remap.count(dst.mirror_ref))
+                        dst.mirror_ref = remap[dst.mirror_ref];
+                }
+            }
+            for (const auto& cw : g_clip_wires) {
+                envlp::Wire w;
+                w.pts = cw.pts;
+                for (auto& p : w.pts) {
+                    p.first += dx;
+                    p.second += dy;
+                }
+                w.a = cw.a;
+                w.b = cw.b;
+                if (w.a.kind == envlp::WireEnd::Kind::Pin && remap.count(w.a.ref))
+                    w.a.ref = remap[w.a.ref];
+                if (w.b.kind == envlp::WireEnd::Kind::Pin && remap.count(w.b.ref))
+                    w.b.ref = remap[w.b.ref];
+                g_doc.bind_wire_ends(w);
+                g_doc.wires.push_back(w);
+            }
+            // The new components are selected, so they can be moved at once.
+            g_selected.clear();
+            for (const auto& r : new_refs) g_selected.push_back(r);
         } else if (op == "delete_wire") {
             g_doc.remove_wire(int(getn(o, "i", -1)));
         } else if (op == "label") {

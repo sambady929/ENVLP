@@ -642,6 +642,16 @@ function bindKeys() {
     if (ctrl && (k === 'y' || k === 'Y' || (shift && (k === 'z' || k === 'Z')))) {
       e.preventDefault(); docRedo(); return;
     }
+    if (ctrl && (k === 'c' || k === 'C')) {
+      e.preventDefault();
+      copySelection();
+      return;
+    }
+    if (ctrl && (k === 'v' || k === 'V')) {
+      e.preventDefault();
+      pasteClipboard();
+      return;
+    }
 
     // Space rotates, Shift+Space flips horizontally, Ctrl+Space flips
     // vertically -- the desktop's scheme. The armed part is rotated while
@@ -743,6 +753,25 @@ function deleteSel() {
   ED.selection.clear();
   ED.selWire = -1;
   docSet(ops);
+}
+
+// Copy the selection (and the wires between it) into the engine's clipboard.
+function copySelection() {
+  if (!ED.selection.size) { setStatus('nothing selected to copy', true); return; }
+  docSet([{ op: 'copy', refs: Array.from(ED.selection).join(',') }]);
+  setStatus('Copied ' + ED.selection.size + ' component(s)');
+}
+
+// Paste the clipboard at the cursor, the way the desktop does.
+function pasteClipboard() {
+  const x = snap(ED.mouse.x), y = snap(ED.mouse.y);
+  docSet([{ op: 'paste', x: x, y: y }]);
+  // The engine selects what it pasted.
+  const sel = (ED.doc && ED.doc.selected) || [];
+  ED.selection.clear();
+  sel.forEach((r) => ED.selection.add(r));
+  afterChange();
+  if (sel.length) setStatus('Pasted ' + sel.length + ' component(s)');
 }
 function labelWire() {
   // The desktop's flow: type the names (space separated), then click each net
