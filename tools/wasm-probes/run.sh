@@ -6,18 +6,43 @@
 # Requires the wasm dependency prefix to exist (build-web/deps), which
 # tools/build_web.sh produces, and node from the Emscripten SDK.
 set -e
-export PATH="/c/emsdk/upstream/emscripten:/c/emsdk/node/24.19.0_64bit:/c/emsdk/python/3.13.3_64bit:$PATH"
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DEPS="$ROOT/build-web/deps"
 HERE="$ROOT/tools/wasm-probes"
 OUT="$ROOT/build"
+
+# The Emscripten SDK, found the same way tools/build_web.sh finds it: em++ has
+# to be on PATH, and node comes with the SDK (the wasm module is run by node).
+if ! command -v em++ >/dev/null 2>&1; then
+    for sdk in "${EMSDK:-}" /c/emsdk /d/emsdk "$HOME/emsdk" /opt/emsdk \
+               /usr/local/emsdk; do
+        [ -n "$sdk" ] || continue
+        [ -f "$sdk/upstream/emscripten/em++.py" ] || continue
+        for n in "$sdk"/node/*_64bit "$sdk"/python/*_64bit; do
+            if [ -d "$n" ]; then PATH="$n:$PATH"; fi
+        done
+        PATH="$sdk/upstream/emscripten:$PATH"
+        export EM_CONFIG="${EM_CONFIG:-$sdk/.emscripten}"
+        break
+    done
+fi
+command -v em++ >/dev/null 2>&1 || {
+    echo "em++ not on PATH -- install and activate the Emscripten SDK" >&2
+    exit 1
+}
+command -v node >/dev/null 2>&1 || {
+    echo "node not on PATH -- it ships with the Emscripten SDK" >&2
+    exit 1
+}
+
+mkdir -p "$OUT"
 
 if [ ! -f "$DEPS/lib/libcln.a" ]; then
     echo "missing $DEPS/lib/libcln.a -- run tools/build_web.sh first" >&2
     exit 1
 fi
 
-# node here is a Windows binary, so it needs a Windows path for require().
+# node here may be a Windows binary, so it needs a Windows path for require().
 OUTWIN=$(cd "$OUT" && pwd -W 2>/dev/null || echo "$OUT")
 
 em++ -O0 -g -std=c++17 -I"$DEPS/include" "$HERE/cln_probe.cpp" \

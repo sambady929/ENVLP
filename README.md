@@ -16,6 +16,11 @@ The analysis engine also builds to **WebAssembly**, so it can run entirely in a
 browser (no server, nothing uploaded) — see [`web/README.md`](web/README.md).
 The plots and the typeset math are Plotly and MathJax in either case.
 
+The browser build is a static site, published by the `pages` workflow to
+GitHub Pages (<https://sambady929.github.io/ENVLP/>). Embedding it in a
+website is then just an iframe pointing at that URL — nothing has to be
+uploaded to the site being embedded into.
+
 ## Features
 
 - **Schematic capture**: place resistors, capacitors, inductors, V/I sources,
@@ -49,7 +54,15 @@ The plots and the typeset math are Plotly and MathJax in either case.
   SVG / PNG / CSV.
 - **LaTeX** for every expression, copy-to-clipboard.
 
-## Building (Windows, MSYS2 UCRT64)
+## Building
+
+ENVLP is a wxWidgets application, and the same sources build on Windows, Linux
+and macOS. The engine needs GiNaC (with its CLN/GMP backend) and the app needs
+Lua; wxWidgets supplies the GUI. The Math and Plot panels additionally need a
+web view — WebView2 on Windows, WebKit2GTK on Linux, WKWebView on macOS — all of
+which are part of wxWidgets, so there is nothing extra to do.
+
+### Windows (MSYS2 UCRT64)
 
 Prerequisites: [MSYS2](https://www.msys2.org/) installed at `C:\msys64`.
 
@@ -62,19 +75,21 @@ pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-toolchain \
     mingw-w64-ucrt-x86_64-wxwidgets3.3-common-libs \
     mingw-w64-ucrt-x86_64-wxwidgets3.3-msw \
     mingw-w64-ucrt-x86_64-wxwidgets3.3-msw-libs \
-    mingw-w64-ucrt-x86_64-gmp mingw-w64-ucrt-x86_64-readline
+    mingw-w64-ucrt-x86_64-gmp mingw-w64-ucrt-x86_64-ginac \
+    mingw-w64-ucrt-x86_64-readline
 ```
 
-GiNaC and CLN are not packaged by MSYS2 — build them from source once:
+MSYS2 packages GiNaC (with CLN and GMP), so there is nothing to build first:
 
 ```bash
-cd /tmp && mkdir deps && cd deps
-curl -LO https://www.ginac.de/CLN/cln-1.3.7.tar.bz2
-curl -LO https://www.ginac.de/ginac-1.8.10.tar.bz2
-tar xf cln-1.3.7.tar.bz2 && cd cln-1.3.7
-./configure --prefix=/ucrt64 && make -j$(nproc) && make install
-cd .. && tar xf ginac-1.8.10.tar.bz2 && cd ginac-1.8.10
-./configure --prefix=/ucrt64 && make -j$(nproc) && make install
+pacman -S --needed ... mingw-w64-ucrt-x86_64-ginac
+```
+
+If you would rather build them yourself — or you want the patched CLN the
+WebAssembly build uses — `tools/build_deps.sh` does that into any prefix:
+
+```bash
+bash tools/build_deps.sh --prefix /ucrt64
 ```
 
 Configure and build ENVLP:
@@ -86,7 +101,89 @@ cmake --build build
 ./build/bin/ENVLP.exe                      # launch the GUI
 ```
 
-### Portable release (no install)
+### Linux
+
+```bash
+# Debian / Ubuntu
+sudo apt install build-essential cmake ninja-build pkg-config \
+     libwxgtk3.2-dev libwebkit2gtk-4.0-dev libginac-dev liblua5.4-dev libgmp-dev
+# Fedora
+sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
+     wxGTK3-devel webkit2gtk4-devel GiNaC-devel lua-devel gmp-devel
+
+cmake -B build -G Ninja
+cmake --build build
+./build/bin/ENVLP
+```
+
+### macOS
+
+```bash
+brew install cmake ninja pkg-config wxwidgets lua gmp
+# Homebrew has GMP and Lua but neither CLN nor GiNaC, so build those once:
+bash tools/build_deps.sh --prefix "$HOME/local/deps"
+
+cmake -B build -G Ninja -DENVLP_DEPS_PREFIX="$HOME/local/deps"
+cmake --build build
+open build/bin/ENVLP.app
+```
+
+`ENVLP_DEPS_PREFIX` also works on Linux, and points CMake at a local GMP/CLN/
+GiNaC instead of the system packages.
+
+Building those three from source has one trap that hits every modern toolchain:
+**GMP 6.3.0's configure requires an invalid test program to *compile*** (it is a
+check for a 2003 compiler crash), and since GCC 14 — and current clang — that
+call is a hard error, so configure gives up with "could not find a working
+compiler". `tools/build_deps.sh` patches it ✓; you only need it if you build the
+dependencies yourself.
+
+The app is not code-signed, so Gatekeeper quarantines a freshly downloaded
+`.app` ("cannot be opened because the developer cannot be verified"). Either
+sign it with your own Developer ID, or clear the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine ENVLP.app
+```
+
+### Packaging
+
+```bash
+bash tools/make_dist.sh      # Linux: a tarball; macOS: a .app zip and a .dmg
+```
+
+The result lands in `dist/`: the binary (or the `.app` bundle), the MathJax and
+Plotly bundles it loads at run time, the example circuits and a `.desktop` file.
+The wxWidgets and GiNaC shared libraries are the distribution's business; on
+Windows the MinGW runtime DLLs have to be shipped, which is what the PowerShell
+script below does.
+
+### Releases
+
+Two artifacts, one per audience:
+
+```powershell
+# Windows: a ready-to-run folder and a zip of it
+powershell -ExecutionPolicy Bypass -File tools/make_portable.ps1
+#   -> dist/ENVLP-<version>-win64/        (the app, its runtime DLLs, the
+#                                          MathJax/Plotly bundles, the
+#                                          examples and the browser build)
+#   -> dist/ENVLP-<version>-win64.zip
+```
+
+```bash
+# macOS and Linux: the sources, ready to build
+bash tools/make_source_release.sh
+#   -> dist/envlp-<version>-source.tar.gz
+```
+
+Both are self-contained: the Windows one needs nothing installed (copy the
+folder anywhere, including a USB stick), and the source one builds against the
+system's wxWidgets, GiNaC and Lua with the commands in `BUILD.txt` inside the
+archive. The Windows release also carries the browser build under `web/`, so one
+download gives you the desktop app and a site to host.
+
+### Portable release on Windows (no install)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/make_portable.ps1
@@ -211,5 +308,11 @@ analysis stack and round-trip verbatim.
 - `src/core/` — engine: netlist → MNA → Bareiss determinants → prune → print
   (static lib `envlpcore`, no GUI deps)
 - `src/app/` — wxWidgets GUI (`ENVLP`)
+- `src/web/` — the same engine behind a C ABI, for the browser build
 - `examples/` — sample circuits
-- `tools/` — icon + portable-packaging scripts
+- `resources/` — the vendored MathJax and Plotly bundles, the icon, the
+  `.desktop` file
+- `tools/` — the dependency builder (`build_deps.sh`), the WebAssembly build
+  (`build_web.sh`), and the packaging scripts (`make_dist.sh` for Linux/macOS,
+  `make_portable.ps1` for Windows)
+- `web/` — the browser front-end (see `web/README.md`)

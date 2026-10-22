@@ -9,14 +9,15 @@
  *
  * Install
  * -------
- *   1. Build the web app:  bash tools/build_web.sh   (produces web/)
- *   2. Upload the *contents* of web/ to  wp-content/uploads/envlp/
- *      (index.html, app.js, style.css, envlp.js, envlp.wasm, mathjax/,
- *       plotly/, examples/)
- *   3. Put this file in  wp-content/plugins/envlp/envlp.php  and activate it.
- *   4. Add  [envlp]  to any page or post.
+ *   1. Publish the app (GitHub Pages: the pages workflow publishes it, e.g.
+ *      https://sambady929.github.io/ENVLP/ -- or upload the *contents* of
+ *      web/ to  wp-content/uploads/envlp/  yourself).
+ *   2. Put this file in  wp-content/plugins/envlp/envlp.php  and activate it.
+ *      No FTP needed: WordPress' own Plugins -> Editor -> Add New accepts a
+ *      pasted plugin file and saves it straight into the plugins directory.
+ *   3. Add  [envlp]  to any page or post.
  *
- * Attributes:  [envlp height="820" src="/wp-content/uploads/envlp/index.html"]
+ * Attributes:  [envlp height="820" src="https://sambady929.github.io/ENVLP/"]
  */
 
 defined('ABSPATH') || exit;

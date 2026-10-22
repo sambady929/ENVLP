@@ -23,6 +23,18 @@ The script downloads and builds GMP, CLN and GiNaC for wasm into
 copies the typesetting/plotting bundles and the example circuits into `web/`.
 Re-running it only rebuilds what changed.
 
+It runs on Linux and macOS as well as Windows: the Emscripten SDK is found
+through `$EMSDK`, on `PATH`, or in the usual install locations, and the
+dependency build itself is the portable `tools/build_deps.sh` (which also builds
+the same three libraries *natively* — that is how you get GiNaC on macOS, where
+Homebrew has neither CLN nor GiNaC).
+
+To build the dependencies for the host instead, with no Emscripten involved:
+
+```bash
+bash tools/build_deps.sh --prefix ~/local/deps   # native GMP + CLN + GiNaC
+```
+
 ### Notes for other machines
 
 Building these three autotools libraries for WebAssembly on Windows has three
@@ -47,42 +59,98 @@ python -m http.server 8000 --directory web
 # then open http://localhost:8000/
 ```
 
-## Put it on WordPress
+## Put it on GitHub Pages
 
-1. Upload the **contents** of `web/` to `wp-content/uploads/envlp/` (FTP, SFTP,
-   or a plugin such as "File Manager"). The directory must contain
-   `index.html`, `envlp.js`, `envlp.wasm`, `app.js`, `style.css`, `mathjax/`,
-   `plotly/` and `examples/`.
-2. Either embed it directly in a page as a Custom HTML block:
+The browser build is a **static site** — `index.html`, `app.js`, `editor.js`,
+`style.css`, `envlp.js` + `envlp.wasm`, the MathJax and Plotly bundles and the
+example circuits. Nothing on it needs a server, so GitHub Pages serves it
+as-is, and the WordPress embed can then point at that URL: **nothing has to be
+uploaded to the WordPress host at all** (no FTP, no plugin upload).
 
-   ```html
-   <iframe src="/wp-content/uploads/envlp/index.html" loading="lazy"
-           style="width:100%;height:820px;border:0;border-radius:8px"></iframe>
-   ```
+`.github/workflows/pages.yml` does the whole job on every push to `main`:
 
-   or install the tiny plugin in `wordpress/envlp.php` (copy it to
-   `wp-content/plugins/envlp/envlp.php`, activate it) and just write:
+1. Emscripten is installed (pinned to the version the local build was verified
+   with) and `tools/build_web.sh` builds GMP/CLN/GiNaC for wasm32 and the
+   engine, and lays out `web/`.
+2. `web/` is uploaded as the Pages artifact and published.
 
-   ```
-   [envlp]
-   ```
+**One-time setup:** *Settings → Pages → Build and deployment → Source →
+**GitHub Actions***. After that, a push to `main` (or the *pages* workflow run
+by hand) publishes the site at
 
-   `[envlp height="900"]` resizes it.
-3. Make sure your host serves `.wasm` as `application/wasm`. Most do; if not,
-   add to `.htaccess`:
+```
+https://sambady929.github.io/ENVLP/
+```
 
-   ```
-   AddType application/wasm .wasm
-   ```
+The workflow caches the dependency cross-build, so a re-run takes a couple of
+minutes instead of building GMP, CLN and GiNaC from scratch.
 
-An iframe is recommended: it isolates the app from the theme's CSS and JS, so
-the schematic editor and the plots lay out exactly as intended on any theme.
+Nothing in the page is an absolute path, so the app also works unchanged under
+any other sub-path — a custom domain, a user site, a project site with a
+different name — without a rebuild.
+
+The `.wasm` MIME type does not matter here: `envlp.js` compiles it with
+`WebAssembly.instantiateStreaming` but falls back to plain `ArrayBuffer`
+instantiation, so the app still runs on a host that serves `.wasm` as
+`application/octet-stream`.
 
 ### Updating a live deployment
 
-`index.html` loads the scripts as `app.js?v=2` etc. Bump that number whenever you
-replace the JavaScript, otherwise visitors keep the copy their browser cached.
-The `.wasm` is fetched by `envlp.js` and can be replaced freely.
+Push to `main`; the workflow rebuilds and redeploys. `index.html` loads the
+scripts as `app.js?v=2` etc. — bump that number whenever you replace the
+JavaScript, otherwise visitors keep the copy their browser cached. The `.wasm`
+is fetched by `envlp.js` and can be replaced freely.
+
+## Put it on WordPress
+
+With the app on GitHub Pages the WordPress side needs no uploads at all.
+
+### 1. An iframe (nothing to install)
+
+Paste this into a **Custom HTML** block (or a *Code* widget in the sidebar):
+
+```html
+<iframe src="https://sambady929.github.io/ENVLP/" loading="lazy"
+        style="width:100%;height:820px;border:0;border-radius:8px"
+        allow="fullscreen"></iframe>
+```
+
+### 2. Or the shortcode plugin
+
+`wordpress/envlp.php` is a tiny plugin that turns `[envlp]` into that iframe.
+It accepts the source and the height:
+
+```
+[envlp height="900"]
+[envlp src="https://sambady929.github.io/ENVLP/"]
+```
+
+Installing it does not need FTP either: WordPress' own **Plugins → Editor →
+Add New** accepts a pasted plugin file, and the built-in **Plugin Editor** can
+save it straight into `wp-content/plugins/`. (Or upload the file if your host
+allows it.)
+
+An iframe is recommended either way: it isolates the app from the theme's CSS
+and JS, so the schematic editor and the plots lay out exactly as intended on
+any theme.
+
+### 3. Or host the files on the WordPress server instead
+
+Uploading the **contents** of `web/` to `wp-content/uploads/envlp/` still
+works, if you have file access. The directory must contain `index.html`,
+`envlp.js`, `envlp.wasm`, `app.js`, `editor.js`, `style.css`, `mathjax/`,
+`plotly/` and `examples/`. Then use the iframe with
+`src="/wp-content/uploads/envlp/index.html"`.
+
+Make sure the host serves `.wasm` as `application/wasm`; most do, and if not,
+add to `.htaccess`:
+
+```
+AddType application/wasm .wasm
+```
+
+The app itself still works with the wrong type — it falls back to
+`ArrayBuffer` instantiation — but the console shows a warning.
 
 ## What is and isn't in this build
 
