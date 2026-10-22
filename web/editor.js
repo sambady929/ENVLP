@@ -157,9 +157,40 @@ function draw() {
   drawLabels(ctx, doc);
   if (ED.wireFrom) drawWirePreview(ctx);
   if (ED.placing) drawGhost(ctx);
+  if (ED.labelQueue.length) drawPendingLabel(ctx);
 
   ctx.restore();
   drawHud(ctx, W, H);
+}
+
+// The net name that is waiting to be placed, hovering over the cursor with
+// an anchor dot -- so you can see where it will land.
+function drawPendingLabel(ctx) {
+  const name = ED.labelQueue[0];
+  if (!name) return;
+  ctx.save();
+  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = ctx.measureText(name).width + 10;
+  // the anchor dot
+  ctx.fillStyle = '#2f6fed';
+  ctx.beginPath();
+  ctx.arc(ED.mouse.x, ED.mouse.y, 5, 0, 2 * Math.PI);
+  ctx.strokeStyle = '#2f6fed';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // the name, just above the cursor
+  ctx.fillStyle = '#e8f0fe';
+  ctx.strokeStyle = '#2f6fed';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(ED.mouse.x - w / 2, ED.mouse.y - 22, w, 18);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#1f2430';
+  ctx.fillText(name, ED.mouse.x, ED.mouse.y - 13);
+  ctx.restore();
 }
 
 // The part that is about to be placed, drawn under the cursor -- so the user
@@ -400,8 +431,9 @@ function hitWire(w) {
   const h = hitWireSeg(w);
   return h ? h.wire : -1;
 }
-// The wire *and* the segment under the cursor: a segment can be dragged on
-// its own (it moves perpendicular to itself), like in the desktop app.
+// The wire *and* the segment under the cursor. Grabbing the body of a wire
+// moves the whole wire; grabbing it right at a vertex moves that segment (it
+// then moves perpendicular to itself, so its neighbours stretch).
 function hitWireSeg(w) {
   let best = null, bd = 8 / ED.zoom;
   for (const wire of ED.doc.wires || []) {
@@ -414,6 +446,11 @@ function hitWireSeg(w) {
       if (d < bd) { bd = d; best = { wire: wire.i, seg: i - 1 }; }
     }
   }
+  if (!best) return null;
+  // Is the grab right on a vertex? Then it is that segment that moves.
+  const pts = (ED.doc.wires || [])[best.wire].pts;
+  const near = (p) => Math.hypot(p[0] - w.x, p[1] - w.y) < 8 / ED.zoom;
+  best.vertex = pts.some(near);
   return best;
 }
 // A net label under the cursor (so it can be selected and deleted).
@@ -454,7 +491,24 @@ function bindCanvas() {
     }
 
     if (ED.tool === 'wire') {
+      // Pressing on an existing wire drags it; pressing anywhere else starts
+      // a new one. Press and drag draws the wire in one go; a plain click
+      // keeps the click-click routing going.
+      const hit = hitWireSeg(w);
+      if (hit && !ED.wireFrom && !hit.vertex) {
+        ED.selection.clear();
+        ED.selWire = hit.wire;
+        ED.selSeg = hit.seg;
+        ED.drag = { mode: 'wire', wire: hit.wire, seg: -1, sx: w.x, sy: w.y };
+        docSet([{ op: 'begin' }]);
+        afterChange();
+        return;
+      }
+      const started = !ED.wireFrom;
       wireClick(w);
+      if (started) {
+        ED.wireDrag = { sx: ED.wireFrom.x, sy: ED.wireFrom.y, moved: false };
+      }
       return;
     }
 
@@ -504,8 +558,10 @@ function bindCanvas() {
       ED.selection.clear();
       ED.selWire = wh.wire;
       ED.selSeg = wh.seg;
-      // A wire (or one of its segments) can be dragged, like in the desktop.
-      ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.seg, sx: w.x, sy: w.y };
+      // Grabbing the body of a wire moves the whole wire; grabbing it at a
+      // vertex moves that one segment.
+      ED.drag = { mode: 'wire', wire: wh.wire, seg: wh.vertex ? wh.seg : -1,
+                  sx: w.x, sy: w.y };
       docSet([{ op: 'begin' }]);
       afterChange();
       return;
@@ -519,9 +575,17 @@ function bindCanvas() {
   c.addEventListener('mousemove', (e) => {
     const w = toWorld(e.clientX, e.clientY);
     ED.mouse = { x: snap(w.x), y: snap(w.y) };
+    if (ED.wireDrag) {
+      // A drag in the wire tool: the wire follows the cursor, and releasing
+      // commits it.
+      if (Math.hypot(ED.mouse.x - ED.wireDrag.sx, ED.mouse.y - ED.wireDrag.sy) > 4)
+        ED.wireDrag.moved = true;
+      draw();
+      return;
+    }
     if (!ED.drag) {
       // The ghost follows the cursor, and the wire preview follows it too.
-      if (ED.wireFrom || ED.placing) draw();
+      if (ED.wireFrom || ED.placing || ED.labelQueue.length) draw();
       return;
     }
     if (ED.drag.mode === 'pan') {
@@ -571,6 +635,18 @@ function bindCanvas() {
   });
 
   window.addEventListener('mouseup', () => {
+    if (ED.wireDrag) {
+      // Releasing the mouse after a drag in the wire tool commits the wire.
+      const drag = ED.wireDrag;
+      ED.wireDrag = null;
+      if (drag.moved) {
+        const pin = hitPin({ x: ED.mouse.x, y: ED.mouse.y });
+        wireCommit(pin ? { x: pin.x, y: pin.y, pin }
+                       : { x: ED.mouse.x, y: ED.mouse.y, pin: null });
+        endWiring();
+      }
+      return;
+    }
     if (ED.drag && ED.drag.mode === 'marquee') {
       const x0 = Math.min(ED.drag.x0, ED.drag.x1), x1 = Math.max(ED.drag.x0, ED.drag.x1);
       const y0 = Math.min(ED.drag.y0, ED.drag.y1), y1 = Math.max(ED.drag.y0, ED.drag.y1);
@@ -601,7 +677,7 @@ function bindCanvas() {
  * front-ends feel the same. "g" is ground, Shift+G the supply rail, and
  * "m"/"q" toggle between the two transistor polarities. */
 const PLACE_KEYS = {
-  r: 'R', c: 'C', l: 'L', v: 'V', b: 'I', d: 'D', y: 'D',
+  r: 'R', c: 'C', l: 'L', v: 'V', b: 'I', d: 'D',
   t: 'T', k: 'K', o: 'OPAMP', g: 'GND',
 };
 
@@ -838,6 +914,11 @@ function wireClick(w) {
     draw();
     return;
   }
+  wireCommit(target);
+}
+
+// Commit the segment from the last point to the target.
+function wireCommit(target) {
   const last = ED.wirePts[ED.wirePts.length - 1];
   if (target.x === last.x && target.y === last.y) return;
 
@@ -901,7 +982,7 @@ function commitWireSegment() {
 // The parts that really have a shortcut key (the desktop's set). Only these
 // are shown with one -- the op-amp is "O", not "U" (U is undo).
 const PALETTE_SHORTCUTS = {
-  R: 'R', C: 'C', L: 'L', V: 'V', I: 'B', D: 'D / Y',
+  R: 'R', C: 'C', L: 'L', V: 'V', I: 'B', D: 'D',
   NMOS: 'M', PMOS: 'M', NPN: 'Q', PNP: 'Q',
   OPAMP: 'O', GND: 'G', VDD: 'Shift+G', T: 'T', K: 'K',
 };
@@ -1032,26 +1113,39 @@ function renderProps() {
       host.appendChild(d);
     };
     // The value: the gain of an amplifier, the DC level of a source, the
-    // resistance of a resistor -- the desktop names it the same way.
-    if (isSource(c.kind)) {
-      const dc = document.createElement('input');
-      dc.value = c.dc || '';
-      dc.title = 'DC value';
-      dc.addEventListener('change', () =>
-        docSet([{ op: 'value', ref: ref, field: 'dc', text: dc.value }]));
-      row('DC', dc);
-      const ac = document.createElement('input');
-      ac.value = c.ac || '';
-      ac.title = 'AC amplitude';
-      ac.addEventListener('change', () =>
-        docSet([{ op: 'value', ref: ref, field: 'ac', text: ac.value }]));
-      row('AC', ac);
-    } else {
+    // resistance of a resistor -- the desktop names it the same way, and
+    // edits it as a number plus an SI suffix.
+    const siField = (text, commit) => {
+      const wrap = document.createElement('span');
+      wrap.className = 'si';
+      const [num, suf] = splitSi(text || '');
       const val = document.createElement('input');
-      val.value = c.value || '';
-      val.addEventListener('change', () =>
-        docSet([{ op: 'value', ref: ref, field: 'value', text: val.value }]));
-      row(valueFieldName(c.kind), val);
+      val.className = 'mantissa';
+      val.value = num;
+      const sel = document.createElement('select');
+      sel.className = 'suffix';
+      for (const s of SI_SUFFIXES) {
+        const o = document.createElement('option');
+        o.value = s.s;
+        o.textContent = s.label;
+        sel.appendChild(o);
+      }
+      sel.value = suf;
+      const fire = () => commit(val.value.trim() + sel.value);
+      val.addEventListener('change', fire);
+      sel.addEventListener('change', fire);
+      wrap.appendChild(val);
+      wrap.appendChild(sel);
+      return wrap;
+    };
+    if (isSource(c.kind)) {
+      row('DC', siField(c.dc || '', (t) =>
+        docSet([{ op: 'value', ref: ref, field: 'dc', text: t }])));
+      row('AC', siField(c.ac || '', (t) =>
+        docSet([{ op: 'value', ref: ref, field: 'ac', text: t }])));
+    } else {
+      row(valueFieldName(c.kind), siField(c.value || '', (t) =>
+        docSet([{ op: 'value', ref: ref, field: 'value', text: t }])));
     }
 
     // copies: "copy of <unit>", n or n/d

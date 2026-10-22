@@ -34,6 +34,8 @@ header {
   border-bottom: 1px solid var(--border);
 }
 header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+header .brand { display: flex; align-items: center; gap: 8px; }
+.env-icon { width: 19px; height: 19px; color: var(--accent); flex: 0 0 auto; }
 .tag { color: var(--dim); font-size: 12px; }
 .spacer { flex: 1 1 auto; }
 footer {
@@ -145,6 +147,10 @@ kbd {
 .prow.param input[type="checkbox"] { flex: 0 0 auto; width: auto; }
 .prow.param .mantissa { flex: 0 0 62px; }
 .prow.param .suffix { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
+/* a value with its SI suffix */
+.prow .si { display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.prow .si .mantissa { flex: 0 0 62px; }
+.prow .si .suffix { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
 
 /* The operating point lives in its own section: it is a property of the
    circuit, not of the analysis that happens to be selected. */

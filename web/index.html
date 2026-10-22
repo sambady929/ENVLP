@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -19,8 +19,16 @@
 
 <header>
   <button id="btn-help" class="howto" title="Help and shortcuts (F1)">How To Use</button>
-  <h1>ENVLP</h1>
-  <span class="tag">symbolic circuit analyser</span>
+  <span class="brand">
+    <svg class="env-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="19" height="13" rx="1.6" fill="none"
+            stroke="currentColor" stroke-width="1.6"/>
+      <path d="M3 6.5 L12 13.5 L21 6.5" fill="none" stroke="currentColor"
+            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>ENVLP</h1>
+    <span class="tag">A back-of-the-envelope symbolic circuit analyzer</span>
+  </span>
   <span class="spacer"></span>
   <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
   <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
@@ -341,8 +349,8 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=8"></script>
-<script src="editor.js?v=8"></script>
-<script src="app.js?v=8"></script>
+<script src="envlp.js?v=9"></script>
+<script src="editor.js?v=9"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

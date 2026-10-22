@@ -466,18 +466,17 @@ const char* envlp_doc_set(const char* ops_json) {
             envlp::Wire w;
             envlp::Pt a{getn(o, "x0", 0), getn(o, "y0", 0)};
             envlp::Pt b{getn(o, "x1", 0), getn(o, "y1", 0)};
-            w.pts = {a, b};
             // The route is orthogonal, like the desktop's: the corner is the
             // horizontal-first or the vertical-first leg, and Space swaps it.
-            if (getb(o, "h_first", true)) {
-                if (std::fabs(b.first - a.first) > 1e-9 &&
-                    std::fabs(b.second - a.second) > 1e-9)
-                    w.pts.push_back(envlp::Pt{b.first, a.second});
-            } else {
-                if (std::fabs(b.first - a.first) > 1e-9 &&
-                    std::fabs(b.second - a.second) > 1e-9)
-                    w.pts.push_back(envlp::Pt{a.first, b.second});
-            }
+            // The corner sits *between* the two ends.
+            const bool corner = std::fabs(b.first - a.first) > 1e-9 &&
+                                std::fabs(b.second - a.second) > 1e-9;
+            if (corner && getb(o, "h_first", true))
+                w.pts = {a, envlp::Pt{b.first, a.second}, b};
+            else if (corner)
+                w.pts = {a, envlp::Pt{a.first, b.second}, b};
+            else
+                w.pts = {a, b};
             if (get(o, "start_pin") == "true") {
                 w.a.kind = envlp::WireEnd::Kind::Pin;
                 w.a.ref = get(o, "start_ref");

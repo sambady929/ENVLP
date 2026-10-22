@@ -187,7 +187,8 @@ void draw_vcvs(Ctx& t, Kind k) {
     t.line(19, -10, 23, -10);
     t.line(21, -12, 21, -8);
     t.line(19, 10, 23, 10);
-    t.text(k == Kind::E ? "E" : "G", 0, 0, true);
+    // No letter inside the box: in SPICE a VCCS is also called a "G source",
+    // and the label only reads as a keyboard shortcut.
 }
 
 void draw_body_ccvs_cccs(Ctx& t, Kind k) {
@@ -207,7 +208,8 @@ void draw_body_ccvs_cccs(Ctx& t, Kind k) {
     t.line(19, -10, 23, -10);
     t.line(21, -12, 21, -8);
     t.line(19, 10, 23, 10);
-    t.text(k == Kind::CCCS ? "F" : "H", 0, 0, true);
+    // No letter inside the box: in SPICE these are the "F" and "H" sources,
+    // and the label only reads as a keyboard shortcut.
 }
 
 // --- transistors -----------------------------------------------------------
