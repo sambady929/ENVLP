@@ -139,6 +139,93 @@ void Document::remove_wire(int wire_index) {
     dirty = true;
 }
 
+// Two wires that meet end to end are one wire, not two that happen to touch:
+// the polylines are stitched together (the shared point appears once) and
+// the outer ends keep their bindings. Without this, drawing a wire from the
+// end of another leaves a junction and the two move apart.
+bool Document::join_wires(int i, int j) {
+    if (i == j || i < 0 || j < 0 || i >= int(wires.size()) ||
+        j >= int(wires.size()))
+        return false;
+    Wire& A = wires[i];
+    Wire& B = wires[j];
+    if (A.pts.size() < 2 || B.pts.size() < 2) return false;
+    auto same = [](const Pt& a, const Pt& b) {
+        return std::fabs(a.first - b.first) < 1.0 &&
+               std::fabs(a.second - b.second) < 1.0;
+    };
+
+    // Which end of A meets which end of B, and in which direction the
+    // stitched polyline runs.
+    bool revA = false, revB = false, ok = false;
+    if (same(A.pts.back(), B.pts.front())) {
+        ok = true;
+    } else if (same(A.pts.back(), B.pts.back())) {
+        ok = true;
+        revB = true;
+    } else if (same(A.pts.front(), B.pts.front())) {
+        ok = true;
+        revA = true;
+    } else if (same(A.pts.front(), B.pts.back())) {
+        ok = true;
+        revA = true;
+        revB = true;
+    }
+    if (!ok) return false;
+
+    const std::vector<Pt> pa = A.pts, pb = B.pts;
+    const WireEnd ea = A.a, eb = A.b, fa = B.a, fb = B.b;
+    Wire M;
+    M.pts.clear();
+    const size_t na = pa.size(), nb = pb.size();
+    if (revA) {
+        for (size_t k = na; k-- > 0;) M.pts.push_back(pa[k]);
+    } else {
+        for (size_t k = 0; k < na; ++k) M.pts.push_back(pa[k]);
+    }
+    // The shared point ends A's run, so B's run starts one past it.
+    if (revB) {
+        for (size_t k = nb - 1; k > 0; --k) M.pts.push_back(pb[k - 1]);
+    } else {
+        for (size_t k = 1; k < nb; ++k) M.pts.push_back(pb[k]);
+    }
+    // The outer ends: the end of A that is not the meeting point, and the end
+    // of B that is not the meeting point.
+    if (!revA) {
+        M.a = ea;
+        M.b = revB ? fb : fa;
+    } else {
+        M.a = eb;
+        M.b = revB ? fa : fb;
+    }
+    if (M.pts.size() > 2) M.waypoints.assign(M.pts.begin() + 1, M.pts.end() - 1);
+    else M.waypoints.clear();
+
+    wires[i] = M;
+    // The label bindings of the removed wire have to follow.
+    for (auto& l : labels) {
+        if (l.bind_wire == j) l.bind_wire = i;
+        else if (l.bind_wire > j) --l.bind_wire;
+    }
+    wires.erase(wires.begin() + j);
+    dirty = true;
+    return true;
+}
+
+void Document::join_with_neighbours(int wire_index) {
+    for (int guard = 0; guard < 8; ++guard) {
+        bool joined = false;
+        for (size_t k = 0; k < wires.size(); ++k) {
+            if (int(k) == wire_index) continue;
+            if (join_wires(wire_index, int(k))) {
+                joined = true;
+                break;
+            }
+        }
+        if (!joined) break;
+    }
+}
+
 // Remove every net label whose anchor no longer lies on a wire or a pin (e.g.
 // after the wire it named was deleted). Called after any wire removal.
 void Document::prune_orphan_labels() {

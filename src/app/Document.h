@@ -104,6 +104,13 @@ public:
     // wire is removed with it, so a deleted wire never leaves an orphan label
     // floating in space.
     void remove_wire(int wire_index);
+    // Two wires that meet end to end are one wire, not two that happen to
+    // touch: the polylines are stitched together (the shared point appears
+    // once) and the outer ends keep their bindings. Drawing a wire from the
+    // end of another therefore leaves one wire, not a junction.
+    bool join_wires(int i, int j);
+    // Join a wire to any other wire it meets end to end (at either end).
+    void join_with_neighbours(int wire_index);
     // Drop every net label whose anchor no longer lies on a wire or pin.
     void prune_orphan_labels();
 

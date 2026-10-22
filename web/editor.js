@@ -30,7 +30,8 @@ const ED = {
   placeFlipH: false,
   placeFlipV: false,
   selection: new Set(), // selected component refs
-  selWire: -1,          // selected wire index
+  wireSel: new Set(),   // selected wire indices (a marquee takes them all)
+  selWire: -1,          // the wire under the cursor / last clicked
   selSeg: -1,           // the segment of that wire (a wire drag moves it)
   selLabel: -1,         // selected net label
   drag: null,           // {mode:'move'|'marquee'|'pan'|'wire', ...}
@@ -239,7 +240,7 @@ function drawGrid(ctx, W, H) {
 function drawWires(ctx, doc) {
   ctx.lineCap = 'round';
   for (const w of doc.wires || []) {
-    const sel = w.i === ED.selWire;
+    const sel = w.i === ED.selWire || ED.wireSel.has(w.i);
     ctx.strokeStyle = sel ? '#2f6fed' : '#10141a';
     ctx.lineWidth = sel ? 2.6 : 1.6;
     ctx.beginPath();
@@ -534,9 +535,9 @@ function bindCanvas() {
         ED.selection.add(comp.ref);
       }
       ED.selWire = -1; ED.selSeg = -1;
+      ED.wireSel.clear();
       ED.drag = {
-        mode: 'move', sx: w.x, sy: w.y,
-        origin: new Map(Array.from(ED.selection).map((r) => {
+        mode: 'move', sx: w.x, sy: w.y,        origin: new Map(Array.from(ED.selection).map((r) => {
           const cc = (ED.doc.components || []).find((x) => x.ref === r);
           return [r, { x: cc.x, y: cc.y }];
         })),
@@ -550,6 +551,7 @@ function bindCanvas() {
     const wh = hitWireSeg(w);
     if (wh) {
       ED.selection.clear();
+      ED.wireSel.clear();
       ED.selWire = wh.wire;
       ED.selSeg = wh.seg;
       // Grabbing a wire drags the *segment* under the cursor: it moves
@@ -561,6 +563,7 @@ function bindCanvas() {
       return;
     }
     ED.selection.clear();
+    ED.wireSel.clear();
     ED.selWire = -1;
     ED.drag = { mode: 'marquee', sx: w.x, sy: w.y, x0: w.x, y0: w.y, x1: w.x, y1: w.y };
     afterChange();
@@ -595,6 +598,14 @@ function bindCanvas() {
       const ops = [];
       for (const [ref, o] of ED.drag.origin)
         ops.push({ op: 'move', ref: ref, x: o.x + dx, y: o.y + dy });
+      // The selected wires come along with the components.
+      const ddx = dx - (ED.drag.lastDx || 0), ddy = dy - (ED.drag.lastDy || 0);
+      if (ddx || ddy) {
+        ED.drag.lastDx = dx;
+        ED.drag.lastDy = dy;
+        for (const wi of ED.wireSel)
+          ops.push({ op: 'move_wire', wire: wi, seg: -1, dx: ddx, dy: ddy });
+      }
       docSet(ops);
       return;
     }
@@ -642,12 +653,31 @@ function bindCanvas() {
       return;
     }
     if (ED.drag && ED.drag.mode === 'marquee') {
+      // A marquee takes the components *and* the wires it sweeps over.
       const x0 = Math.min(ED.drag.x0, ED.drag.x1), x1 = Math.max(ED.drag.x0, ED.drag.x1);
       const y0 = Math.min(ED.drag.y0, ED.drag.y1), y1 = Math.max(ED.drag.y0, ED.drag.y1);
-      for (const c of ED.doc.components || []) {
-        if (c.bbox[0] >= x0 && c.bbox[2] <= x1 && c.bbox[1] >= y0 && c.bbox[3] <= y1)
+      const inBox = (x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+      for (const c of ED.doc.components || [])
+        if (inBox(c.bbox[0], c.bbox[1]) || inBox(c.bbox[2], c.bbox[3]) ||
+            inBox((c.bbox[0] + c.bbox[2]) / 2, (c.bbox[1] + c.bbox[3]) / 2))
           ED.selection.add(c.ref);
+      for (const w of ED.doc.wires || []) {
+        let hit = false;
+        for (let i = 0; i < w.pts.length && !hit; ++i) {
+          if (inBox(w.pts[i][0], w.pts[i][1])) { hit = true; break; }
+          if (i + 1 < w.pts.length) {
+            // the segment itself sweeps through the box?
+            const [ax, ay] = w.pts[i], [bx, by] = w.pts[i + 1];
+            const steps = 8;
+            for (let s = 1; s < steps && !hit; ++s) {
+              const px = ax + (bx - ax) * s / steps, py = ay + (by - ay) * s / steps;
+              if (inBox(px, py)) hit = true;
+            }
+          }
+        }
+        if (hit) ED.wireSel.add(w.i);
       }
+      afterChange();
     }
     if (ED.drag && ED.drag.mode === 'move') docSet([{ op: 'end' }]);
     if (ED.drag && ED.drag.mode === 'wire') docSet([{ op: 'end' }]);
@@ -836,8 +866,10 @@ function flipSel(axis) {
 function deleteSel() {
   const ops = [];
   if (ED.selWire >= 0) ops.push({ op: 'delete_wire', i: ED.selWire });
+  ED.wireSel.forEach((i) => { if (i !== ED.selWire) ops.push({ op: 'delete_wire', i: i }); });
   ED.selection.forEach((r) => ops.push({ op: 'remove', ref: r }));
   ED.selection.clear();
+  ED.wireSel.clear();
   ED.selWire = -1;
   docSet(ops);
 }
@@ -1136,7 +1168,26 @@ function renderProps() {
       wrap.appendChild(sel);
       return wrap;
     };
-    if (isSource(c.kind)) {
+    if (c.kind === 'K') {
+      // A coupling marker names the two inductors it ties together; it has
+      // no value of its own.
+      const inductors = (ED.doc.components || []).filter((o) => o.kind === 'L');
+      const links = c.links || [];
+      const picker = (which) => {
+        const s = document.createElement('select');
+        s.innerHTML = '<option value="">(none)</option>' +
+          inductors.map((o) => '<option value="' + o.ref + '">' + o.ref + '</option>').join('');
+        s.value = links[which] || '';
+        s.addEventListener('change', () => {
+          const a = which === 0 ? s.value : (links[0] || '');
+          const b = which === 1 ? s.value : (links[1] || '');
+          docSet([{ op: 'links', ref: ref, a: a, b: b }]);
+        });
+        return s;
+      };
+      row('Couples L:', picker(0));
+      row('with L:', picker(1));
+    } else if (isSource(c.kind)) {
       row('DC', siField(c.dc || '', (t) =>
         docSet([{ op: 'value', ref: ref, field: 'dc', text: t }])));
       row('AC', siField(c.ac || '', (t) =>

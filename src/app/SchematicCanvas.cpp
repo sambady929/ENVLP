@@ -1111,6 +1111,18 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         }
         wire_pts_ = seg;
 
+        // A wire that meets another one end to end becomes a single wire, not
+        // two that happen to touch.
+        if (wire_idx_ >= 0) {
+            const int before = int(doc_->wires.size());
+            doc_->join_with_neighbours(wire_idx_);
+            if (int(doc_->wires.size()) != before) {
+                // One of the wires was merged away: the wire being drawn is
+                // the merged one now.
+                wire_idx_ = std::min(wire_idx_, int(doc_->wires.size()) - 1);
+            }
+        }
+
         bool on_wire_node = false;
         for (size_t wi = 0; wi < doc_->wires.size() && !on_wire_node; ++wi) {
             if (int(wi) == wire_idx_) continue;

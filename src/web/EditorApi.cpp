@@ -216,6 +216,13 @@ std::string geometry() {
         js << ",\"value\":" << q(c.value_text);
         js << ",\"dc\":" << q(c.dc_text);
         js << ",\"ac\":" << q(c.ac_text);
+        // The coupled inductors of a coupling marker (K).
+        js << ",\"links\":[";
+        for (size_t li = 0; li < c.links.size(); ++li) {
+            if (li) js << ",";
+            js << q(c.links[li]);
+        }
+        js << "]";
         js << ",\"mirror\":" << q(c.mirror_ref);
         js << ",\"mult\":" << c.mirror_num() << ",\"den\":" << c.mirror_dn();
         // The model parameters of this kind (gm, ro, Cgs, the passives'
@@ -500,6 +507,8 @@ const char* envlp_doc_set(const char* ops_json) {
             g_doc.bind_wire_ends(w);
             g_doc.wires.push_back(w);
             g_doc.sync_wire_endpoints();
+            // A wire that meets another one end to end becomes a single wire.
+            g_doc.join_with_neighbours(int(g_doc.wires.size()) - 1);
         } else if (op == "wire_extend") {
             // Continue the wire that is being drawn: append the routed
             // segment (the desktop extends one wire, it does not start a new
@@ -530,6 +539,8 @@ const char* envlp_doc_set(const char* ops_json) {
             }
             g_doc.bind_wire_ends(w);
             g_doc.sync_wire_endpoints();
+            // Same here: the extended wire may meet another one end to end.
+            g_doc.join_with_neighbours(wi);
         } else if (op == "move_wire") {
             // Drag a wire (or one of its segments). A segment moves
             // perpendicular to itself, so its neighbours stretch instead of
@@ -616,6 +627,17 @@ const char* envlp_doc_set(const char* ops_json) {
                 }
             }
             g_doc.sync_label_anchors();
+        } else if (op == "links") {
+            // The two inductors a coupling marker ties together.
+            const std::string ref = get(o, "ref");
+            for (auto& c : g_doc.circuit.comps) {
+                if (c.ref != ref) continue;
+                c.links.clear();
+                const std::string a = get(o, "a"), b = get(o, "b");
+                if (!a.empty()) c.links.push_back(a);
+                if (!b.empty()) c.links.push_back(b);
+            }
+            g_doc.dirty = true;
         } else if (op == "param") {
             // A model parameter's value (a parasitic, gm, ro, ...).
             const std::string ref = get(o, "ref");
