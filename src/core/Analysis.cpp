@@ -159,6 +159,15 @@ std::string latex_rhs(const std::string& full) {
     return full;
 }
 
+// The same string presented under a different left-hand side: a low-entropy
+// result is a polynomial ratio, not necessarily a transfer function, so the
+// card names the quantity it actually measured (V(out), Zin(s), Isc(out), ...).
+std::string relabel_latex(const std::string& latex, const std::string& label) {
+    const std::string pfx = "H(s) = ";
+    if (latex.rfind(pfx, 0) == 0) return label + " = " + latex.substr(pfx.size());
+    return latex;
+}
+
 // Drop the leading "H(s) = ..." line from a report, keeping the rest (used
 // when the caller already printed the expression above).
 std::string strip_first_line(const std::string& report) {
@@ -178,11 +187,12 @@ CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
 }
 
 // ---------------------------------------------------------------------------
-// AC: small-signal response to the *AC values* of every independent source,
+// AC: small-signal response to the AC values of every independent source,
 // superposed. There is no single "input": each source contributes its own
-// transfer to the chosen output scaled by its AC value, and the result is the
-// linear combination sum_i (AC_i * H_i(s)). The output is a node voltage or a
-// branch current, not a ratio.
+// transfer to the chosen output scaled by its AC value, so the result reads
+//   V(out) = V1*H_1(s) + V2*H_2(s) + ...
+// with the source symbols kept in the answer. The output is a node voltage or
+// a branch current, not a ratio.
 // ---------------------------------------------------------------------------
 CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     CardResult cr;
@@ -192,13 +202,17 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     // Collect every independent voltage/current source and its AC value. VDD
     // is a supply rail, not a signal source: it is AC ground and never
     // contributes to the AC superposition.
-    struct Src { std::string ref; double ac; };
+    struct Src {
+        const Component* comp;
+        std::string ref;
+        double ac;
+    };
     std::vector<Src> srcs;
     for (const auto& cc : c.comps) {
         if (cc.kind != Kind::V && cc.kind != Kind::I) continue;
         double ac = 1.0;
         if (!eng::parse_value(cc.ac_text, ac)) ac = 1.0;
-        srcs.push_back({cc.ref, ac});
+        srcs.push_back({&cc, cc.ref, ac});
     }
     if (srcs.empty()) {
         cr.summary = "AC: no independent sources to excite";
@@ -206,12 +220,16 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
-    // H_i(s) = output per unit of source i; sum with the AC weights.
-    ex num = 0, den = 1;
+    // H_i(s) = output per unit of source i. The physical response is the
+    // source's own symbolic value (V1, I1, ...) times its AC value, so the
+    // result reads V(out) = V1*H_1(s) + V2*H_2(s) + ... -- the sources are
+    // part of the answer, not silently divided out.
+    ex num = 0;
     ParamTable params;
     std::string out_desc;
     double w0 = 2.0 * M_PI * s.f0_hz;
-    std::vector<std::pair<std::string, double>> contrib; // ref -> AC_i (dB) at f0
+    std::vector<std::pair<std::string, std::string>> contrib; // ref -> dB / off
+    std::vector<std::string> term_text; // per-source symbolic term
     for (const auto& src : srcs) {
         AnalysisRequest r;
         r.input_ref = src.ref;
@@ -222,12 +240,29 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
         Solved sv = solve(c, r);
         if (params.syms.empty()) params = sv.params;
         out_desc = sv.output_desc;
-        // scale this source's response by its AC value
-        ex term = (sv.num / sv.den).normal() * ex(src.ac);
+        ex h = (sv.num / sv.den).normal();
+        ex term = 0;
+        if (src.ac != 0.0) {
+            // The source's value symbol. Its numeric estimate is the AC
+            // amplitude (what actually drives the node), not the DC value.
+            ex vsym = value_symbol_scaled(params, c, *src.comp);
+            params.set(src.ref, std::abs(src.ac),
+                       value_unit_class(src.comp->kind));
+            term = (ex(src.ac) * vsym * h).normal();
+        }
         num = (num + term).normal();
-        den = sv.den;
-        double m = eval_mag_db((sv.num / sv.den).normal(), sv.params, w0);
-        contrib.push_back({src.ref, m + 20.0 * std::log10(std::abs(src.ac))});
+        // A source with a zero AC value is off, not -inf dB.
+        char b2[64];
+        if (src.ac == 0.0)
+            std::snprintf(b2, sizeof(b2), "off");
+        else
+            std::snprintf(b2, sizeof(b2), "%.3g dB",
+                          eval_mag_db(h, sv.params, w0) +
+                              20.0 * std::log10(std::abs(src.ac)));
+        contrib.push_back({src.ref, b2});
+        // Print the term in the same s-ordering as the main result.
+        term_text.push_back(
+            pretty_ratio(term.numer(), term.denom(), params.get("s")));
     }
 
     // Low-entropy prune of the combined response. Normalize the denominator so
@@ -236,9 +271,12 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     PruneOptions o = opts_of(s);
     Pruned p = prune_low_entropy(num.numer(), num.denom(), params, o);
 
+    // The measured quantity is the output itself, not a ratio: name it so.
+    const std::string label = out_desc;
     cr.has_transfer = true;
     {
         AnalysisResult res;
+        res.label = label;
         res.input_desc = "AC";
         res.output_desc = out_desc;
         res.num_raw = num.numer();
@@ -250,38 +288,48 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
         res.report = format_report(res);
         cr.transfer = res;
     }
-    cr.text = p.text;
-    cr.latex = p.latex;
-    double mag = eval_mag_db((num / den).normal(), params, w0);
-    double ph = eval_phase_deg((num / den).normal(), params, w0);
+    cr.text = label + " = " + p.text;
+    cr.latex = relabel_latex(p.latex, label);
+    // `num` is already a reduced ratio of polynomials, so it is evaluated as
+    // it stands (there is no separate denominator).
+    double mag = eval_mag_db(num, params, w0);
+    double ph = eval_phase_deg(num, params, w0);
     char buf[128];
     std::snprintf(buf, sizeof(buf), "%.3g dB @ %.4g Hz, phase %.3g deg", mag,
                   s.f0_hz, ph);
     cr.values.push_back({"at f0", buf});
-    for (const auto& cc : contrib) {
-        char b2[64];
-        std::snprintf(b2, sizeof(b2), "%.3g dB", cc.second);
-        cr.values.push_back({cc.first, b2});
-    }
+    for (const auto& cc : contrib) cr.values.push_back({cc.first, cc.second});
 
-    std::string rep = "AC analysis -- superposition of source AC values\n";
+    std::string rep =
+        "AC (small-signal) -- superposition of the sources' AC values\n";
     rep += "output: " + out_desc + "\n";
     rep += "----------------------------------------\n";
-    rep += "  " + out_desc + " = " + p.text + "\n";
+    rep += "  " + label + " = " + p.text + "\n";
     rep += "  at f0: " + std::string(buf) + "\n";
-    rep += "Per-source contributions (AC value x H_i) at f0:\n";
-    for (size_t i = 0; i < contrib.size(); ++i)
-        rep += "  " + contrib[i].first + ": " + cr.values[1 + i].second + "\n";
+    rep += "Per-source terms:\n";
+    for (size_t i = 0; i < srcs.size(); ++i) {
+        if (srcs[i].ref.rfind("__", 0) == 0) continue; // internal test source
+        char b[96];
+        std::snprintf(b, sizeof(b), "  %s (AC %g): ", srcs[i].ref.c_str(),
+                      srcs[i].ac);
+        rep += std::string(b) +
+               (srcs[i].ac == 0.0 ? std::string("off") : term_text[i]) + "\n";
+    }
+    rep += "Per-source contributions at f0:\n";
+    for (size_t i = 0; i < contrib.size(); ++i) {
+        if (contrib[i].first.rfind("__", 0) == 0) continue;
+        rep += "  " + contrib[i].first + ": " + contrib[i].second + "\n";
+    }
     cr.report = rep;
-    cr.summary = out_desc + " = " + p.text + "   (" + buf + ")";
+    cr.summary = cr.text + "   (" + buf + ")";
     {
         std::ostringstream lr;
-        lr << "AC (superposition of source AC values):\n";
+        lr << "AC (superposition of the sources' AC values):\n";
         // The output description can carry a branch name with underscores
         // (I(__SHORT__)); in LaTeX an underscore starts a subscript, so it
         // has to be escaped or MathJax reports "Missing open brace for
         // subscript".
-        lr << latex_escape_underscores(out_desc) << " = " << latex_rhs(p.latex)
+        lr << latex_escape_underscores(label) << " = " << latex_rhs(p.latex)
            << "\n";
         cr.latex_report = lr.str();
     }
@@ -792,13 +840,11 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
     rep += "input: " + s.input_ref + "   supply: " + vdd_ref + "\n";
     rep += "----------------------------------------\n";
     rep += "PSR  = H(VDD -> out)  = " + psr_p.text + "\n";
-    rep += "  LaTeX: " + psr_p.latex + "\n";
     rep += "PSRR = H(Vin -> out) / H(VDD -> out) = " + psrr_p.text + "\n";
-    rep += "  LaTeX: " + psrr_p.latex + "\n";
     (void)s_sym;
 
     cr.text = "PSR = " + psr_p.text + " ;  PSRR = " + psrr_p.text;
-    cr.latex = psrr_p.latex;
+    cr.latex = "PSRR = " + latex_rhs(psrr_p.latex);
     // The LaTeX report mirrors the text report section-for-section.
     {
         std::ostringstream lr;
@@ -818,6 +864,7 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
     cr.has_transfer = true;
     {
         AnalysisResult res;
+        res.label = "PSR";
         res.input_desc = "VDD";
         res.output_desc = psr.out_desc;
         res.num_raw = psr.num;
@@ -973,7 +1020,7 @@ CardResult analyze_differential(const Circuit& c, const AnalysisSpec& s) {
 
     cr.text = "Adm = " + adm_p.text + " ;  Acm = " + cm_p.text +
               " ;  CMRR = " + cmrr_p.text;
-    cr.latex = adm_p.latex;
+    cr.latex = "A_{dm} = " + latex_rhs(adm_p.latex);
 
     std::string rep = "Differential analysis\n";
     rep += "input port: " + ip + " - " + in + "   output: " + s.output + "\n";
@@ -992,6 +1039,7 @@ CardResult analyze_differential(const Circuit& c, const AnalysisSpec& s) {
     cr.has_transfer = true;
     {
         AnalysisResult res;
+        res.label = "A_{dm}";
         res.input_desc = ip + " - " + in;
         res.output_desc = s.output;
         res.num_raw = dm.num;
@@ -1388,11 +1436,15 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
     vs.ref = "__SHORT__";
     vs.nodes = {node, "0"};
     vs.value_text = "0";
+    // The short is the *measurement*, not an excitation: it must not drive the
+    // network in the superposition, or its own response (the impedance seen
+    // looking into the shorted node) would be added to the answer -- which on
+    // an RC swamps V1/R1 with the capacitor's current.
+    vs.ac_text = "0";
     cs.comps.push_back(vs);
 
     // The short-circuit current is driven like the AC card: every independent
-    // source is excited in turn and the responses superpose. There is no
-    // "input" to name -- the short is the excitation.
+    // source is excited in turn and the responses superpose.
     AnalysisSpec s2 = s;
     s2.output = "I(__SHORT__)";
     CardResult cr = analyze_ac(cs, s2);
@@ -1400,7 +1452,7 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
     cr.title = "Short-circuit current at " + node;
 
     // The AC card names the internal branch it measures. That name is an
-    // implementation detail, so the report says what the current is instead.
+    // implementation detail, so the result says what the current is instead.
     const std::string branch = "I(__SHORT__)";
     const std::string branch_tex = "I(\\_\\_SHORT\\_\\_)";
     const std::string nice = "Isc(" + node + ")";
@@ -1414,36 +1466,25 @@ CardResult analyze_short_circuit(const Circuit& c, const AnalysisSpec& s) {
     };
     cr.report = swap(cr.report);
     cr.latex_report = swap(cr.latex_report);
-    // The AC card's report header says "AC analysis"; this is the short-
-    // circuit current, so the header is replaced.
-    const std::string ac_head = "AC analysis -- superposition of source AC values\n";
+    cr.latex = swap(cr.latex);
+    // The AC card's report header and its per-source terms are about the
+    // sources; the measured quantity is the short's current. Report that.
+    const std::string ac_head =
+        "AC (small-signal) -- superposition of the sources' AC values\n";
     if (cr.report.compare(0, ac_head.size(), ac_head) == 0)
-        cr.report = "Short-circuit current at " + node + "\n" +
+        cr.report = "Short-circuit current at " + node +
+                    " (current flowing out of the node into the short)\n" +
                     cr.report.substr(ac_head.size());
-    const std::string ac_tex = "AC (superposition of source AC values):\n";
+    const std::string ac_tex = "AC (superposition of the sources' AC values):\n";
     if (cr.latex_report.compare(0, ac_tex.size(), ac_tex) == 0)
         cr.latex_report = "Short-circuit current at " + node + ":\n" +
                           cr.latex_report.substr(ac_tex.size());
-    // ... and the short itself is not one of the circuit's sources, so it has
-    // no line in the per-source contributions.
-    {
-        size_t p;
-        while ((p = cr.report.find("  __SHORT__:")) != std::string::npos) {
-            const size_t e = cr.report.find('\n', p);
-            if (e == std::string::npos) {
-                cr.report.erase(p);
-                break;
-            }
-            cr.report.erase(p, e - p + 1);
-        }
-    }
-    // The AC card's text is "<branch> = <value>"; keep the value, drop the
-    // branch name.
-    std::string value = cr.text;
-    const size_t eq = value.find(" = ");
-    if (eq != std::string::npos) value = value.substr(eq + 3);
-    cr.text = nice + " = " + value;
-    cr.summary = nice + " = " + value;
+    // Name the result after the measured current, in the report and in the
+    // transfer the plot is built from.
+    cr.transfer.label = nice;
+    cr.transfer.report = swap(cr.transfer.report);
+    cr.text = nice + " = " + cr.transfer.pruned.text;
+    cr.summary = cr.text;
     return cr;
 }
 
@@ -1542,6 +1583,7 @@ CardResult analyze_zin(const Circuit& c, const AnalysisSpec& s) {
     cr.has_transfer = true;
     {
         AnalysisResult res;
+        res.label = "Z_{in}(s)";
         res.input_desc = s.input_ref;
         res.output_desc = "Zin";
         res.sweep = s.sweep;
@@ -1592,6 +1634,17 @@ CardResult analyze_zout(const Circuit& c, const AnalysisSpec& s) {
         cr.latex = "Z_{out}(s) = " + cr.latex.substr(7);
     else if (!cr.latex.empty())
         cr.latex = "Z_{out}(s) = " + cr.latex;
+    // The transfer is still useful for the plot, but it is an impedance: name
+    // it so the report does not call it H(s).
+    cr.transfer.label = "Z_{out}(s)";
+    cr.transfer.report = format_report(cr.transfer);
+    {
+        // The report's leading line carries the old name.
+        const std::string pfx = "H(s) = ";
+        std::string& rep = cr.report;
+        if (rep.rfind(pfx, 0) == 0)
+            rep = "Zout(s) = " + rep.substr(pfx.size());
+    }
     return cr;
 }
 

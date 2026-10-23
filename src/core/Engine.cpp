@@ -387,7 +387,7 @@ std::string metrics_latex(const AnalysisResult& r) {
 // separately, so each view does one job well.
 std::string format_report(const AnalysisResult& r) {
     std::string out;
-    out += "H(s) = " + r.pruned.text + "\n";
+    out += r.label + " = " + r.pruned.text + "\n";
     if (r.pruned.numeric_factors)
         out += "(one or more factors are approximate: the exact denominator "
                "does not factor symbolically, so numeric estimate-based roots "

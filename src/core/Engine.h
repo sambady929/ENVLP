@@ -17,6 +17,10 @@ namespace syms {
 struct AnalysisResult {
     std::string input_desc;   // "V1"
     std::string output_desc;  // "V(out)"
+    // The name the result is presented under: "H(s)" for a transfer function,
+    // but "V(out)", "Zin(s)", "Isc(out)", "PSRR", ... for the other cards. A
+    // voltage is not a transfer function, so it must not print as H(s).
+    std::string label = "H(s)";
     GiNaC::ex num_raw, den_raw;
     Pruned pruned;
     ParamTable params;

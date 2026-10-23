@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '18';
+const BUILD = '21';
 
 const $ = (id) => document.getElementById(id);
 
@@ -99,7 +99,16 @@ function run() {
   setTimeout(() => {
     try {
       const res = JSON.parse(callStr2('envlp_run', scx, JSON.stringify(options())));
-      if (!res.ok) { setStatus(res.error, true); return; }
+      if (!res.ok) {
+        // A failed run must not leave the previous result (or its plot) up,
+        // looking like the answer to this analysis.
+        last = null;
+        $('report').textContent = res.error || 'analysis failed';
+        $('math').innerHTML = '';
+        drawPlot();
+        setStatus(res.error, true);
+        return;
+      }
       last = res;
       render(res);
       setStatus('');
@@ -283,9 +292,14 @@ function drawPlot() {
   const s = currentSeries();
   const el = $('plot');
   if (!s || !s.f.length) {
+    // Purge the graph as well as the DOM: Plotly keeps its state on the node,
+    // and a later analysis would otherwise try to react to a graph that is no
+    // longer on the page -- leaving the "no plot" message up for good.
+    if (window.Plotly) { try { Plotly.purge(el); } catch (e) { /* not a graph */ } }
     el.innerHTML = '<p class="status">this analysis has no frequency response to plot</p>';
     return;
   }
+  el.innerHTML = '';
   const fig = figureFor($('plot-mode').value, s);
   Plotly.react(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
 }
