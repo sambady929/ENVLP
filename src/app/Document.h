@@ -118,6 +118,14 @@ public:
     // once) and the outer ends keep their bindings. This is what makes a wire
     // drawn from the end of another continue it, as in Cadence Virtuoso.
     bool join_wires(int i, int j);
+    // Merge two collinear straight segments whose intervals overlap or touch
+    // (a partial overlap, or a collinear end-to-end join). This is what makes
+    // two straight wires that lie on the same line one physical segment even
+    // when neither endpoint of one meets an endpoint of the other.
+    bool merge_collinear(int i, int j);
+    // Replace wires i/j with the merged `Wire`, fix label bindings and return
+    // the merged wire's new index.
+    int finish_join(int i, int j, Wire merged);
     // Join a wire to any other wire it meets end to end (at either end).
     // Returns the index of the wire that survived: the merged one, which may
     // have moved when the wire it was joined with was removed.

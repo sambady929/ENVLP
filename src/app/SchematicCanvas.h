@@ -80,6 +80,10 @@ public:
     // (Enter) or leave the mode, dropping only the uncommitted segment (Esc).
     void wire_commit_segment();
     void wire_finish();
+    // Drop the in-progress wire without committing or joining it. Used when
+    // the document is rewound under the canvas (undo/redo), where the old wire
+    // index no longer names the same path.
+    void reset_wiring();
 
     // Net-label placement: begin placing the given label names (space
     // separated). Each click drops one label on the clicked net, in order.

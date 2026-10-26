@@ -265,6 +265,39 @@ function onSpan(p, a, b) {
   return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy)) <= 1;
 }
 
+// Does segment a-b intersect (or lie inside) the axis-aligned rectangle?
+// A marquee must take a long wire that crosses the box even when neither end
+// is inside it; sampling a few points could miss a thin box.
+function segRectHit(a, b, x0, y0, x1, y1) {
+  const inside = (p) =>
+    p[0] >= x0 - 1e-9 && p[0] <= x1 + 1e-9 &&
+    p[1] >= y0 - 1e-9 && p[1] <= y1 + 1e-9;
+  if (inside(a) || inside(b)) return true;
+  const cross = (p, q, r) =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const on = (p, q, r) =>
+    Math.min(p[0], q[0]) - 1e-9 <= r[0] &&
+    r[0] <= Math.max(p[0], q[0]) + 1e-9 &&
+    Math.min(p[1], q[1]) - 1e-9 <= r[1] &&
+    r[1] <= Math.max(p[1], q[1]) + 1e-9;
+  const segSeg = (p1, p2, q1, q2) => {
+    const o1 = cross(p1, p2, q1), o2 = cross(p1, p2, q2);
+    const o3 = cross(q1, q2, p1), o4 = cross(q1, q2, p2);
+    if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+        ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0)))
+      return true;
+    if (Math.abs(o1) < 1e-9 && on(p1, p2, q1)) return true;
+    if (Math.abs(o2) < 1e-9 && on(p1, p2, q2)) return true;
+    if (Math.abs(o3) < 1e-9 && on(q1, q2, p1)) return true;
+    if (Math.abs(o4) < 1e-9 && on(q1, q2, p2)) return true;
+    return false;
+  };
+  return segSeg(a, b, [x0, y0], [x1, y0]) ||
+         segSeg(a, b, [x1, y0], [x1, y1]) ||
+         segSeg(a, b, [x1, y1], [x0, y1]) ||
+         segSeg(a, b, [x0, y1], [x0, y0]);
+}
+
 // A dot marks a real connection: three or more distinct branch directions at
 // a point. A straight end-to-end join and a corner have two, so they get no
 // dot -- exactly like Cadence Virtuoso and the desktop app. A T-junction and
@@ -705,18 +738,8 @@ function bindCanvas() {
           ED.selection.add(c.ref);
       for (const w of ED.doc.wires || []) {
         let hit = false;
-        for (let i = 0; i < w.pts.length && !hit; ++i) {
-          if (inBox(w.pts[i][0], w.pts[i][1])) { hit = true; break; }
-          if (i + 1 < w.pts.length) {
-            // the segment itself sweeps through the box?
-            const [ax, ay] = w.pts[i], [bx, by] = w.pts[i + 1];
-            const steps = 8;
-            for (let s = 1; s < steps && !hit; ++s) {
-              const px = ax + (bx - ax) * s / steps, py = ay + (by - ay) * s / steps;
-              if (inBox(px, py)) hit = true;
-            }
-          }
-        }
+        for (let i = 1; i < w.pts.length && !hit; ++i)
+          hit = segRectHit(w.pts[i - 1], w.pts[i], x0, y0, x1, y1);
         if (hit) ED.wireSel.add(w.i);
       }
       afterChange();
@@ -917,8 +940,13 @@ function flipSel(axis) {
 }
 function deleteSel() {
   const ops = [];
-  if (ED.selWire >= 0) ops.push({ op: 'delete_wire', i: ED.selWire });
-  ED.wireSel.forEach((i) => { if (i !== ED.selWire) ops.push({ op: 'delete_wire', i: i }); });
+  // Deleting a wire shifts the indices above it, so go from the highest
+  // index down. Ascending order deleted only the first wire of a marquee.
+  const wires = Array.from(new Set([
+    ...Array.from(ED.wireSel),
+    ...(ED.selWire >= 0 ? [ED.selWire] : []),
+  ])).sort((a, b) => b - a);
+  for (const i of wires) ops.push({ op: 'delete_wire', i: i });
   ED.selection.forEach((r) => ops.push({ op: 'remove', ref: r }));
   ED.selection.clear();
   ED.wireSel.clear();
@@ -987,6 +1015,29 @@ function wireJoinsEndToEnd(wi) {
     const oe = [o.pts[0], o.pts[o.pts.length - 1]];
     for (const a of ends) for (const b of oe) {
       if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= 9) return true;
+    }
+    // A partial overlap is collinear and not an endpoint join. The engine
+    // unions the two intervals; the pre-check must send the join for it.
+    if (w.pts.length === 2 && o.pts.length === 2) {
+      const [a0, a1] = w.pts, [b0, b1] = o.pts;
+      const ah = Math.abs(a0[1] - a1[1]) < 1e-9 &&
+                 Math.abs(a0[0] - a1[0]) > 1e-9;
+      const av = Math.abs(a0[0] - a1[0]) < 1e-9 &&
+                 Math.abs(a0[1] - a1[1]) > 1e-9;
+      const bh = Math.abs(b0[1] - b1[1]) < 1e-9 &&
+                 Math.abs(b0[0] - b1[0]) > 1e-9;
+      const bv = Math.abs(b0[0] - b1[0]) < 1e-9 &&
+                 Math.abs(b0[1] - b1[1]) > 1e-9;
+      if (ah && bh && Math.abs(a0[1] - b0[1]) <= 1) {
+        const a0x = Math.min(a0[0], a1[0]), a1x = Math.max(a0[0], a1[0]);
+        const b0x = Math.min(b0[0], b1[0]), b1x = Math.max(b0[0], b1[0]);
+        if (Math.max(a0x, b0x) <= Math.min(a1x, b1x) + 1) return true;
+      }
+      if (av && bv && Math.abs(a0[0] - b0[0]) <= 1) {
+        const a0y = Math.min(a0[1], a1[1]), a1y = Math.max(a0[1], a1[1]);
+        const b0y = Math.min(b0[1], b1[1]), b1y = Math.max(b0[1], b1[1]);
+        if (Math.max(a0y, b0y) <= Math.min(a1y, b1y) + 1) return true;
+      }
     }
   }
   return false;

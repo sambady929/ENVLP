@@ -305,7 +305,12 @@ bool Document::join_wires(int i, int j) {
     carry_pins(wa, ppa);
     carry_pins(wb, ppb);
 
-    wires[i] = M;
+    finish_join(i, j, std::move(M));
+    return true;
+}
+
+int Document::finish_join(int i, int j, Wire M) {
+    wires[i] = std::move(M);
     wires.erase(wires.begin() + j);
     // The merged wire's index after the erase. Labels that were bound to
     // either half follow the merged wire, and their fraction is re-resolved
@@ -321,6 +326,173 @@ bool Document::join_wires(int i, int j) {
         }
     }
     dirty = true;
+    return merged;
+}
+
+// Merge two collinear straight segments whose intervals overlap or touch.
+// The endpoint-only join below cannot see a partial overlap (one wire starts
+// or ends inside the other); this is the 1D union that makes such a pair one
+// physical segment. Non-collinear meetings are left to join_wires (a corner
+// or a T-junction).
+bool Document::merge_collinear(int i, int j) {
+    if (i == j || i < 0 || j < 0 || i >= int(wires.size()) ||
+        j >= int(wires.size()))
+        return false;
+    const Wire& A = wires[i];
+    const Wire& B = wires[j];
+    if (A.pts.size() != 2 || B.pts.size() != 2) return false;
+    auto proj_h = [](const Pt& p) { return p.first; };
+    auto proj_v = [](const Pt& p) { return p.second; };
+    auto horiz = [](const Wire& w) {
+        return std::fabs(w.pts[0].second - w.pts[1].second) < 1e-9 &&
+               std::fabs(w.pts[0].first - w.pts[1].first) > 1e-9;
+    };
+    auto vert = [](const Wire& w) {
+        return std::fabs(w.pts[0].first - w.pts[1].first) < 1e-9 &&
+               std::fabs(w.pts[0].second - w.pts[1].second) > 1e-9;
+    };
+    const bool ah = horiz(A), av = vert(A);
+    const bool bh = horiz(B), bv = vert(B);
+    if (!((ah && bh) || (av && bv))) return false;
+
+    const bool horizontal = ah && bh;
+    double axis; // the common y (horizontal) or x (vertical)
+    auto has_pin = [](const Wire& w) {
+        return w.a.kind == WireEnd::Kind::Pin || w.b.kind == WireEnd::Kind::Pin;
+    };
+    if (horizontal) {
+        // A pin's exact coordinate wins over the other wire's stored line.
+        auto pin_y = [&](const Wire& w) -> double {
+            for (const WireEnd& e : {w.a, w.b}) {
+                if (e.kind != WireEnd::Kind::Pin) continue;
+                const syms::Component* c = circuit.find(e.ref);
+                auto pl = placements.find(e.ref);
+                if (c && pl != placements.end())
+                    return pin_world(*c, pl->second, e.pin).second;
+            }
+            return w.pts[0].second;
+        };
+        double ay = pin_y(A), by = pin_y(B);
+        if (std::fabs(ay - by) > 1.0) return false;
+        axis = has_pin(A) ? ay : (has_pin(B) ? by : A.pts[0].second);
+    } else {
+        auto pin_x = [&](const Wire& w) -> double {
+            for (const WireEnd& e : {w.a, w.b}) {
+                if (e.kind != WireEnd::Kind::Pin) continue;
+                const syms::Component* c = circuit.find(e.ref);
+                auto pl = placements.find(e.ref);
+                if (c && pl != placements.end())
+                    return pin_world(*c, pl->second, e.pin).first;
+            }
+            return w.pts[0].first;
+        };
+        double ax = pin_x(A), bx = pin_x(B);
+        if (std::fabs(ax - bx) > 1.0) return false;
+        axis = has_pin(A) ? ax : (has_pin(B) ? bx : A.pts[0].first);
+    }
+    // Collinearity: the other coordinate of every point must be on `axis`.
+    auto on_axis = [&](const Pt& p) {
+        return std::fabs((horizontal ? p.second : p.first) - axis) <= 1.0;
+    };
+    if (!on_axis(A.pts[0]) || !on_axis(A.pts[1]) || !on_axis(B.pts[0]) ||
+        !on_axis(B.pts[1]))
+        return false;
+
+    auto proj = [&](const Pt& p) { return horizontal ? p.first : p.second; };
+    double a0 = std::min(proj(A.pts[0]), proj(A.pts[1]));
+    double a1 = std::max(proj(A.pts[0]), proj(A.pts[1]));
+    double b0 = std::min(proj(B.pts[0]), proj(B.pts[1]));
+    double b1 = std::max(proj(B.pts[0]), proj(B.pts[1]));
+    // They must overlap or touch, not merely lie on the same infinite line.
+    if (std::max(a0, b0) > std::min(a1, b1) + 1.0) return false;
+    const double u0 = std::min(a0, b0);
+    const double u1 = std::max(a1, b1);
+    if (u1 - u0 < 1e-9) return false;
+
+    auto pt_at = [&](double t) {
+        return horizontal ? Pt{t, axis} : Pt{axis, t};
+    };
+    Wire M;
+    // The extreme endpoint bindings. A pin binding wins over a free one at the
+    // same end. An endpoint in the middle of the union becomes an interior pin
+    // waypoint, so a partial overlap through a pin still follows the part.
+    auto consider_end = [&](double t, const WireEnd& e, double target,
+                            double& best, WireEnd& out) {
+        double d = std::fabs(t - target);
+        if (d > 1.0) return;
+        if (d < best - 1e-9 ||
+            (std::fabs(d - best) <= 1e-9 && e.kind == WireEnd::Kind::Pin &&
+             out.kind != WireEnd::Kind::Pin)) {
+            best = d;
+            out = e;
+        }
+    };
+    double best0 = 1e9, best1 = 1e9;
+    WireEnd e0, e1;
+    consider_end(proj(A.pts[0]), A.a, u0, best0, e0);
+    consider_end(proj(A.pts[1]), A.b, u0, best0, e0);
+    consider_end(proj(B.pts[0]), B.a, u0, best0, e0);
+    consider_end(proj(B.pts[1]), B.b, u0, best0, e0);
+    consider_end(proj(A.pts[0]), A.a, u1, best1, e1);
+    consider_end(proj(A.pts[1]), A.b, u1, best1, e1);
+    consider_end(proj(B.pts[0]), B.a, u1, best1, e1);
+    consider_end(proj(B.pts[1]), B.b, u1, best1, e1);
+    M.a = e0;
+    M.b = e1;
+
+    std::vector<std::pair<double, WireEnd>> pins;
+    auto add_pin = [&](double t, const WireEnd& e) {
+        if (e.kind != WireEnd::Kind::Pin) return;
+        if (t <= u0 + 1.0 || t >= u1 - 1.0) return;
+        for (const auto& q : pins)
+            if (std::fabs(q.first - t) < 1e-6 && q.second.ref == e.ref &&
+                q.second.pin == e.pin)
+                return;
+        pins.push_back({t, e});
+    };
+    add_pin(proj(A.pts[0]), A.a);
+    add_pin(proj(A.pts[1]), A.b);
+    add_pin(proj(B.pts[0]), B.a);
+    add_pin(proj(B.pts[1]), B.b);
+    auto carry_pins = [&](const Wire& w) {
+        for (const auto& pp : w.pin_points) {
+            if (pp.waypoint < 0 || pp.waypoint >= int(w.waypoints.size()))
+                continue;
+            add_pin(proj(w.waypoints[pp.waypoint]), pp.end);
+        }
+    };
+    carry_pins(A);
+    carry_pins(B);
+    std::sort(pins.begin(), pins.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    M.pts.push_back(pt_at(u0));
+    for (const auto& q : pins) M.pts.push_back(pt_at(q.first));
+    M.pts.push_back(pt_at(u1));
+    // Drop duplicate points that a pin at exactly u0/u1 would create.
+    std::vector<Pt> cleaned;
+    for (const auto& p : M.pts) {
+        if (cleaned.empty() ||
+            std::hypot(p.first - cleaned.back().first,
+                       p.second - cleaned.back().second) > 1e-9)
+            cleaned.push_back(p);
+    }
+    M.pts = std::move(cleaned);
+    if (M.pts.size() > 2)
+        M.waypoints.assign(M.pts.begin() + 1, M.pts.end() - 1);
+    else
+        M.waypoints.clear();
+    for (const auto& q : pins) {
+        for (size_t k = 0; k < M.waypoints.size(); ++k) {
+            if (std::fabs(proj(M.waypoints[k]) - q.first) < 1e-6) {
+                Wire::PinPoint pp;
+                pp.waypoint = int(k);
+                pp.end = q.second;
+                M.pin_points.push_back(pp);
+                break;
+            }
+        }
+    }
+    finish_join(i, j, std::move(M));
     return true;
 }
 
@@ -331,7 +503,10 @@ int Document::join_with_neighbours(int wire_index) {
         bool joined = false;
         for (size_t k = 0; k < wires.size(); ++k) {
             if (int(k) == wi) continue;
-            if (!join_wires(wi, int(k))) continue;
+            // A partial overlap is a 1D union of collinear intervals; a corner
+            // or a non-collinear T-junction is an endpoint join.
+            if (!merge_collinear(wi, int(k)) && !join_wires(wi, int(k)))
+                continue;
             // The merged wire took the place of the other one, so its index
             // may have moved.
             if (int(k) < wi) --wi;

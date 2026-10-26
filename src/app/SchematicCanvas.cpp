@@ -51,6 +51,45 @@ double seg_dist(Pt p, Pt a, Pt b) {
     return std::hypot(wx - t * vx, wy - t * vy);
 }
 
+// Does the segment ab intersect (or lie inside) the axis-aligned rectangle?
+// Used by area-select: a long wire may cross the box without either endpoint
+// being inside it, and it should still be selected.
+bool seg_rect_hit(Pt a, Pt b, double x0, double y0, double x1, double y1) {
+    const double ex = x1 - x0, ey = y1 - y0;
+    auto inside = [&](Pt p) {
+        return p.first >= x0 - 1e-9 && p.first <= x1 + 1e-9 &&
+               p.second >= y0 - 1e-9 && p.second <= y1 + 1e-9;
+    };
+    if (inside(a) || inside(b)) return true;
+    if (std::fabs(ex) < 1e-9 && std::fabs(ey) < 1e-9) return false;
+    auto cross = [](Pt p, Pt q, Pt r) {
+        return (q.first - p.first) * (r.second - p.second) -
+               (q.second - p.second) * (r.first - p.first);
+    };
+    auto on = [](Pt p, Pt q, Pt r) {
+        return std::min(p.first, q.first) - 1e-9 <= r.first &&
+               r.first <= std::max(p.first, q.first) + 1e-9 &&
+               std::min(p.second, q.second) - 1e-9 <= r.second &&
+               r.second <= std::max(p.second, q.second) + 1e-9;
+    };
+    auto seg_seg = [&](Pt p1, Pt p2, Pt q1, Pt q2) {
+        double o1 = cross(p1, p2, q1), o2 = cross(p1, p2, q2);
+        double o3 = cross(q1, q2, p1), o4 = cross(q1, q2, p2);
+        if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+            ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0)))
+            return true;
+        if (std::fabs(o1) < 1e-9 && on(p1, p2, q1)) return true;
+        if (std::fabs(o2) < 1e-9 && on(p1, p2, q2)) return true;
+        if (std::fabs(o3) < 1e-9 && on(q1, q2, p1)) return true;
+        if (std::fabs(o4) < 1e-9 && on(q1, q2, p2)) return true;
+        return false;
+    };
+    return seg_seg(a, b, {x0, y0}, {x1, y0}) ||
+           seg_seg(a, b, {x1, y0}, {x1, y1}) ||
+           seg_seg(a, b, {x1, y1}, {x0, y1}) ||
+           seg_seg(a, b, {x0, y1}, {x0, y0});
+}
+
 // Manhattan route between two points. `h_first` puts the horizontal leg first
 // (corner at {b.x, a.y}) or the vertical leg first (corner at {a.x, b.y}).
 std::vector<Pt> ortho_route(Pt a, Pt b, bool h_first) {
@@ -245,11 +284,42 @@ void SchematicCanvas::cancel_current() {
 }
 
 // Leave wiring mode. Any wire already committed to the document stays; only
-// the in-progress (uncommitted) segment is discarded.
-void SchematicCanvas::wire_finish() {
+// the in-progress (uncommitted) segment is discarded. If the finished wire
+// meets another wire end to end, the two become one shape (Virtuoso).
+void SchematicCanvas::reset_wiring() {
     wiring_ = false;
     wire_pts_.clear();
     wire_idx_ = -1;
+}
+
+void SchematicCanvas::wire_finish() {
+    const int wi = wire_idx_;
+    reset_wiring();
+    if (wi < 0 || wi >= int(doc_->wires.size())) return;
+
+    const size_t before = doc_->wires.size();
+    doc_->join_with_neighbours(wi);
+    if (doc_->wires.size() == before) return;
+
+    doc_->sync_wire_endpoints();
+    // A wire selection names a wire by index; after a merge those indices
+    // have moved, so drop the wire part of the selection instead of showing
+    // the properties of the wrong path.
+    bool sel_changed = false;
+    for (auto it = sel_set_.begin(); it != sel_set_.end();) {
+        if (it->rfind("#wire", 0) == 0) {
+            it = sel_set_.erase(it);
+            sel_changed = true;
+        } else {
+            ++it;
+        }
+    }
+    if (sel_.rfind("#wire", 0) == 0) {
+        sel_ = sel_set_.empty() ? "" : *sel_set_.begin();
+        sel_changed = true;
+    }
+    if (sel_changed) notify_sel();
+    notify_doc();
 }
 
 // Commit the current segment (from the last vertex to the snapped cursor) as a
@@ -1102,32 +1172,26 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
             wire_idx_ = int(doc_->wires.size()) - 1;
         } else {
             Wire& w = doc_->wires[wire_idx_];
+            std::vector<Pt> old_wp = w.waypoints;
             w.pts = seg;
             if (seg.size() > 2)
                 w.waypoints.assign(seg.begin() + 1, seg.end() - 1);
             else
                 w.waypoints.clear();
+            doc_->remap_pin_points(w, old_wp);
             doc_->bind_wire_ends(w);
         }
         wire_pts_ = seg;
 
-        // A wire that meets another one end to end becomes a single wire, not
-        // two that happen to touch.
-        if (wire_idx_ >= 0) {
-            const int before = int(doc_->wires.size());
-            doc_->join_with_neighbours(wire_idx_);
-            if (int(doc_->wires.size()) != before) {
-                // One of the wires was merged away: the wire being drawn is
-                // the merged one now.
-                wire_idx_ = std::min(wire_idx_, int(doc_->wires.size()) - 1);
-            }
-        }
-
+        // A wire that ends on another wire's vertex is finished. wire_finish()
+        // then joins the two end to end into one shape (Virtuoso); a wire that
+        // ends in the *middle* of another stays a separate branch and is drawn
+        // with a junction dot by the net/junction pass.
         bool on_wire_node = false;
         for (size_t wi = 0; wi < doc_->wires.size() && !on_wire_node; ++wi) {
             if (int(wi) == wire_idx_) continue;
             for (const auto& v : doc_->wires[wi].pts)
-                if (dist(v, target) < 1.0) { on_wire_node = true; break; }
+                if (dist(v, target) <= 9.0) { on_wire_node = true; break; }
         }
 
         notify_doc();
@@ -1311,15 +1375,15 @@ void SchematicCanvas::on_left_up(wxMouseEvent&) {
                 bool hit = !(bx1 < x0 || bx0 > x1 || by1 < y0 || by0 > y1);
                 if (hit) sel_set_.insert(c.ref);
             }
-            // Wires whose bounding box (per-vertex) intersects the box.
+            // Wires whose segments cross the box. Checking only vertices
+            // missed a long wire that passed through the box with both ends
+            // outside, so a marquee could select one wire and not its
+            // neighbour, and Delete removed only that one.
             for (size_t i = 0; i < doc_->wires.size(); ++i) {
                 bool hit = false;
-                for (const auto& pt : doc_->wires[i].pts)
-                    if (pt.first >= x0 && pt.first <= x1 &&
-                        pt.second >= y0 && pt.second <= y1) {
-                        hit = true;
-                        break;
-                    }
+                const auto& pts = doc_->wires[i].pts;
+                for (size_t k = 1; k < pts.size() && !hit; ++k)
+                    hit = seg_rect_hit(pts[k - 1], pts[k], x0, y0, x1, y1);
                 if (hit) sel_set_.insert("#wire" + std::to_string(i));
             }
             sel_ = sel_set_.empty() ? "" : *sel_set_.begin();
@@ -1508,11 +1572,13 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
         // rebuilds from the same pinned vertices instead of stale `pts`.
         {
             Wire& w = doc_->wires[drag_wire_];
+            std::vector<Pt> old_wp = w.waypoints;
             w.pts = new_pts;
             if (new_pts.size() > 2)
                 w.waypoints.assign(new_pts.begin() + 1, new_pts.end() - 1);
             else
                 w.waypoints.clear();
+            doc_->remap_pin_points(w, old_wp);
         }
 
         // Carry other wires whose vertices coincide with a moved vertex.
@@ -1525,10 +1591,12 @@ void SchematicCanvas::on_motion(wxMouseEvent& e) {
             }
             // Keep the waypoints in step with the (translated) interior so a
             // later re-sync reproduces the same route.
+            std::vector<Pt> old_wp = w.waypoints;
             if (w.pts.size() > 2)
                 w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
             else
                 w.waypoints.clear();
+            doc_->remap_pin_points(w, old_wp);
         }
         // Carry labels whose anchor sits on a moved vertex.
         for (auto& l : doc_->labels) {
