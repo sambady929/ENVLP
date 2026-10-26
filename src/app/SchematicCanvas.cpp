@@ -322,34 +322,6 @@ void SchematicCanvas::wire_finish() {
     notify_doc();
 }
 
-// Commit the current segment (from the last vertex to the snapped cursor) as a
-// real wire vertex. Used by Enter; clicking does the same thing.
-void SchematicCanvas::wire_commit_segment() {
-    if (!wiring_ || wire_pts_.empty()) return;
-    Pt target = snap(to_doc(mouse_));
-    Pt last = wire_pts_.back();
-    if (target == last) return;
-
-    std::vector<Pt> seg = wire_pts_;
-    auto mids = ortho_route(last, target, wire_h_first_);
-    for (const auto& q : mids) seg.push_back(q);
-    seg.push_back(target);
-
-    if (on_push_undo) on_push_undo();
-    if (wire_idx_ < 0) {
-        Wire w;
-        w.pts = seg;
-        doc_->bind_wire_ends(w);
-        doc_->wires.push_back(w);
-        wire_idx_ = int(doc_->wires.size()) - 1;
-    } else {
-        doc_->wires[wire_idx_].pts = seg;
-        doc_->bind_wire_ends(doc_->wires[wire_idx_]);
-    }
-    wire_pts_ = seg;
-    notify_doc();
-}
-
 // ---------------------------------------------------------------------------
 // transforms (infinite pan: the view is an origin + zoom, no scrollbars)
 // ---------------------------------------------------------------------------
@@ -2059,10 +2031,11 @@ bool SchematicCanvas::handle_key(wxKeyEvent& e) {
         return true;
     case WXK_RETURN:
     case WXK_NUMPAD_ENTER:
-        // Enter commits the current wire segment and leaves wiring mode; the
-        // segments already placed stay on the canvas.
+        // Enter leaves wiring mode; the segments already committed on clicks
+        // stay. It must not commit the rubber band to the current cursor:
+        // moving the mouse before Enter used to append an extra segment and
+        // pull the wire away from the endpoint it had just reached.
         if (wiring_) {
-            wire_commit_segment();
             wire_finish();
             Refresh();
             return true;

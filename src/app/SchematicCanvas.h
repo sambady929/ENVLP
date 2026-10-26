@@ -76,9 +76,8 @@ public:
     void cancel_current();    // Escape
     bool handle_key(wxKeyEvent& e);
 
-    // Wiring control (used by keys from the frame): commit the current segment
-    // (Enter) or leave the mode, dropping only the uncommitted segment (Esc).
-    void wire_commit_segment();
+    // Wiring control (used by keys from the frame): leave the mode, dropping
+    // only the uncommitted rubber-band segment (Enter/Esc).
     void wire_finish();
     // Drop the in-progress wire without committing or joining it. Used when
     // the document is rewound under the canvas (undo/redo), where the old wire

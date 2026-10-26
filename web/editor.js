@@ -811,7 +811,11 @@ function bindKeys() {
     }
     if (k === 'Enter' && ED.tool === 'wire' && ED.wireFrom) {
       e.preventDefault();
-      commitWireSegment();
+      // Enter ends the wire. The last click already committed the segment; the
+      // rubber band is only a preview. Committing it here used to add a
+      // segment to wherever the cursor had drifted, pulling the endpoint away
+      // from the wire it had just reached.
+      endWiring();
       return;
     }
     if (k === 'F1') { e.preventDefault(); showHelp(); return; }
@@ -1142,20 +1146,6 @@ function wireCommit(target) {
   } else {
     draw();
   }
-}
-
-// Commit the segment under the cursor (Enter) and leave wiring mode.
-function commitWireSegment() {
-  if (!ED.wireFrom) return;
-  // ED.mouse is already in world coordinates.
-  const pin = hitPin({ x: ED.mouse.x, y: ED.mouse.y });
-  const target = pin
-    ? { x: pin.x, y: pin.y, pin }
-    : { x: snap(ED.mouse.x), y: snap(ED.mouse.y), pin: null };
-  const last = ED.wirePts[ED.wirePts.length - 1];
-  if (target.x === last.x && target.y === last.y) { endWiring(); return; }
-  wireClick(target);
-  endWiring();
 }
 
 /* ------------------------------------------------------------ palette --- */
