@@ -1114,9 +1114,17 @@ function buildPalette() {
     b.dataset.token = k.token;
     b.title = k.label + ' — reference prefix ' + k.prefix;
     const cv = document.createElement('canvas');
-    cv.width = 74; cv.height = 44;
+    // The backing store must be dpr times the CSS size; scaling a 74x44
+    // backing store by dpr drew the symbol twice as large and clipped it to
+    // the top-left corner on a HiDPI screen.
+    const dpr = window.devicePixelRatio || 1;
+    const cw = 74, ch = 44;
+    cv.width = Math.round(cw * dpr);
+    cv.height = Math.round(ch * dpr);
+    cv.style.width = cw + 'px';
+    cv.style.height = ch + 'px';
     const ctx = cv.getContext('2d');
-    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    ctx.scale(dpr, dpr);
     const art = ED.art[k.token];
     ctx.save();
     ctx.translate(37, 22);
