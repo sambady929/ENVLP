@@ -357,11 +357,67 @@ UnitClass value_unit_class(Kind k) {
         case Kind::C: return UnitClass::Farad;
         case Kind::L: return UnitClass::Henry;
         case Kind::G: return UnitClass::Siemens;
+        case Kind::OTA:
+        case Kind::GM: return UnitClass::Siemens;
         case Kind::V:
         case Kind::VDD: return UnitClass::Volt;
         // T, K, and the controlled blocks carry gains/ratios: keep them Plain
         // so they are not mistaken for R/C/L time-constant candidates.
         default: return UnitClass::Plain;
+    }
+}
+
+// Which kinds actually use `value_text`. Everything else is described by its
+// model parameters (transistors, diodes, transformers, coupling) or by its
+// topology (nullor, ideal blocks, ground/supply), so a generic value row would
+// be meaningless there.
+bool has_value(Kind k) {
+    switch (k) {
+        case Kind::R:
+        case Kind::C:
+        case Kind::L:
+        case Kind::OPAMP:
+        case Kind::OTA:
+        case Kind::FDOPAMP:
+        case Kind::AMP:
+        case Kind::GM:
+        case Kind::E:
+        case Kind::G:
+        case Kind::CCCS:
+        case Kind::CCVS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::string value_label(Kind k) {
+    switch (k) {
+        case Kind::OPAMP:
+        case Kind::FDOPAMP:
+        case Kind::AMP:
+        case Kind::E:
+        case Kind::G:
+        case Kind::CCCS:
+        case Kind::CCVS:
+            return "Gain";
+        case Kind::OTA:
+        case Kind::GM:
+            return "gm";
+        default:
+            return "Value";
+    }
+}
+
+const char* value_unit(Kind k) {
+    switch (k) {
+        case Kind::R: return "\xCE\xA9"; // ohm
+        case Kind::C: return "F";
+        case Kind::L: return "H";
+        case Kind::G:
+        case Kind::OTA:
+        case Kind::GM: return "S";
+        default: return "";
     }
 }
 

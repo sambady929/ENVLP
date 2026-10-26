@@ -65,7 +65,17 @@ function callStr2(name, a, b) {
   return s;
 }
 
+// Drop an in-progress wire without trying to join it. Used when the document
+// itself is replaced or rewound, where the old wire index no longer exists.
+function resetWiringState() {
+  ED.wireFrom = null;
+  ED.wireIndex = -1;
+  ED.wirePts = [];
+  ED.wireDrag = null;
+}
+
 function docOpen(scx) {
+  resetWiringState();
   ED.doc = JSON.parse(callStr('envlp_doc_open', scx || ''));
   ED.selection.clear();
   ED.selWire = -1;
@@ -79,11 +89,13 @@ function docSet(ops) {
 function docGeometry() { return backend('envlp_doc_geometry'); }
 function docSerialize() { return backend('envlp_doc_serialize').scx; }
 function docUndo() {
+  resetWiringState();
   Module.ccall('envlp_doc_undo', null, [], []);
   ED.doc = docGeometry();
   afterChange();
 }
 function docRedo() {
+  resetWiringState();
   Module.ccall('envlp_doc_redo', null, [], []);
   ED.doc = docGeometry();
   afterChange();
@@ -237,6 +249,57 @@ function drawGrid(ctx, W, H) {
   }
 }
 
+function samePoint(a, b) {
+  return Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1;
+}
+
+// Does p lie strictly inside the segment a-b?
+function onSpan(p, a, b) {
+  if (samePoint(p, a) || samePoint(p, b)) return false;
+  const vx = b[0] - a[0], vy = b[1] - a[1];
+  const wx = p[0] - a[0], wy = p[1] - a[1];
+  const L2 = vx * vx + vy * vy;
+  if (L2 < 1e-9) return false;
+  const t = (wx * vx + wy * vy) / L2;
+  if (t <= 0 || t >= 1) return false;
+  return Math.hypot(p[0] - (a[0] + t * vx), p[1] - (a[1] + t * vy)) <= 1;
+}
+
+// A dot marks a real connection: three or more distinct branch directions at
+// a point. A straight end-to-end join and a corner have two, so they get no
+// dot -- exactly like Cadence Virtuoso and the desktop app. A T-junction and
+// a shared three-way vertex get one.
+function drawJunctions(ctx, doc) {
+  const segs = [], verts = [];
+  for (const w of doc.wires || []) {
+    for (let i = 1; i < w.pts.length; ++i) segs.push([w.pts[i - 1], w.pts[i]]);
+    for (const p of w.pts) verts.push(p);
+  }
+  const dirKey = (dx, dy) =>
+    ((dx > 1e-6) - (dx < -1e-6)) + ',' + ((dy > 1e-6) - (dy < -1e-6));
+  const seen = [];
+  for (const v of verts) {
+    const dirs = new Set();
+    for (const [a, b] of segs) {
+      if (samePoint(v, a)) {
+        dirs.add(dirKey(b[0] - a[0], b[1] - a[1]));
+      } else if (samePoint(v, b)) {
+        dirs.add(dirKey(a[0] - b[0], a[1] - b[1]));
+      } else if (onSpan(v, a, b)) {
+        dirs.add(dirKey(a[0] - b[0], a[1] - b[1]));
+        dirs.add(dirKey(b[0] - a[0], b[1] - a[1]));
+      }
+    }
+    if (dirs.size >= 3 && !seen.some((q) => samePoint(v, q))) {
+      seen.push(v);
+      ctx.fillStyle = '#10141a';
+      ctx.beginPath();
+      ctx.arc(v[0], v[1], 3.2, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  }
+}
+
 function drawWires(ctx, doc) {
   ctx.lineCap = 'round';
   for (const w of doc.wires || []) {
@@ -246,20 +309,8 @@ function drawWires(ctx, doc) {
     ctx.beginPath();
     w.pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
     ctx.stroke();
-    // junction dots where three or more wire ends meet
-    for (const p of [w.pts[0], w.pts[w.pts.length - 1]]) {
-      let n = 0;
-      for (const o of doc.wires || [])
-        for (const q of [o.pts[0], o.pts[o.pts.length - 1]])
-          if (Math.abs(p[0] - q[0]) < 1 && Math.abs(p[1] - q[1]) < 1) ++n;
-      if (n > 1) {
-        ctx.fillStyle = '#10141a';
-        ctx.beginPath();
-        ctx.arc(p[0], p[1], 3.2, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    }
   }
+  drawJunctions(ctx, doc);
 }
 
 function drawComponents(ctx, doc) {
@@ -315,7 +366,7 @@ function drawComponents(ctx, doc) {
     } else if (horiz) {
       ctx.textBaseline = 'bottom';
       ctx.fillText(c.ref, (c.bbox[0] + c.bbox[2]) / 2, c.bbox[1] - 2);
-      if (c.value) {
+      if (c.has_value && c.value) {
         ctx.fillStyle = '#6b7284';
         ctx.font = "12px 'Segoe UI', sans-serif";
         ctx.textBaseline = 'top';
@@ -325,7 +376,7 @@ function drawComponents(ctx, doc) {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
       ctx.fillText(c.ref, c.bbox[2] + 4, (c.bbox[1] + c.bbox[3]) / 2 - 1);
-      if (c.value) {
+      if (c.has_value && c.value) {
         ctx.fillStyle = '#6b7284';
         ctx.font = "12px 'Segoe UI', sans-serif";
         ctx.textBaseline = 'top';
@@ -394,7 +445,9 @@ function drawHud(ctx, W, H) {
         (ED.placeFlipH ? ', flipped' : '') + (ED.placeFlipV ? ', flipped' : '') + ')' : '') +
       '  (Space rotates, Esc cancels)';
   } else if (ED.tool === 'wire') {
-    hint = ED.wireFrom ? 'click the end point  (Esc cancels)' : 'click a pin or a point to start a wire';
+    hint = ED.wireFrom
+      ? 'click each corner; click a pin to end (Enter/Esc)'
+      : 'click a pin or a point to start a wire';
   } else if (ED.selWire >= 0) {
     hint = 'wire selected — Del removes it, N names its net';
   } else if (ED.selection.size) {
@@ -789,7 +842,13 @@ function bindKeys() {
       syncTools(); syncPalette(); draw();
       return;
     }
-    if (lower === 'n') { labelWire(); return; }
+    if (lower === 'n') {
+      // The dialog focuses its text field synchronously; without this the
+      // browser's default action would insert the triggering "n" into it.
+      e.preventDefault();
+      labelWire();
+      return;
+    }
     // The component menu: every part, as a list.
     if (lower === 'i') { openComponentList(); return; }
 
@@ -817,6 +876,10 @@ function bindKeys() {
 
 // Arm a part for placement (the palette does the same by click).
 function armPlacement(token) {
+  // Leaving the wire tool finishes the wire (and joins it to a neighbour it
+  // meets end to end), exactly like the desktop's tool switch.
+  if (ED.tool === 'wire') endWiring();
+  ED.labelQueue = [];
   ED.placing = token;
   ED.placeRot = 0; ED.placeFlipH = false; ED.placeFlipV = false;
   ED.tool = 'select';
@@ -884,6 +947,7 @@ function pasteClipboard() {
 function labelWire() {
   // The desktop's flow, in an in-app dialog: type the names (space
   // separated), then click each net to place them one by one.
+  if (ED.tool === 'wire') endWiring();
   const dlg = document.getElementById('netlabel');
   if (!dlg) return;
   const input = $('netlabel-input');
@@ -909,13 +973,40 @@ function placeLabelAt(w) {
   }
 }
 
+// Would finishing wire `wi` join it end to end with another wire? This uses
+// the same tolerance as the net resolver (9 world px): if the endpoints are
+// close enough to be one net, they are close enough to be one physical wire.
+// Pin ends count too -- the merge keeps the pin as an interior waypoint.
+function wireJoinsEndToEnd(wi) {
+  const wires = ED.doc.wires || [];
+  const w = wires[wi];
+  if (!w || !w.pts || w.pts.length < 2) return false;
+  const ends = [w.pts[0], w.pts[w.pts.length - 1]];
+  for (const o of wires) {
+    if (o.i === wi || !o.pts || o.pts.length < 2) continue;
+    const oe = [o.pts[0], o.pts[o.pts.length - 1]];
+    for (const a of ends) for (const b of oe) {
+      if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= 9) return true;
+    }
+  }
+  return false;
+}
+
 // Leave wiring mode. Whatever is already committed stays on the canvas; only
-// the segment in progress is dropped.
+// the segment in progress is dropped. The finished wire is then joined to any
+// other wire it meets end to end, so the two become one shape (Virtuoso).
 function endWiring() {
+  const wi = ED.wireIndex;
   ED.wireFrom = null;
   ED.wireIndex = -1;
   ED.wirePts = [];
-  draw();
+  // A join can remove a wire and shift the indices, so any wire selection is
+  // no longer meaningful.
+  ED.wireSel.clear();
+  ED.selWire = -1;
+  ED.selSeg = -1;
+  if (wi >= 0 && wireJoinsEndToEnd(wi)) docSet([{ op: 'join', wire: wi }]);
+  else draw();
 }
 
 // A click in the wire tool: the first one starts the wire, every later one
@@ -933,6 +1024,18 @@ function wireClick(w) {
     return;
   }
   wireCommit(target);
+}
+
+// Does the point land on a vertex of a wire other than `exceptIndex`? A wire
+// that ends on another wire's vertex is finished, exactly like the desktop;
+// endWiring() then joins the two shapes end to end (Virtuoso).
+function onWireNode(p, exceptIndex) {
+  for (const w of ED.doc.wires || []) {
+    if (w.i === exceptIndex) continue;
+    for (const q of w.pts || [])
+      if (Math.hypot(p.x - q[0], p.y - q[1]) <= 9) return true;
+  }
+  return false;
 }
 
 // Commit the segment from the last point to the target.
@@ -966,7 +1069,9 @@ function wireCommit(target) {
   }
   docSet([op]);
   if (ED.wireIndex < 0) ED.wireIndex = (ED.doc.wires || []).length - 1;
-  // The engine may have joined the wire with another one, which moves it.
+  // The engine reports the wire it kept. End-to-end joins happen in
+  // endWiring(), so while a route is still being drawn this is just the wire
+  // being extended.
   if (typeof ED.doc.last_wire === 'number' && ED.doc.last_wire >= 0)
     ED.wireIndex = ED.doc.last_wire;
   const wire = ED.doc.wires && ED.doc.wires[ED.wireIndex];
@@ -975,11 +1080,10 @@ function wireCommit(target) {
     : [{ x: target.x, y: target.y }];
   ED.wireFrom = { x: target.x, y: target.y, pin: target.pin };
 
-  // Landing on a pin finishes the wire, like in the desktop; clicking empty
-  // canvas simply continues the route.
-  if (target.pin) {
-    ED.tool = 'select';
-    syncTools();
+  // Landing on a pin or on another wire's vertex finishes the wire, like in
+  // the desktop; clicking empty canvas simply continues the route. The wire
+  // tool stays armed, so the next click starts the next wire (Virtuoso).
+  if (target.pin || onWireNode(target, ED.wireIndex)) {
     endWiring();
   } else {
     draw();
@@ -1113,12 +1217,6 @@ function splitSi(text) {
   return known ? [num, suf] : [num, suf];
 }
 
-// The name the desktop gives a component's value field.
-function valueFieldName(kind) {
-  if (kind === 'OPAMP' || kind === 'FDOPAMP' || kind === 'AMP') return 'Gain';
-  if (kind === 'V' || kind === 'I') return 'DC';
-  return 'Value';
-}
 const isSource = (kind) => kind === 'V' || kind === 'I';
 
 function renderProps() {
@@ -1128,6 +1226,9 @@ function renderProps() {
     const ref = Array.from(ED.selection)[0];
     const c = (ED.doc.components || []).find((x) => x.ref === ref);
     if (!c) return;
+    // A copy inherits its unit's value and model parameters, so the editor
+    // hides those rows exactly as the desktop app does.
+    const isCopy = !!c.mirror;
     const row = (label, html) => {
       const d = document.createElement('div');
       d.className = 'prow';
@@ -1138,7 +1239,7 @@ function renderProps() {
     // The value: the gain of an amplifier, the DC level of a source, the
     // resistance of a resistor -- the desktop names it the same way, and
     // edits it as a number plus an SI suffix.
-    const siField = (text, commit) => {
+    const siField = (text, commit, unit) => {
       const wrap = document.createElement('span');
       wrap.className = 'si';
       const [num, suf] = splitSi(text || '');
@@ -1159,6 +1260,13 @@ function renderProps() {
       sel.addEventListener('change', fire);
       wrap.appendChild(val);
       wrap.appendChild(sel);
+      // The physical unit, as on the desktop's value editor.
+      if (unit) {
+        const u = document.createElement('span');
+        u.className = 'unit';
+        u.textContent = unit;
+        wrap.appendChild(u);
+      }
       return wrap;
     };
     if (c.kind === 'K') {
@@ -1180,14 +1288,28 @@ function renderProps() {
       };
       row('Couples L:', picker(0));
       row('with L:', picker(1));
+    } else if (c.kind === 'VDD') {
+      // The supply rail has no per-symbol value; its level is a DC analysis
+      // setting. Show the same note as the desktop, even for a copy.
+      const note = document.createElement('div');
+      note.className = 'status';
+      note.textContent = 'Supply rail. Its voltage is set in the DC ' +
+        'operating-point card.';
+      host.appendChild(note);
+    } else if (isCopy) {
+      // No value or parameter rows: they belong to the unit being copied.
     } else if (isSource(c.kind)) {
+      const unit = c.kind === 'V' ? 'V' : 'A';
       row('DC', siField(c.dc || '', (t) =>
-        docSet([{ op: 'value', ref: ref, field: 'dc', text: t }])));
+        docSet([{ op: 'value', ref: ref, field: 'dc', text: t }]), unit));
       row('AC', siField(c.ac || '', (t) =>
-        docSet([{ op: 'value', ref: ref, field: 'ac', text: t }])));
-    } else {
-      row(valueFieldName(c.kind), siField(c.value || '', (t) =>
-        docSet([{ op: 'value', ref: ref, field: 'value', text: t }])));
+        docSet([{ op: 'value', ref: ref, field: 'ac', text: t }]), unit));
+    } else if (c.has_value) {
+      // Only the kinds whose single value is meaningful get this row: a
+      // nullor, transistor, diode, transformer or coupling marker does not.
+      row(c.value_label || 'Value', siField(c.value || '', (t) =>
+        docSet([{ op: 'value', ref: ref, field: 'value', text: t }]),
+        c.value_unit));
     }
 
     // copies: "copy of <unit>", n or n/d
@@ -1217,7 +1339,7 @@ function renderProps() {
     // each one has its own switch, exactly as in the desktop app -- and the
     // value is a number plus an SI suffix, as it is there.
     const params = c.params || [];
-    if (params.length) {
+    if (params.length && !isCopy) {
       const h = document.createElement('div');
       h.className = 'ttl';
       h.textContent = 'model';
@@ -1267,6 +1389,12 @@ function renderProps() {
           sel.value = suf;
           sel.disabled = p.parasitic && !p.on;
           d.appendChild(sel);
+          if (p.unit) {
+            const u = document.createElement('span');
+            u.className = 'unit';
+            u.textContent = p.unit;
+            d.appendChild(u);
+          }
           const commit = () => docSet([{ op: 'param', ref: ref, name: p.name,
                                          text: val.value.trim() + sel.value }]);
           val.addEventListener('change', commit);

@@ -153,6 +153,12 @@ kbd {
 .prow .si { display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .prow .si .mantissa { flex: 0 0 62px; }
 .prow .si .suffix { flex: 1 1 auto; min-width: 0; font-size: 11.5px; }
+/* the physical unit after the SI suffix, as on the desktop */
+.prow .si .unit, .prow.param .unit {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 11.5px;
+}
 
 /* The operating point lives in its own section: it is a property of the
    circuit, not of the analysis that happens to be selected. */

@@ -1,6 +1,6 @@
 envlp 1
 req "V1" "V(out)" 1 1e+09 0 10 1 1 1
-tech 1 0.6 0.6 1e-16 0.0002 0.0001 0 0 5
+tech 1 0.6 0.6 1e-16 0.0002 0.0001 1 0 5
 comp "M1" "NMOS" 350 220 0 0 0 0 ""
 param "M1" "Cds" 0 "33f" 0
 param "M1" "Cgd" 0 "" 0
@@ -21,6 +21,7 @@ comp "V2" "V" 260 370 0 0 0 0 "" dc=2.5 ac=0
 comp "GND1" "GND" 260 420 0 0 0 0 ""
 comp "I1" "I" 480 310 0 0 0 0 "" dc=1m ac=0
 comp "GND2" "GND" 480 340 0 0 0 0 ""
+comp "GND4" "GND" 400 360 0 0 0 0 ""
 wire 390,90 440,90 pin:M4:1 pin:M3:1
 wire 480,130 480,180 pin:M3:0 pin:M2:0
 wire 400,90 400,150 350,150 350,130 free pin:M4:0 wp=400,150 wp=350,150
@@ -34,12 +35,14 @@ wire 260,340 260,320 pin:V2:0 free
 wire 260,420 260,400 pin:GND1:0 pin:V2:1
 wire 260,320 310,320 free free
 wire 520,220 550,220 pin:M2:1 free
+wire 400,360 400,350 pin:GND4:0 free
+wire 400,290 400,280 free free
 netlabel 480,166.925 492.37,166.925 "out" 9 0 bind=1:0.738498
 netlabel 300.047,320 300.047,309.25 "vcm" 9 0 bind=11:0.800935
-netlabel 539.243,220 539.243,209.25 "out" 9 0 bind=12:0.641433
+netlabel 539.243,220 539.243,209.25 "vcm" 9 0 bind=12:0.641433
 netlabel 282.91,220 295.28,209.25 "vin" 9 0 bind=6:0.661379
 card "Transfer function (H(s))" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "Transfer function (H(s))" 0 "" "" 10 1000 0
-card "Differential (Adm/Acm/CMRR)" "" "V(out)" "" 1 1e+09 0 10 1 1 1 "Differential (Adm/Acm/CMRR)" 1 "vin" "vcm" 10 1000 0
+card "Differential (Adm/Acm/CMRR)" "" "V(out)-V(0)" "" 1 1e+09 0 10 1 1 1 "Differential (Adm/Acm/CMRR)" 1 "vin" "vcm" 10 1000 0
 card "PSR / PSRR" "V1" "V(out)" "" 1 1e+09 0 10 1 1 1 "PSR / PSRR" 0 "" "" 10 1000 0
 card "DC operating point" "V2" "V(out)" "" 1 1e+09 0 10 1 1 1 "DC operating point" 1 "" "" 10 1000 0
 card "Loop gain (return ratio)" "V1" "V(out)" "M2" 1 1e+09 0 10 1 1 1 "Loop gain (return ratio)" 1 "" "" 10 1000 0

@@ -87,6 +87,15 @@ enum class UnitClass { Ohm, Farad, Henry, Siemens, Volt, Plain };
 UnitClass param_unit_class(Kind k, const std::string& param);
 UnitClass value_unit_class(Kind k);
 
+// Does this component kind have a single, meaningful `value_text`? A nullor,
+// a transistor, a transformer or a coupling marker does not: its behaviour is
+// set by model parameters (or by its topology), so the editor must not offer a
+// generic "Value" field for it. The value editor in both the desktop app and
+// the web build is driven by these three helpers, so the two stay identical.
+bool has_value(Kind k);
+std::string value_label(Kind k);  // "Value", "Gain", "gm"
+const char* value_unit(Kind k);   // display unit: "ohm", "F", "H", "S", ""
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------

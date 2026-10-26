@@ -1976,16 +1976,31 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         }
         return false;
     };
-    const size_t sl = top_slash(base);
+    const size_t sl = top_slash(Kt);
     if (!den_txt.empty() && sl != std::string::npos) {
-        // A gain that is itself a reciprocal must not print as a fraction of a
-        // fraction: "(1/A) / B" has to read as one fraction, "1/(A*B)".
-        std::string p = base.substr(0, sl);
-        std::string q = base.substr(sl + 1);
-        if (q.size() >= 2 && q.front() == '(' && q.back() == ')' &&
-            !has_toplevel_sign(q.substr(1, q.size() - 2)))
-            q = q.substr(1, q.size() - 2);
-        R.text = p + "/(" + q + "*" + den_txt + ")";
+        if (Nt == "1") {
+            // A gain that is itself a reciprocal must not print as a fraction
+            // of a fraction: "(1/A) / B" has to read as one fraction,
+            // "1/(A*B)".
+            std::string p = Kt.substr(0, sl);
+            std::string q = Kt.substr(sl + 1);
+            if (q.size() >= 2 && q.front() == '(' && q.back() == ')' &&
+                !has_toplevel_sign(q.substr(1, q.size() - 2)))
+                q = q.substr(1, q.size() - 2);
+            R.text = p + "/(" + q + "*" + den_txt + ")";
+        } else {
+            // The gain is a fraction *and* the numerator carries its own
+            // factors (typically an origin zero s). Those factors multiply the
+            // gain's numerator, not its denominator: (A/B)*s/(...) -- not
+            // A/(B*s*(...)).
+            std::string gn = Kt.substr(0, sl);
+            std::string gd = Kt.substr(sl + 1);
+            if (gd.size() >= 2 && gd.front() == '(' && gd.back() == ')' &&
+                !has_toplevel_sign(gd.substr(1, gd.size() - 2)))
+                gd = gd.substr(1, gd.size() - 2);
+            R.text = gn + "*" + wrap_compound(Nt) + "/(" + gd + "*" +
+                     den_txt + ")";
+        }
     } else {
         R.text = den_txt.empty() ? base : base + " / " + den_txt;
     }

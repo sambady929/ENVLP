@@ -46,6 +46,15 @@ struct Wire {
     // re-derived from them on every move, so a stretching route never
     // accumulates stale elbows. Empty => a plain end-to-end route.
     std::vector<Pt> waypoints;
+    // A waypoint that is also a component pin. Joining two wires at a pin
+    // makes one physical wire with the pin in the middle; this binding keeps
+    // that middle point attached when the component moves. `waypoint` is an
+    // index into `waypoints`.
+    struct PinPoint {
+        int waypoint = -1;
+        WireEnd end;
+    };
+    std::vector<PinPoint> pin_points;
 };
 
 // A user-assigned net name placed near a net. `anchor` is the point that
@@ -106,13 +115,14 @@ public:
     void remove_wire(int wire_index);
     // Two wires that meet end to end are one wire, not two that happen to
     // touch: the polylines are stitched together (the shared point appears
-    // once) and the outer ends keep their bindings. Drawing a wire from the
-    // end of another therefore leaves one wire, not a junction.
+    // once) and the outer ends keep their bindings. This is what makes a wire
+    // drawn from the end of another continue it, as in Cadence Virtuoso.
     bool join_wires(int i, int j);
     // Join a wire to any other wire it meets end to end (at either end).
     // Returns the index of the wire that survived: the merged one, which may
     // have moved when the wire it was joined with was removed.
     int join_with_neighbours(int wire_index);
+
     // Drop every net label whose anchor no longer lies on a wire or pin.
     void prune_orphan_labels();
 
@@ -122,7 +132,7 @@ public:
     // Free end is the stored coordinate.
     Pt wire_end_pt(const Wire& w, bool start) const;
     // Bind each end of `w` to a component pin if it currently coincides with
-    // one. Call this after any wire edit (draw, split, merge).
+    // one. Call this after any wire edit (draw, split, merge, drag).
     void bind_wire_ends(Wire& w) const;
     // Give each pin-bound end a short orthogonal lead along the pin's
     // outward axis, so a wire leaves a pin the way the pin points
@@ -134,6 +144,11 @@ public:
     // component move/rotate carry its wires without hunting for the old pin
     // vertices: the binding does the work.
     void sync_wire_endpoints();
+    // Re-anchor interior pin bindings after `w.waypoints` has been rewritten:
+    // `old_waypoints` is the previous list, and each binding follows the
+    // nearest new waypoint (or is dropped if the route no longer passes
+    // through the pin).
+    void remap_pin_points(Wire& w, const std::vector<Pt>& old_waypoints);
 
     // Returns the circuit with every pin's node name filled in from the
     // wire topology. Fills `err` (instead of throwing) on structural

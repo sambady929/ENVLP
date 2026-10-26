@@ -1089,6 +1089,10 @@ AmpPorts amp_ports(const Component& c) {
         case Kind::AMP:
             if (nd.size() >= 2) return {nd[0], nd[1], nd[1], "0", true};
             break;
+        case Kind::E:
+            // VCVS: control port (ctrl+, ctrl-), output port (out+, out-).
+            if (nd.size() >= 4) return {nd[2], nd[3], nd[0], nd[1], true};
+            break;
         case Kind::NMOS:
         case Kind::PMOS:
         case Kind::NPN:
@@ -1148,6 +1152,11 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         } else if (orig == Kind::AMP) {
             // (in, gnd) ; (out, gnd)
             cc.nodes = {cc.nodes[0], "0", cc.nodes[1], "0"};
+        } else if (orig == Kind::E) {
+            // (ctrl+, ctrl-) ; (out+, out-)
+            cc.nodes = {cc.nodes[2], cc.nodes[3], cc.nodes[0], cc.nodes[1]};
+        } else if (orig == Kind::NULLOR) {
+            // Already a two-port: (in+, in-, out+, out-). Keep it as is.
         } else {
             // already a two-port (or unknown): keep the ports, ground the rest
             cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[0], "0"};
@@ -1189,6 +1198,49 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     } catch (const std::exception& e) {
         cr.summary = std::string("return-ratio test failed: ") + e.what();
         cr.report = cr.summary + "\n";
+        return cr;
+    }
+
+    // A nullor has infinite gain: the return ratio is infinite and the
+    // closed-loop gain is exactly H_inf. Reporting T = -A*beta with A = 1 (the
+    // generic fallback estimate) would claim a finite loop gain and a finite
+    // closed-loop gain, which is wrong. There is no finite unity-gain
+    // crossover to plot either, so this card has no transfer curve.
+    if (ref->kind == Kind::NULLOR) {
+        cr.text = "T(s) = infinite (ideal nullor)";
+        cr.latex = "T(s) = \\infty";
+        cr.summary = "H_inf = " + ideal.text +
+                     " ;  T = infinite (ideal nullor)";
+        std::string rep;
+        rep += "Return-ratio / loop-gain analysis\n";
+        rep += "reference amplifier: " + s.probe_ref + "\n";
+        rep += "----------------------------------------\n\n";
+        rep += "Asymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
+        rep += "\nForward gain with the amplifier off:\n  H_0(s) = 0\n";
+        rep += "\nReturn ratio:\n"
+               "  T(s) = infinite (ideal nullor: A = infinity)\n";
+        rep += "\nFeedback factor:\n  beta(s) = " + pretty(beta) + "\n";
+        rep += "\nClosed-loop gain:\n"
+               "  H(s) = H_inf (ideal nullor: T -> infinity)\n";
+        rep += "\n";
+        cr.report = rep;
+        std::string lrep;
+        lrep += "Return-ratio / loop-gain analysis\n";
+        lrep += "reference amplifier: " + s.probe_ref + "\n";
+        lrep += "----------------------------------------\n\n";
+        lrep += "Asymptotic (ideal) gain:\n";
+        lrep += "H_{\\infty}(s) = " + latex_rhs(ideal.latex) + "\n";
+        lrep += "\nForward gain with the amplifier off:\n";
+        lrep += "H_0(s) = 0\n";
+        lrep += "\nReturn ratio:\n";
+        lrep += "T(s) = \\infty \\quad (\\mathrm{ideal\\ nullor})\n";
+        lrep += "\nFeedback factor:\n";
+        lrep += "\\beta(s) = " + to_latex(beta) + "\n";
+        lrep += "\nClosed-loop gain:\n";
+        lrep += "H(s) = H_{\\infty} \\quad (T \\to \\infty)\n";
+        lrep += "\n";
+        cr.latex_report = lrep;
+        cr.has_transfer = false;
         return cr;
     }
 
@@ -1306,6 +1358,10 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
             if (cc.kind == Kind::OPAMP || cc.kind == Kind::AMP) {
                 o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
                 o2 = "0";
+            } else if (cc.kind == Kind::E) {
+                // VCVS: out+ , out-
+                o1 = cc.nodes.size() > 0 ? cc.nodes[0] : "0";
+                o2 = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
             } else if (cc.kind == Kind::FDOPAMP) {
                 o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
                 o2 = cc.nodes.size() > 3 ? cc.nodes[3] : "0";

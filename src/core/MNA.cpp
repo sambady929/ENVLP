@@ -154,15 +154,23 @@ ex amp_gbw(ParamTable& pt, const Component& c) {
 // Add the single dominant pole implied by an op-amp's gain-bandwidth product.
 // A first-order op-amp has A(s) = A0/(1 + s/w0) with w0 = GBW/A0, where GBW is
 // the unity-gain angular frequency in rad/s. The VCVS KVL row `k` (whose
-// output sits at node `out`) gains an extra (s/w0)*v(out) = s*A/GBW*v(out) term
-// -- the same shape as a capacitor to ground. GBW is optional: when it is
-// switched off (or non-positive) this is a no-op and the amplifier is ideal
-// (infinite bandwidth).
+// output sits at node `out`) gains an extra (s/w0)*v_int term, where v_int is
+// the amplifier's internal output voltage *before* its series output
+// resistance: v_int = v(out) - Rout*i_k. Substituting that gives
+//     s*A/GBW * v(out)  -  s*A/GBW*Rout * i_k
+// so the pole multiplies the internal voltage, not the loaded external node.
+// (Applying it to v(out) instead would make the output impedance
+// Rout/(1+s/w0) and would not match an op-amp macro-model whose Rout is
+// outside the gain stage.) GBW is optional: when it is switched off (or
+// non-positive) this is a no-op and the amplifier is ideal (infinite
+// bandwidth).
 void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
-                  const ex& gbw, int k, int out, const ex& s) {
+                  const ex& gbw, int k, int out, const ex& s,
+                  const ex& rout = ex(0)) {
     if (!c.param_enabled("GBW")) return;
     if (c.param_estimate("GBW") <= 0.0) return;
     if (out >= 0) sys.Y(k, out) += s * gain / gbw;
+    if (!rout.is_zero()) sys.Y(k, k) -= s * gain / gbw * rout;
 }
 
 // --- structural series folding (low-entropy by construction) --------------
@@ -228,6 +236,13 @@ std::map<std::string, HeldPassive> fold_series_passives(
     auto is_used = [&](const std::string& n) {
         return used_nodes.count(n) != 0;
     };
+    // Inductors named by a coupling marker are not independent two-terminal
+    // branches: folding one into a synthetic L would discard the mutual term
+    // (and leave the marker pointing at a component that no longer exists).
+    std::set<std::string> coupled;
+    for (const auto& c : circ.comps)
+        if (c.kind == Kind::K)
+            for (const auto& r : c.links) coupled.insert(r);
 
     int synth = 0;
     for (bool changed = true; changed;) {
@@ -256,6 +271,9 @@ std::map<std::string, HeldPassive> fold_series_passives(
             Component a = circ.comps[i];
             Component b = circ.comps[j];
             if (a.kind != b.kind) continue;         // same class only
+            if (a.kind == Kind::L &&
+                (coupled.count(a.ref) || coupled.count(b.ref)))
+                continue;                           // a coupled inductor is no 2-terminal L
             if (has_enabled_parasitic(a) || has_enabled_parasitic(b))
                 continue;                           // parasitics break the fold
             std::string oa = (a.nodes[0] == m) ? a.nodes[1] : a.nodes[0];
@@ -982,11 +1000,17 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             break;
         }
         case Kind::SBLK: {
-            // ideal s block: i = s*(v(in) - v(out))
+            // ideal s block (differentiator): i = s*(v(in) - v(out)).
+            // The branch current i flows in at `in` and out at `out`; the
+            // KVL row is i - s*v(in) + s*v(out) = 0.  (The 1/s block uses
+            // the dual row v(in) - v(out) - s*i = 0.)
             int a = idx(nd[0]), bb = idx(nd[1]);
             int k = sys.branch_idx.at(c.ref);
-            stamp_branch(a, bb, k);
-            sys.Y(k, k) -= s;
+            if (a >= 0) sys.Y(a, k) += 1;
+            if (bb >= 0) sys.Y(bb, k) -= 1;
+            sys.Y(k, k) += 1;
+            if (a >= 0) sys.Y(k, a) -= s;
+            if (bb >= 0) sys.Y(k, bb) += s;
             break;
         }
         case Kind::AMP: {
@@ -999,7 +1023,10 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             int k = sys.branch_idx.at(c.ref);
             stamp_branch(o, -1, k);
             if (a >= 0) sys.Y(k, a) -= gain;
-            add_gbw_pole(sys, c, gain, gbw, k, o, s);
+            ex rout;
+            if (c.param_enabled("Rout"))
+                rout = reg_param(sys.params, c, "Rout");
+            add_gbw_pole(sys, c, gain, gbw, k, o, s, rout);
             // The block's own parasitics (off by default): the input
             // impedance and capacitance to ground, and the output impedance
             // in series with the output branch (v(out) = A*v(in) + Rout*i).
@@ -1007,8 +1034,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 stamp_adm(a, -1, ex(1) / reg_param(sys.params, c, "Rin"));
             if (!dc_mode && c.param_enabled("Cin") && a >= 0)
                 stamp_cap(a, -1, reg_param(sys.params, c, "Cin"));
-            if (c.param_enabled("Rout"))
-                sys.Y(k, k) -= reg_param(sys.params, c, "Rout");
+            if (!rout.is_zero()) sys.Y(k, k) -= rout;
             if (!dc_mode && c.param_enabled("Cout") && o >= 0)
                 stamp_cap(o, -1, reg_param(sys.params, c, "Cout"));
             break;
@@ -1022,7 +1048,10 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             stamp_branch(o, -1, k);
             if (im >= 0) sys.Y(k, im) += gain;
             if (ip >= 0) sys.Y(k, ip) -= gain;
-            add_gbw_pole(sys, c, gain, gbw, k, o, s);
+            ex rout;
+            if (c.param_enabled("Rout"))
+                rout = reg_param(sys.params, c, "Rout");
+            add_gbw_pole(sys, c, gain, gbw, k, o, s, rout);
             // The amplifier's own parasitics (off by default): the
             // differential input impedance and capacitance, and the output
             // impedance in series with the output.
@@ -1030,8 +1059,7 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 stamp_adm(ip, im, ex(1) / reg_param(sys.params, c, "Rin"));
             if (!dc_mode && c.param_enabled("Cin") && ip >= 0 && im >= 0)
                 stamp_cap(ip, im, reg_param(sys.params, c, "Cin"));
-            if (c.param_enabled("Rout"))
-                sys.Y(k, k) -= reg_param(sys.params, c, "Rout");
+            if (!rout.is_zero()) sys.Y(k, k) -= rout;
             if (!dc_mode && c.param_enabled("Cout") && o >= 0)
                 stamp_cap(o, -1, reg_param(sys.params, c, "Cout"));
             break;
@@ -1139,49 +1167,43 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             ex lp = reg_param(sys.params, c, "Lp");
             ex ls = reg_param(sys.params, c, "Ls");
             ex kk = reg_param(sys.params, c, "k");
+            {
+                // The coupling coefficient is a plain number in [-1, +1]; a
+                // hand-typed value outside the range is snapped to the nearer
+                // end so it cannot produce a nonsense mutual inductance.
+                double kv = c.param_estimate("k");
+                if (kv > 1.0 || kv < -1.0) {
+                    kv = (kv > 1.0) ? 1.0 : -1.0;
+                    sys.params.set(param_symbol(c, "k"), kv, UnitClass::Plain);
+                    kk = ex(kv);
+                }
+            }
             int pp = idx(nd[0]), pn = idx(nd[1]);
             int sp = idx(nd[2]), sn = idx(nd[3]);
             int kp = sys.branch_idx.at(branch_key(c.ref, "p"));
             int kn = sys.branch_idx.at(branch_key(c.ref, "n"));
-            // KCL columns of both windings
-            if (pp >= 0) {
-                sys.Y(pp, kp) += 1;
-                sys.Y(pp, kn) += 1;
-            }
-            if (pn >= 0) {
-                sys.Y(pn, kp) -= 1;
-                sys.Y(pn, kn) -= 1;
-            }
-            if (sp >= 0) {
-                sys.Y(sp, kp) -= 1;
-                sys.Y(sp, kn) -= 1;
-            }
-            if (sn >= 0) {
-                sys.Y(sn, kp) += 1;
-                sys.Y(sn, kn) += 1;
-            }
-            // KVL rows for the two windings
-            if (pp >= 0) {
-                sys.Y(kp, pp) += 1;
-                sys.Y(kn, pp) -= 1;
-            }
-            if (pn >= 0) {
-                sys.Y(kp, pn) -= 1;
-                sys.Y(kn, pn) += 1;
-            }
-            if (sp >= 0) {
-                sys.Y(kp, sp) -= 1;
-                sys.Y(kn, sp) += 1;
-            }
-            if (sn >= 0) {
-                sys.Y(kp, sn) += 1;
-                sys.Y(kn, sn) -= 1;
-            }
+            // KCL columns: ip flows into p+ and out of p-, is into s+ and out
+            // of s- (both currents enter the dotted terminals).
+            if (pp >= 0) sys.Y(pp, kp) += 1;
+            if (pn >= 0) sys.Y(pn, kp) -= 1;
+            if (sp >= 0) sys.Y(sp, kn) += 1;
+            if (sn >= 0) sys.Y(sn, kn) -= 1;
+            // KVL rows: v(p+) - v(p-) for the primary, v(s+) - v(s-) for the
+            // secondary.
+            if (pp >= 0) sys.Y(kp, pp) += 1;
+            if (pn >= 0) sys.Y(kp, pn) -= 1;
+            if (sp >= 0) sys.Y(kn, sp) += 1;
+            if (sn >= 0) sys.Y(kn, sn) -= 1;
             ex m = kk * GiNaC::sqrt((lp * ls).expand());
-            sys.Y(kp, kp) -= s * lp;
-            sys.Y(kn, kn) -= s * ls;
-            sys.Y(kp, kn) -= s * m;
-            sys.Y(kn, kp) -= s * m;
+            // Coupled windings: v_p = s*Lp*ip + s*M*is and
+            // v_s = s*M*ip + s*Ls*is. At DC an ideal winding is a short, so
+            // the s terms are absent (as for an inductor).
+            if (!dc_mode) {
+                sys.Y(kp, kp) -= s * lp;
+                sys.Y(kn, kn) -= s * ls;
+                sys.Y(kp, kn) -= s * m;
+                sys.Y(kn, kp) -= s * m;
+            }
             // Parasitics (off by default): the winding resistances add to the
             // series (s*L) self terms; the inter-winding capacitance bridges
             // the two positive terminals.
@@ -1218,25 +1240,18 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 ex l2 = value_symbol_scaled(sys.params, circ, *lb);
                 sys.params.set(c.ref, c.estimate(), UnitClass::Plain);
                 ex m = k_val * GiNaC::sqrt((l1 * l2).expand());
-                int aa = sys.node_idx.count(la->nodes[0])
-                             ? sys.node_idx.at(la->nodes[0])
-                             : -1;
-                int ab = sys.node_idx.count(la->nodes[1])
-                             ? sys.node_idx.at(la->nodes[1])
-                             : -1;
-                int ba = sys.node_idx.count(lb->nodes[0])
-                             ? sys.node_idx.at(lb->nodes[0])
-                             : -1;
-                int bb = sys.node_idx.count(lb->nodes[1])
-                             ? sys.node_idx.at(lb->nodes[1])
-                             : -1;
+                // Mutual EMF: the voltage of each winding also depends on the
+                // current through the other one --
+                //   v_a = s*La*i_a + s*M*i_b,  v_b = s*M*i_a + s*Lb*i_b
+                // so the term belongs in the KVL *rows*, on the other winding's
+                // current column. At DC inductors are shorts and the coupling
+                // is irrelevant.
                 int ka = sys.branch_idx.at(la->ref);
                 int kb = sys.branch_idx.at(lb->ref);
-                // v(a1) - v(a2) += s*M*i(b);  v(b1) - v(b2) += s*M*i(a)
-                if (aa >= 0) sys.Y(ka, aa) += s * m;
-                if (ab >= 0) sys.Y(ka, ab) -= s * m;
-                if (ba >= 0) sys.Y(kb, ba) += s * m;
-                if (bb >= 0) sys.Y(kb, bb) -= s * m;
+                if (!dc_mode) {
+                    sys.Y(ka, kb) -= s * m;
+                    sys.Y(kb, ka) -= s * m;
+                }
             }
             break;
         }

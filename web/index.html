@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=21">
+<link rel="stylesheet" href="style.css?v=36">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -265,10 +265,11 @@
         start a wire, then click the destination. Every click commits a
         segment and the wire carries on from where it stopped. Space swaps
         the route between horizontal-first and vertical-first, Enter ends the
-        wire, Esc cancels it. Moving a part takes the wires attached to its
-        pins with it, and a wire can be dragged: the segment under the
-        cursor moves sideways and the rest of the route stretches to
-        follow.</li>
+        wire, Esc cancels it. A wire that ends on another wire's endpoint
+        becomes one continuous wire; ending in the middle of another leaves
+        a junction dot. Moving a part takes the wires attached to its pins
+        with it, and a wire can be dragged: the segment under the cursor
+        moves sideways and the rest of the route stretches to follow.</li>
 
       <li><b>Name the nets.</b> Press N, type one or more names separated by
         spaces, then click each net in turn. Click a name to select it and
@@ -439,8 +440,8 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=21"></script>
-<script src="editor.js?v=21"></script>
-<script src="app.js?v=21"></script>
+<script src="envlp.js?v=36"></script>
+<script src="editor.js?v=36"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>

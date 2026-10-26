@@ -10,7 +10,7 @@ comp "R2" "R" 180 280 0 0 0 0 "" mirror=R1 mult=1 den=1
 comp "R3" "R" 270 310 0 0 0 0 "" mirror=R4 mult=1 den=1
 comp "R4" "R" 270 170 0 0 0 0 "" mirror=R1 mult=1 den=1
 comp "V2" "V" 90 340 0 0 0 0 "" dc=1 ac=0
-comp "GND1" "GND" 90 380 0 0 0 0 ""
+comp "GND1" "GND" 90 410 0 0 0 0 ""
 wire 90,220 90,210 150,210 pin:V1:0 pin:R1:0 wp=90,210 wp=120,210 wp=120,210
 wire 210,210 225,210 225,230 240,230 pin:R1:1 pin:U1:0 wp=225,210 wp=225,230
 wire 90,280 150,280 pin:V1:1 pin:R2:0
@@ -20,7 +20,7 @@ wire 300,310 330,310 330,250 314,250 pin:R3:1 pin:U1:2 wp=330,310 wp=330,250
 wire 240,170 240,230 pin:R4:0 pin:U1:0
 wire 300,170 330,170 330,230 314,230 pin:R4:1 pin:U1:3 wp=330,170 wp=330,230
 wire 90,310 90,280 pin:V2:0 pin:V1:1
-wire 90,370 90,380 pin:V2:1 pin:GND1:0
+wire 90,370 90,410 pin:V2:1 pin:GND1:0
 netlabel 94.7,210 130,200 "inp" 9 0 bind=0:0.21
 netlabel 120,280 130,270 "inn" 9 0 bind=2:0.5
 netlabel 321.42,250 350,250 "op" 9 0 bind=5:0.93

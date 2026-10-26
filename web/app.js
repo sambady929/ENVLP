@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '21';
+const BUILD = '36';
 
 const $ = (id) => document.getElementById(id);
 
@@ -113,7 +113,14 @@ function run() {
       render(res);
       setStatus('');
     } catch (e) {
-      setStatus(String((e && e.message) || e), true);
+      // A thrown solver call is just as invalid as an ok:false result: do not
+      // leave the previous plot up as if it answered this run.
+      last = null;
+      const msg = String((e && e.message) || e);
+      $('report').textContent = msg;
+      $('math').innerHTML = '';
+      drawPlot();
+      setStatus(msg, true);
     } finally {
       btn.disabled = false;
     }
@@ -301,7 +308,14 @@ function drawPlot() {
   }
   el.innerHTML = '';
   const fig = figureFor($('plot-mode').value, s);
-  Plotly.react(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
+  // After a "no plot" result the element has been purged, so there is no
+  // layout to react to. Start a fresh graph in that case; react() on a purged
+  // node is what used to leave the "no plot" message up for good.
+  if (el._fullLayout) {
+    Plotly.react(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
+  } else {
+    Plotly.newPlot(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
+  }
 }
 
 // The plot follows its pane when the layout changes (the gutters).
@@ -398,7 +412,20 @@ function bindPanel() {
   });
 
   document.querySelectorAll('.tool').forEach((b) => {
-    b.addEventListener('click', () => { ED.tool = b.dataset.tool; syncTools(); draw(); });
+    b.addEventListener('click', () => {
+      // Switching away from the wire tool finishes the wire being drawn, so
+      // it can still be joined to a wire it meets end to end.
+      if (ED.tool === 'wire' && b.dataset.tool !== 'wire') endWiring();
+      // The tool buttons are not placement arms: a palette ghost and a
+      // queued net-label placement must not survive the switch (the desktop
+      // clears both in set_tool).
+      ED.placing = null;
+      ED.labelQueue = [];
+      ED.tool = b.dataset.tool;
+      syncTools();
+      syncPalette();
+      draw();
+    });
   });
   $('btn-undo').addEventListener('click', docUndo);
   $('btn-redo').addEventListener('click', docRedo);

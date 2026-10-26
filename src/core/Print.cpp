@@ -296,9 +296,9 @@ void split_radical(const ex& X, ex& outside, ex& radicand) {
     long coeff_n = 1, coeff_d = 1;
     ex sn = 1, sd = 1, inn = 1, ind = 1; // symbolic outside/inside, num/den
 
-    auto take = [&](ex Y, long& coeff, ex& sout, ex& sin) {
-        if (is_a<numeric>(Y)) {
-            numeric ny = GiNaC::ex_to<numeric>(Y);
+    auto take_one = [&](const ex& f, long& coeff, ex& sout, ex& sin) {
+        if (is_a<numeric>(f)) {
+            numeric ny = GiNaC::ex_to<numeric>(f);
             if (ny.is_integer()) {
                 long n = 0;
                 try { n = ny.to_long(); } catch (...) { n = 0; }
@@ -306,29 +306,33 @@ void split_radical(const ex& X, ex& outside, ex& radicand) {
             }
             return;
         }
-        for (size_t i = 0; i < Y.nops(); ++i) {
-            const ex& f = Y.op(i);
-            if (is_a<numeric>(f)) {
-                numeric ny = GiNaC::ex_to<numeric>(f);
-                if (ny.is_integer()) {
-                    long n = 0;
-                    try { n = ny.to_long(); } catch (...) { n = 0; }
-                    if (n > 0) coeff *= n;
-                }
-                continue;
-            }
-            if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1))) {
-                long e = 0;
-                try { e = GiNaC::ex_to<numeric>(f.op(1)).to_int(); }
-                catch (...) { e = 0; }
-                ex base = f.op(0);
-                if (e % 2 == 0) { sout = sout * GiNaC::pow(base, e / 2); continue; }
-                sout = sout * GiNaC::pow(base, (e - 1) / 2);
-                sin = sin * base;
-                continue;
-            }
-            sin = sin * f; // a non-power factor stays inside
+        if (is_a<GiNaC::power>(f) && is_a<numeric>(f.op(1))) {
+            numeric ne = GiNaC::ex_to<numeric>(f.op(1));
+            if (!ne.is_integer()) { sin = sin * f; return; }
+            long e = 0;
+            try { e = ne.to_long(); } catch (...) { e = 0; }
+            ex base = f.op(0);
+            if (e % 2 == 0) { sout = sout * GiNaC::pow(base, e / 2); return; }
+            sout = sout * GiNaC::pow(base, (e - 1) / 2);
+            sin = sin * base;
+            return;
         }
+        sin = sin * f; // a non-power factor stays inside
+    };
+    auto take = [&](ex Y, long& coeff, ex& sout, ex& sin) {
+        if (is_a<numeric>(Y)) {
+            take_one(Y, coeff, sout, sin);
+            return;
+        }
+        if (is_a<GiNaC::mul>(Y)) {
+            for (size_t i = 0; i < Y.nops(); ++i)
+                take_one(Y.op(i), coeff, sout, sin);
+            return;
+        }
+        // A single symbol, sum, or non-power atom is one factor and stays
+        // inside the radical. (Iterating nops() of a bare symbol would drop it
+        // entirely: sqrt(Ls/Lp) used to print as 1.)
+        take_one(Y, coeff, sout, sin);
     };
     take(num, coeff_n, sn, inn);
     take(den, coeff_d, sd, ind);

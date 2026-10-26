@@ -217,6 +217,11 @@ std::string geometry() {
         js << ",\"flip_h\":" << (pl.flip_h ? "true" : "false");
         js << ",\"flip_v\":" << (pl.flip_v ? "true" : "false");
         js << ",\"value\":" << q(c.value_text);
+        // The editor only offers a value field where one is meaningful; the
+        // label and unit come from the same core helpers as the desktop app.
+        js << ",\"has_value\":" << (syms::has_value(c.kind) ? "true" : "false");
+        js << ",\"value_label\":" << q(syms::value_label(c.kind));
+        js << ",\"value_unit\":" << q(syms::value_unit(c.kind));
         js << ",\"dc\":" << q(c.dc_text);
         js << ",\"ac\":" << q(c.ac_text);
         // The coupled inductors of a coupling marker (K).
@@ -513,8 +518,10 @@ const char* envlp_doc_set(const char* ops_json) {
             g_doc.bind_wire_ends(w);
             g_doc.wires.push_back(w);
             g_doc.sync_wire_endpoints();
-            // A wire that meets another one end to end becomes a single wire.
-            g_last_wire = g_doc.join_with_neighbours(int(g_doc.wires.size()) - 1);
+            // Remember which wire was just created so the front-end can keep
+            // extending it. End-to-end neighbours are joined when the wire is
+            // finished (the `join` op), not after every segment.
+            g_last_wire = int(g_doc.wires.size()) - 1;
         } else if (op == "wire_extend") {
             // Continue the wire that is being drawn: append the routed
             // segment (the desktop extends one wire, it does not start a new
@@ -536,8 +543,12 @@ const char* envlp_doc_set(const char* ops_json) {
                     w.pts.push_back(envlp::Pt{last.first, b.second});
             }
             w.pts.push_back(b);
+            std::vector<envlp::Pt> old_wp = w.waypoints;
             if (w.pts.size() > 2)
                 w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
+            else
+                w.waypoints.clear();
+            g_doc.remap_pin_points(w, old_wp);
             if (get(o, "end_pin") == "true") {
                 w.b.kind = envlp::WireEnd::Kind::Pin;
                 w.b.ref = get(o, "end_ref");
@@ -545,8 +556,20 @@ const char* envlp_doc_set(const char* ops_json) {
             }
             g_doc.bind_wire_ends(w);
             g_doc.sync_wire_endpoints();
-            // Same here: the extended wire may meet another one end to end.
-            g_last_wire = g_doc.join_with_neighbours(wi);
+            g_last_wire = wi;
+        } else if (op == "join") {
+            // Finish the wire being drawn: if it meets another wire end to
+            // end, the two become one shape (Virtuoso). This is done when the
+            // wire is finished rather than after every segment so a route can
+            // still be drawn from an existing endpoint and then merged.
+            const int wi = int(getn(o, "wire", -1));
+            if (wi < 0 || wi >= int(g_doc.wires.size())) {
+                error = "no such wire";
+                continue;
+            }
+            const int merged = g_doc.join_with_neighbours(wi);
+            g_doc.sync_wire_endpoints();
+            g_last_wire = merged;
         } else if (op == "move_wire") {
             // Drag a wire (or one of its segments). A segment moves
             // perpendicular to itself, so its neighbours stretch instead of
@@ -611,9 +634,11 @@ const char* envlp_doc_set(const char* ops_json) {
                 if (dx != 0.0 || dy != 0.0)
                     moved[{o.first, o.second}] = envlp::Pt{o.first + dx, o.second + dy};
             }
+            std::vector<envlp::Pt> old_wp = w.waypoints;
             w.pts = nw;
             if (nw.size() > 2) w.waypoints.assign(nw.begin() + 1, nw.end() - 1);
             else w.waypoints.clear();
+            g_doc.remap_pin_points(w, old_wp);
             for (size_t other = 0; other < g_doc.wires.size(); ++other) {
                 if (int(other) == wi) continue;
                 envlp::Wire& ow = g_doc.wires[other];
@@ -626,10 +651,12 @@ const char* envlp_doc_set(const char* ops_json) {
                     }
                 }
                 if (any) {
+                    std::vector<envlp::Pt> old_wp = ow.waypoints;
                     if (ow.pts.size() > 2)
                         ow.waypoints.assign(ow.pts.begin() + 1, ow.pts.end() - 1);
                     else
                         ow.waypoints.clear();
+                    g_doc.remap_pin_points(ow, old_wp);
                 }
             }
             g_doc.sync_label_anchors();

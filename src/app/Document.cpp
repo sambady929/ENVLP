@@ -118,6 +118,17 @@ void Document::remove(const std::string& ref) {
             w.b.pin = -1;
             w.pts.back() = p;
         }
+        // An interior pin of a merged wire becomes an ordinary free waypoint
+        // at its last coordinate.
+        for (auto& pp : w.pin_points)
+            if (pp.end.kind == WireEnd::Kind::Pin && pp.end.ref == ref)
+                pp.end = WireEnd{};
+        w.pin_points.erase(
+            std::remove_if(w.pin_points.begin(), w.pin_points.end(),
+                           [](const Wire::PinPoint& pp) {
+                               return pp.end.kind != WireEnd::Kind::Pin;
+                           }),
+            w.pin_points.end());
     }
     circuit.comps.erase(it);
     placements.erase(ref);
@@ -150,31 +161,78 @@ bool Document::join_wires(int i, int j) {
     Wire& A = wires[i];
     Wire& B = wires[j];
     if (A.pts.size() < 2 || B.pts.size() < 2) return false;
+    // The same tolerance the net resolver uses: if two endpoints are close
+    // enough to be one net, they are close enough to be one physical wire.
     auto same = [](const Pt& a, const Pt& b) {
-        return std::fabs(a.first - b.first) < 1.0 &&
-               std::fabs(a.second - b.second) < 1.0;
+        return std::hypot(a.first - b.first, a.second - b.second) <= kJoinTol;
     };
 
     // Which end of A meets which end of B, and in which direction the
     // stitched polyline runs.
     bool revA = false, revB = false, ok = false;
+    bool a_pin_end = false, b_pin_end = false;
+    bool a_front = false, b_front = false;
+    auto pin_end = [](const WireEnd& e) { return e.kind == WireEnd::Kind::Pin; };
     if (same(A.pts.back(), B.pts.front())) {
         ok = true;
+        a_front = false; b_front = true;
+        a_pin_end = pin_end(A.b);
+        b_pin_end = pin_end(B.a);
     } else if (same(A.pts.back(), B.pts.back())) {
         ok = true;
         revB = true;
+        a_front = false; b_front = false;
+        a_pin_end = pin_end(A.b);
+        b_pin_end = pin_end(B.b);
     } else if (same(A.pts.front(), B.pts.front())) {
         ok = true;
         revA = true;
+        a_front = true; b_front = true;
+        a_pin_end = pin_end(A.a);
+        b_pin_end = pin_end(B.a);
     } else if (same(A.pts.front(), B.pts.back())) {
         ok = true;
         revA = true;
         revB = true;
+        a_front = true; b_front = false;
+        a_pin_end = pin_end(A.a);
+        b_pin_end = pin_end(B.b);
     }
     if (!ok) return false;
 
-    const std::vector<Pt> pa = A.pts, pb = B.pts;
+    std::vector<Pt> pa = A.pts;
+    const std::vector<Pt> pb = B.pts;
+    const std::vector<Pt> wa = A.waypoints, wb = B.waypoints;
+    const auto ppa = A.pin_points, ppb = B.pin_points;
     const WireEnd ea = A.a, eb = A.b, fa = B.a, fb = B.b;
+    // Close a sub-tolerance gap: the shared point is the pin when one side is
+    // pinned (the pin is the exact terminal), otherwise A's endpoint. Without
+    // this, two endpoints can be one net but visibly apart.
+    auto pin_position = [&](const WireEnd& e, bool& found) {
+        found = false;
+        if (e.kind != WireEnd::Kind::Pin) return Pt{0, 0};
+        const syms::Component* c = circuit.find(e.ref);
+        auto pl = placements.find(e.ref);
+        if (!c || pl == placements.end()) return Pt{0, 0};
+        found = true;
+        return pin_world(*c, pl->second, e.pin);
+    };
+    Pt common = a_front ? pa.front() : pa.back();
+    WireEnd shared_pin;
+    if (a_pin_end) {
+        bool found = false;
+        Pt p = pin_position(a_front ? A.a : A.b, found);
+        common = found ? p : (a_front ? pa.front() : pa.back());
+        shared_pin = a_front ? A.a : A.b;
+    } else if (b_pin_end) {
+        bool found = false;
+        Pt p = pin_position(b_front ? B.a : B.b, found);
+        common = found ? p : (b_front ? pb.front() : pb.back());
+        shared_pin = b_front ? B.a : B.b;
+    }
+    if (a_front) pa.front() = common;
+    else pa.back() = common;
+
     Wire M;
     M.pts.clear();
     const size_t na = pa.size(), nb = pb.size();
@@ -193,28 +251,83 @@ bool Document::join_wires(int i, int j) {
     // of B that is not the meeting point.
     if (!revA) {
         M.a = ea;
-        M.b = revB ? fb : fa;
+        M.b = revB ? fa : fb;
     } else {
         M.a = eb;
         M.b = revB ? fa : fb;
     }
-    if (M.pts.size() > 2) M.waypoints.assign(M.pts.begin() + 1, M.pts.end() - 1);
-    else M.waypoints.clear();
+    // A sub-tolerance snap can leave a zero-length segment.
+    std::vector<Pt> cleaned;
+    for (const auto& p : M.pts) {
+        if (cleaned.empty() ||
+            std::hypot(p.first - cleaned.back().first,
+                       p.second - cleaned.back().second) > 1e-9)
+            cleaned.push_back(p);
+    }
+    M.pts = std::move(cleaned);
+    if (M.pts.size() > 2)
+        M.waypoints.assign(M.pts.begin() + 1, M.pts.end() - 1);
+    else
+        M.waypoints.clear();
+
+    // When the meeting point is a pin, keep it bound as an interior waypoint
+    // so a later component move carries the middle of the merged wire too.
+    auto waypoint_index_of = [&](const Pt& q) {
+        for (size_t k = 0; k < M.waypoints.size(); ++k)
+            if (std::hypot(M.waypoints[k].first - q.first,
+                           M.waypoints[k].second - q.second) < 1e-6)
+                return int(k);
+        return -1;
+    };
+    auto add_pin_point = [&](const Pt& q, const WireEnd& e) {
+        if (e.kind != WireEnd::Kind::Pin) return;
+        int k = waypoint_index_of(q);
+        if (k < 0) return;
+        for (const auto& old : M.pin_points)
+            if (old.waypoint == k && old.end.ref == e.ref && old.end.pin == e.pin)
+                return;
+        Wire::PinPoint pp;
+        pp.waypoint = k;
+        pp.end = e;
+        M.pin_points.push_back(pp);
+    };
+    if (a_pin_end || b_pin_end) add_pin_point(common, shared_pin);
+    // Carry over interior pin bindings from both halves, re-indexed against
+    // the merged waypoint list by coordinate.
+    auto carry_pins = [&](const std::vector<Pt>& old_waypoints,
+                          const std::vector<Wire::PinPoint>& old_pins) {
+        for (const auto& pp : old_pins) {
+            if (pp.waypoint < 0 || pp.waypoint >= int(old_waypoints.size()))
+                continue;
+            add_pin_point(old_waypoints[pp.waypoint], pp.end);
+        }
+    };
+    carry_pins(wa, ppa);
+    carry_pins(wb, ppb);
 
     wires[i] = M;
-    // The label bindings of the removed wire have to follow.
-    for (auto& l : labels) {
-        if (l.bind_wire == j) l.bind_wire = i;
-        else if (l.bind_wire > j) --l.bind_wire;
-    }
     wires.erase(wires.begin() + j);
+    // The merged wire's index after the erase. Labels that were bound to
+    // either half follow the merged wire, and their fraction is re-resolved
+    // against the new polyline so they stay on the same point.
+    const int merged = (j < i) ? i - 1 : i;
+    for (auto& l : labels) {
+        const bool on_merged = (l.bind_wire == i || l.bind_wire == j);
+        if (on_merged) {
+            l.bind_wire = merged;
+            l.bind_frac = wire_frac_of(merged, l.anchor);
+        } else if (l.bind_wire > j) {
+            --l.bind_wire;
+        }
+    }
     dirty = true;
     return true;
 }
 
 int Document::join_with_neighbours(int wire_index) {
     int wi = wire_index;
-    for (int guard = 0; guard < 8; ++guard) {
+    const int max_joins = int(wires.size());
+    for (int guard = 0; guard < max_joins; ++guard) {
         bool joined = false;
         for (size_t k = 0; k < wires.size(); ++k) {
             if (int(k) == wi) continue;
@@ -622,6 +735,58 @@ void Document::bind_wire_ends(Wire& w) const {
 void Document::sync_wire_endpoints() {
     for (auto& w : wires) {
         if (w.pts.size() < 2) continue;
+        // Interior pin points: a merged wire can pass through a pin between
+        // its two ends. Move those waypoints with the component. A waypoint
+        // that sits on a pin but has no binding yet (e.g. a file saved before
+        // interior pin bindings existed) is captured the same way endpoints
+        // are: within the net-merge tolerance, so this never invents a
+        // connection the resolver would not already make.
+        for (auto& pp : w.pin_points) {
+            if (pp.waypoint < 0 || pp.waypoint >= int(w.waypoints.size()))
+                continue;
+            const syms::Component* c = circuit.find(pp.end.ref);
+            auto pl = placements.find(pp.end.ref);
+            if (!c || pl == placements.end()) {
+                pp.waypoint = -1;
+                continue;
+            }
+            w.waypoints[pp.waypoint] = pin_world(*c, pl->second, pp.end.pin);
+        }
+        for (int k = 0; k < int(w.waypoints.size()); ++k) {
+            bool bound = false;
+            for (const auto& pp : w.pin_points)
+                if (pp.waypoint == k) { bound = true; break; }
+            if (bound) continue;
+            for (const auto& c : circuit.comps) {
+                auto pl = placements.find(c.ref);
+                if (pl == placements.end()) continue;
+                int np = int(pin_offsets(c.kind).size());
+                for (int pi = 0; pi < np; ++pi) {
+                    Pt pw = pin_world(c, pl->second, pi);
+                    if (std::hypot(pw.first - w.waypoints[k].first,
+                                   pw.second - w.waypoints[k].second) <=
+                        kJoinTol) {
+                        Wire::PinPoint pp;
+                        pp.waypoint = k;
+                        pp.end.kind = WireEnd::Kind::Pin;
+                        pp.end.ref = c.ref;
+                        pp.end.pin = pi;
+                        w.pin_points.push_back(pp);
+                        bound = true;
+                        break;
+                    }
+                }
+                if (bound) break;
+            }
+        }
+        w.pin_points.erase(
+            std::remove_if(w.pin_points.begin(), w.pin_points.end(),
+                           [](const Wire::PinPoint& pp) {
+                               return pp.waypoint < 0 ||
+                                      pp.end.kind != WireEnd::Kind::Pin;
+                           }),
+            w.pin_points.end());
+
         // Electrical capture: a *free* endpoint that has ended up on (or within
         // the merge tolerance of) a pin is made a pin end, so the next component
         // move carries the wire instead of leaving it behind. Already-bound ends
@@ -660,10 +825,31 @@ void Document::sync_wire_endpoints() {
         rebuilt.push_back(a);
         for (const auto& wp : w.waypoints) rebuilt.push_back(wp);
         rebuilt.push_back(b);
+        // The pinned waypoints must survive both the orthogonaliser and the
+        // collinearity cleanup; remember them by coordinate.
+        std::vector<Pt> pinned_pos;
+        for (const auto& pp : w.pin_points)
+            if (pp.waypoint >= 0 && pp.waypoint < int(w.waypoints.size()))
+                pinned_pos.push_back(w.waypoints[pp.waypoint]);
+        auto mark_pinned = [&](const std::vector<Pt>& pts) {
+            std::vector<bool> mark(pts.size(), false);
+            for (const auto& q : pinned_pos) {
+                for (size_t i = 0; i < pts.size(); ++i) {
+                    if (std::hypot(pts[i].first - q.first,
+                                   pts[i].second - q.second) < 1e-6) {
+                        mark[i] = true;
+                        break;
+                    }
+                }
+            }
+            return mark;
+        };
         // Orthogonalise the end legs (waypoints are grid points, so the
         // interior legs they form are usually already axis-aligned).
         ortho_fix_pts(rebuilt);
-        // Drop bends that became collinear with their neighbours.
+        std::vector<bool> pinned = mark_pinned(rebuilt);
+        // Drop bends that became collinear with their neighbours, except the
+        // pins.
         if (rebuilt.size() >= 3) {
             std::vector<Pt> keep{rebuilt.front()};
             for (size_t i = 1; i + 1 < rebuilt.size(); ++i) {
@@ -675,13 +861,42 @@ void Document::sync_wire_endpoints() {
                      std::fabs(p1.first - p2.first) < 1e-9) ||
                     (std::fabs(p0.second - p1.second) < 1e-9 &&
                      std::fabs(p1.second - p2.second) < 1e-9);
-                if (!collinear) keep.push_back(p1);
+                if (!collinear || pinned[i]) keep.push_back(p1);
             }
             keep.push_back(rebuilt.back());
             rebuilt = std::move(keep);
         }
         w.pts = std::move(rebuilt);
     }
+}
+
+void Document::remap_pin_points(Wire& w,
+                                const std::vector<Pt>& old_waypoints) {
+    for (auto& pp : w.pin_points) {
+        if (pp.waypoint < 0 || pp.waypoint >= int(old_waypoints.size())) {
+            pp.waypoint = -1;
+            continue;
+        }
+        Pt q = old_waypoints[pp.waypoint];
+        int best = -1;
+        double bd = kJoinTol;
+        for (size_t k = 0; k < w.waypoints.size(); ++k) {
+            double d = std::hypot(w.waypoints[k].first - q.first,
+                                  w.waypoints[k].second - q.second);
+            if (d <= bd) {
+                bd = d;
+                best = int(k);
+            }
+        }
+        pp.waypoint = best;
+    }
+    w.pin_points.erase(
+        std::remove_if(w.pin_points.begin(), w.pin_points.end(),
+                       [](const Wire::PinPoint& pp) {
+                           return pp.waypoint < 0 ||
+                                  pp.end.kind != WireEnd::Kind::Pin;
+                       }),
+        w.pin_points.end());
 }
 
 void Document::escape_pin_ends(Wire& w) {
@@ -1027,6 +1242,12 @@ std::string Document::serialize() const {
         // same pinned vertices). Omitted when there are none (a plain route).
         for (const auto& wp : w.waypoints)
             o << " wp=" << wp.first << "," << wp.second;
+        // A merged wire can pass through a pin between its ends; remember
+        // which waypoint that is so a component move keeps carrying the wire.
+        for (const auto& pp : w.pin_points)
+            if (pp.end.kind == WireEnd::Kind::Pin)
+                o << " pinwp=" << pp.waypoint << ":" << pp.end.ref << ":"
+                  << pp.end.pin;
         o << "\n";
     }
     for (const auto& l : labels) {
@@ -1229,6 +1450,22 @@ bool Document::deserialize(const std::string& data, std::string& err) {
                     if (std::sscanf(t.c_str() + 3, "%lf,%lf", &x, &y) != 2)
                         return fail("bad wire waypoint " + t);
                     w.waypoints.push_back({x, y});
+                    continue;
+                }
+                if (t.rfind("pinwp=", 0) == 0) {
+                    // Interior pin binding "pinwp=<waypoint>:<REF>:<N>".
+                    std::string body = t.substr(6);
+                    size_t first = body.find(':');
+                    size_t last = body.rfind(':');
+                    if (first == std::string::npos || last == std::string::npos ||
+                        first == last)
+                        return fail("bad wire interior pin binding " + t);
+                    Wire::PinPoint pp;
+                    pp.waypoint = std::atoi(body.substr(0, first).c_str());
+                    pp.end.kind = WireEnd::Kind::Pin;
+                    pp.end.ref = body.substr(first + 1, last - first - 1);
+                    pp.end.pin = std::atoi(body.c_str() + last + 1);
+                    w.pin_points.push_back(pp);
                     continue;
                 }
                 if (t.rfind("pin:", 0) == 0 || t == "free") {

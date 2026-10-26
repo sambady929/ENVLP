@@ -236,8 +236,10 @@ workflow decodes them and runs `tools/sign.ps1` before uploading.
    **Shift+Space / Ctrl+Space** flip, **Esc** cancels.
 2. **Wire (W)**: click to start (a red dot marks the snap point), then click
    the destination — a pin or any grid point. **Space** while wiring swaps the
-   route between horizontal-first and vertical-first. Moving a component drags
-   the wires attached to its pins.
+   route between horizontal-first and vertical-first. A wire that ends on
+   another wire's endpoint joins it into one continuous wire; ending in the
+   middle of another leaves a junction dot. Moving a component drags the wires
+   attached to its pins.
 3. **Net labels**: select a wire and type its **Net name** in the properties
    panel, or press **N** to place several labels at once — type space-separated
    names (`out in`) and click each net.
