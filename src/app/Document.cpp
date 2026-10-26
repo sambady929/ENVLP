@@ -340,16 +340,28 @@ bool Document::merge_collinear(int i, int j) {
         return false;
     const Wire& A = wires[i];
     const Wire& B = wires[j];
-    if (A.pts.size() != 2 || B.pts.size() != 2) return false;
-    auto proj_h = [](const Pt& p) { return p.first; };
-    auto proj_v = [](const Pt& p) { return p.second; };
+    if (A.pts.size() < 2 || B.pts.size() < 2) return false;
+    // A straight wire may carry interior pin vertices (three or more collinear
+    // points); it is still a straight interval for the union.
     auto horiz = [](const Wire& w) {
-        return std::fabs(w.pts[0].second - w.pts[1].second) < 1e-9 &&
-               std::fabs(w.pts[0].first - w.pts[1].first) > 1e-9;
+        double y = w.pts[0].second;
+        double lo = w.pts[0].first, hi = lo;
+        for (const auto& p : w.pts) {
+            if (std::fabs(p.second - y) > 1.0) return false;
+            lo = std::min(lo, p.first);
+            hi = std::max(hi, p.first);
+        }
+        return hi - lo > 1e-9;
     };
     auto vert = [](const Wire& w) {
-        return std::fabs(w.pts[0].first - w.pts[1].first) < 1e-9 &&
-               std::fabs(w.pts[0].second - w.pts[1].second) > 1e-9;
+        double x = w.pts[0].first;
+        double lo = w.pts[0].second, hi = lo;
+        for (const auto& p : w.pts) {
+            if (std::fabs(p.first - x) > 1.0) return false;
+            lo = std::min(lo, p.second);
+            hi = std::max(hi, p.second);
+        }
+        return hi - lo > 1e-9;
     };
     const bool ah = horiz(A), av = vert(A);
     const bool bh = horiz(B), bv = vert(B);
@@ -358,7 +370,8 @@ bool Document::merge_collinear(int i, int j) {
     const bool horizontal = ah && bh;
     double axis; // the common y (horizontal) or x (vertical)
     auto has_pin = [](const Wire& w) {
-        return w.a.kind == WireEnd::Kind::Pin || w.b.kind == WireEnd::Kind::Pin;
+        return w.a.kind == WireEnd::Kind::Pin || w.b.kind == WireEnd::Kind::Pin ||
+               !w.pin_points.empty();
     };
     if (horizontal) {
         // A pin's exact coordinate wins over the other wire's stored line.
@@ -369,6 +382,13 @@ bool Document::merge_collinear(int i, int j) {
                 auto pl = placements.find(e.ref);
                 if (c && pl != placements.end())
                     return pin_world(*c, pl->second, e.pin).second;
+            }
+            for (const auto& pp : w.pin_points) {
+                if (pp.end.kind != WireEnd::Kind::Pin) continue;
+                const syms::Component* c = circuit.find(pp.end.ref);
+                auto pl = placements.find(pp.end.ref);
+                if (c && pl != placements.end())
+                    return pin_world(*c, pl->second, pp.end.pin).second;
             }
             return w.pts[0].second;
         };
@@ -384,6 +404,13 @@ bool Document::merge_collinear(int i, int j) {
                 if (c && pl != placements.end())
                     return pin_world(*c, pl->second, e.pin).first;
             }
+            for (const auto& pp : w.pin_points) {
+                if (pp.end.kind != WireEnd::Kind::Pin) continue;
+                const syms::Component* c = circuit.find(pp.end.ref);
+                auto pl = placements.find(pp.end.ref);
+                if (c && pl != placements.end())
+                    return pin_world(*c, pl->second, pp.end.pin).first;
+            }
             return w.pts[0].first;
         };
         double ax = pin_x(A), bx = pin_x(B);
@@ -394,15 +421,23 @@ bool Document::merge_collinear(int i, int j) {
     auto on_axis = [&](const Pt& p) {
         return std::fabs((horizontal ? p.second : p.first) - axis) <= 1.0;
     };
-    if (!on_axis(A.pts[0]) || !on_axis(A.pts[1]) || !on_axis(B.pts[0]) ||
-        !on_axis(B.pts[1]))
-        return false;
+    for (const auto& p : A.pts)
+        if (!on_axis(p)) return false;
+    for (const auto& p : B.pts)
+        if (!on_axis(p)) return false;
 
     auto proj = [&](const Pt& p) { return horizontal ? p.first : p.second; };
-    double a0 = std::min(proj(A.pts[0]), proj(A.pts[1]));
-    double a1 = std::max(proj(A.pts[0]), proj(A.pts[1]));
-    double b0 = std::min(proj(B.pts[0]), proj(B.pts[1]));
-    double b1 = std::max(proj(B.pts[0]), proj(B.pts[1]));
+    auto interval = [&](const Wire& w) {
+        double lo = proj(w.pts[0]), hi = lo;
+        for (const auto& p : w.pts) {
+            lo = std::min(lo, proj(p));
+            hi = std::max(hi, proj(p));
+        }
+        return std::pair<double, double>{lo, hi};
+    };
+    auto ai = interval(A), bi = interval(B);
+    double a0 = ai.first, a1 = ai.second;
+    double b0 = bi.first, b1 = bi.second;
     // They must overlap or touch, not merely lie on the same infinite line.
     if (std::max(a0, b0) > std::min(a1, b1) + 1.0) return false;
     const double u0 = std::min(a0, b0);
@@ -437,6 +472,17 @@ bool Document::merge_collinear(int i, int j) {
     consider_end(proj(A.pts[1]), A.b, u1, best1, e1);
     consider_end(proj(B.pts[0]), B.a, u1, best1, e1);
     consider_end(proj(B.pts[1]), B.b, u1, best1, e1);
+    auto consider_interior_pins = [&](const Wire& w) {
+        for (const auto& pp : w.pin_points) {
+            if (pp.waypoint < 0 || pp.waypoint >= int(w.waypoints.size()))
+                continue;
+            double t = proj(w.waypoints[pp.waypoint]);
+            consider_end(t, pp.end, u0, best0, e0);
+            consider_end(t, pp.end, u1, best1, e1);
+        }
+    };
+    consider_interior_pins(A);
+    consider_interior_pins(B);
     M.a = e0;
     M.b = e1;
 

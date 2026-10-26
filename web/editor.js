@@ -1005,11 +1005,31 @@ function placeLabelAt(w) {
 // the same tolerance as the net resolver (9 world px): if the endpoints are
 // close enough to be one net, they are close enough to be one physical wire.
 // Pin ends count too -- the merge keeps the pin as an interior waypoint.
+// The straight interval of a wire if all of its points are collinear (a
+// merged wire can carry an interior pin vertex and still be straight).
+function wireLine(w) {
+  if (!w || !w.pts || w.pts.length < 2) return null;
+  const pts = w.pts;
+  const y = pts[0][1], x = pts[0][0];
+  let horiz = true, vert = true;
+  let xmin = x, xmax = x, ymin = y, ymax = y;
+  for (const p of pts) {
+    if (Math.abs(p[1] - y) > 1) horiz = false;
+    if (Math.abs(p[0] - x) > 1) vert = false;
+    xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]);
+    ymin = Math.min(ymin, p[1]); ymax = Math.max(ymax, p[1]);
+  }
+  if (horiz && xmax - xmin > 1e-9) return {axis: 'h', v: y, lo: xmin, hi: xmax};
+  if (vert && ymax - ymin > 1e-9) return {axis: 'v', v: x, lo: ymin, hi: ymax};
+  return null;
+}
+
 function wireJoinsEndToEnd(wi) {
   const wires = ED.doc.wires || [];
   const w = wires[wi];
   if (!w || !w.pts || w.pts.length < 2) return false;
   const ends = [w.pts[0], w.pts[w.pts.length - 1]];
+  const wl = wireLine(w);
   for (const o of wires) {
     if (o.i === wi || !o.pts || o.pts.length < 2) continue;
     const oe = [o.pts[0], o.pts[o.pts.length - 1]];
@@ -1018,27 +1038,10 @@ function wireJoinsEndToEnd(wi) {
     }
     // A partial overlap is collinear and not an endpoint join. The engine
     // unions the two intervals; the pre-check must send the join for it.
-    if (w.pts.length === 2 && o.pts.length === 2) {
-      const [a0, a1] = w.pts, [b0, b1] = o.pts;
-      const ah = Math.abs(a0[1] - a1[1]) < 1e-9 &&
-                 Math.abs(a0[0] - a1[0]) > 1e-9;
-      const av = Math.abs(a0[0] - a1[0]) < 1e-9 &&
-                 Math.abs(a0[1] - a1[1]) > 1e-9;
-      const bh = Math.abs(b0[1] - b1[1]) < 1e-9 &&
-                 Math.abs(b0[0] - b1[0]) > 1e-9;
-      const bv = Math.abs(b0[0] - b1[0]) < 1e-9 &&
-                 Math.abs(b0[1] - b1[1]) > 1e-9;
-      if (ah && bh && Math.abs(a0[1] - b0[1]) <= 1) {
-        const a0x = Math.min(a0[0], a1[0]), a1x = Math.max(a0[0], a1[0]);
-        const b0x = Math.min(b0[0], b1[0]), b1x = Math.max(b0[0], b1[0]);
-        if (Math.max(a0x, b0x) <= Math.min(a1x, b1x) + 1) return true;
-      }
-      if (av && bv && Math.abs(a0[0] - b0[0]) <= 1) {
-        const a0y = Math.min(a0[1], a1[1]), a1y = Math.max(a0[1], a1[1]);
-        const b0y = Math.min(b0[1], b1[1]), b1y = Math.max(b0[1], b1[1]);
-        if (Math.max(a0y, b0y) <= Math.min(a1y, b1y) + 1) return true;
-      }
-    }
+    const ol = wireLine(o);
+    if (wl && ol && wl.axis === ol.axis && Math.abs(wl.v - ol.v) <= 1 &&
+        Math.max(wl.lo, ol.lo) <= Math.min(wl.hi, ol.hi) + 1)
+      return true;
   }
   return false;
 }
