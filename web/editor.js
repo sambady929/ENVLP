@@ -1005,73 +1005,6 @@ function placeLabelAt(w) {
   }
 }
 
-// Would finishing wire `wi` join it end to end with another wire? This uses
-// the same tolerance as the net resolver (9 world px): if the endpoints are
-// close enough to be one net, they are close enough to be one physical wire.
-// Pin ends count too -- the merge keeps the pin as an interior waypoint.
-// The straight interval of a wire if all of its points are collinear (a
-// merged wire can carry an interior pin vertex and still be straight).
-function wireLine(w) {
-  if (!w || !w.pts || w.pts.length < 2) return null;
-  const pts = w.pts;
-  const y = pts[0][1], x = pts[0][0];
-  let horiz = true, vert = true;
-  let xmin = x, xmax = x, ymin = y, ymax = y;
-  for (const p of pts) {
-    if (Math.abs(p[1] - y) > 1) horiz = false;
-    if (Math.abs(p[0] - x) > 1) vert = false;
-    xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]);
-    ymin = Math.min(ymin, p[1]); ymax = Math.max(ymax, p[1]);
-  }
-  if (horiz && xmax - xmin > 1e-9) return {axis: 'h', v: y, lo: xmin, hi: xmax};
-  if (vert && ymax - ymin > 1e-9) return {axis: 'v', v: x, lo: ymin, hi: ymax};
-  return null;
-}
-
-// Does a corner wire's first or last segment lie on a straight wire and
-// overlap it? That is the 90-degree case the backend trims/absorbs.
-function cornerOverlap(poly, line) {
-  if (!line || !poly || !poly.pts || poly.pts.length < 2) return false;
-  const on = (p) =>
-    Math.abs((line.axis === 'h' ? p[1] : p[0]) - line.v) <= 1;
-  const proj = (p) => (line.axis === 'h' ? p[0] : p[1]);
-  const check = (a, b) => {
-    if (!on(a) || !on(b)) return false;
-    const lo = Math.min(proj(a), proj(b));
-    const hi = Math.max(proj(a), proj(b));
-    return Math.max(lo, line.lo) <= Math.min(hi, line.hi) + 1;
-  };
-  const n = poly.pts.length;
-  if (check(poly.pts[0], poly.pts[1])) return true;
-  if (check(poly.pts[n - 2], poly.pts[n - 1])) return true;
-  return false;
-}
-
-function wireJoinsEndToEnd(wi) {
-  const wires = ED.doc.wires || [];
-  const w = wires[wi];
-  if (!w || !w.pts || w.pts.length < 2) return false;
-  const ends = [w.pts[0], w.pts[w.pts.length - 1]];
-  const wl = wireLine(w);
-  for (const o of wires) {
-    if (o.i === wi || !o.pts || o.pts.length < 2) continue;
-    const oe = [o.pts[0], o.pts[o.pts.length - 1]];
-    for (const a of ends) for (const b of oe) {
-      if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= 9) return true;
-    }
-    // A partial overlap is collinear and not an endpoint join. The engine
-    // unions the two intervals; the pre-check must send the join for it.
-    const ol = wireLine(o);
-    if (wl && ol && wl.axis === ol.axis && Math.abs(wl.v - ol.v) <= 1 &&
-        Math.max(wl.lo, ol.lo) <= Math.min(wl.hi, ol.hi) + 1)
-      return true;
-    // A 90-degree wire whose end segment lies on a straight wire.
-    if (wl && !ol && cornerOverlap(o, wl)) return true;
-    if (ol && !wl && cornerOverlap(w, ol)) return true;
-  }
-  return false;
-}
-
 // Leave wiring mode. Whatever is already committed stays on the canvas; only
 // the segment in progress is dropped. The finished wire is then joined to any
 // other wire it meets end to end, so the two become one shape (Virtuoso).
@@ -1085,7 +1018,9 @@ function endWiring() {
   ED.wireSel.clear();
   ED.selWire = -1;
   ED.selSeg = -1;
-  if (wi >= 0 && wireJoinsEndToEnd(wi)) docSet([{ op: 'join', wire: wi }]);
+  // Always run the join normaliser on finish. It is global: it merges every
+  // collinear overlap, including L+L and overlaps that are not at an endpoint.
+  if (wi >= 0) docSet([{ op: 'join', wire: wi }]);
   else draw();
 }
 

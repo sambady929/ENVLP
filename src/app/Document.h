@@ -129,6 +129,11 @@ public:
     // subsequent endpoint join makes one polyline; if it is in the middle, the
     // trimmed branch stays a branch (a T-junction).
     bool trim_corner_overlap(int i, int j);
+    // Rebuild every wire from its atomic segments: collinear overlapping or
+    // touching pieces become one segment, T/cross points split the graph, and
+    // maximal paths are turned back into wire polylines. This is the
+    // document-wide "merge every collinear overlap" pass.
+    bool normalize_wire_geometry();
     // Replace wires i/j with the merged `Wire`, fix label bindings and return
     // the merged wire's new index.
     int finish_join(int i, int j, Wire merged);

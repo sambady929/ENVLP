@@ -300,13 +300,15 @@ void SchematicCanvas::wire_finish() {
     const size_t before = doc_->wires.size();
     doc_->join_with_neighbours(wi);
     const bool merged = doc_->wires.size() != before;
+    const bool normalized = doc_->normalize_wire_geometry();
     doc_->sync_wire_endpoints();
 
     // A trim-only change (a 90-degree overlap absorbed into a straight wire,
     // leaving a T-branch) keeps the wire count but changes geometry, so it
-    // still needs the sync/repaint above. Only a merge shifts wire indices.
+    // still needs the sync/repaint above. Only a merge/normalisation shifts
+    // wire indices.
     bool sel_changed = false;
-    if (merged) {
+    if (merged || normalized) {
         for (auto it = sel_set_.begin(); it != sel_set_.end();) {
             if (it->rfind("#wire", 0) == 0) {
                 it = sel_set_.erase(it);

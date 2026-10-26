@@ -725,6 +725,296 @@ int Document::join_with_neighbours(int wire_index) {
     return wi;
 }
 
+// Document-wide wire normalisation. Every wire is broken into its individual
+// segments; collinear segments are split at every other endpoint/intersection,
+// duplicate atomic segments are removed, and the resulting planar graph is
+// walked back into maximal polylines. The effect is that any two collinear
+// segments that overlap or touch are represented by one segment, while a T or
+// cross remains a branch (the through path and the branch are separate wire
+// objects meeting at a junction). The net is unchanged; only the shapes are.
+bool Document::normalize_wire_geometry() {
+    constexpr double kTol = 1e-6;
+    struct Seg {
+        Pt a, b;
+        bool h = false, v = false;
+    };
+    std::vector<Seg> segs;
+    for (const auto& w : wires) {
+        for (size_t k = 1; k < w.pts.size(); ++k) {
+            Seg s{w.pts[k - 1], w.pts[k]};
+            if (std::hypot(s.b.first - s.a.first, s.b.second - s.a.second) <
+                kTol)
+                continue;
+            s.h = std::fabs(s.b.second - s.a.second) < kTol;
+            s.v = std::fabs(s.b.first - s.a.first) < kTol;
+            segs.push_back(s);
+        }
+    }
+    if (segs.empty()) return false;
+
+    auto point_on = [](Pt p, const Seg& s) {
+        double vx = s.b.first - s.a.first, vy = s.b.second - s.a.second;
+        double wx = p.first - s.a.first, wy = p.second - s.a.second;
+        double L2 = vx * vx + vy * vy;
+        if (L2 < 1e-18) return false;
+        double t = (wx * vx + wy * vy) / L2;
+        if (t < -kTol || t > 1.0 + kTol) return false;
+        double px = s.a.first + t * vx, py = s.a.second + t * vy;
+        return std::hypot(p.first - px, p.second - py) <= kTol;
+    };
+    auto seg_proj = [](const Seg& s, Pt p) {
+        if (s.h) return p.first;
+        if (s.v) return p.second;
+        double vx = s.b.first - s.a.first, vy = s.b.second - s.a.second;
+        double L2 = vx * vx + vy * vy;
+        if (L2 < 1e-18) return 0.0;
+        return ((p.first - s.a.first) * vx + (p.second - s.a.second) * vy) /
+               L2;
+    };
+    auto seg_pt = [](const Seg& s, double t) {
+        if (s.h) return Pt{t, s.a.second};
+        if (s.v) return Pt{s.a.first, t};
+        return Pt{s.a.first + t * (s.b.first - s.a.first),
+                  s.a.second + t * (s.b.second - s.a.second)};
+    };
+
+    std::vector<std::vector<double>> cuts(segs.size());
+    for (size_t i = 0; i < segs.size(); ++i) {
+        cuts[i].push_back(seg_proj(segs[i], segs[i].a));
+        cuts[i].push_back(seg_proj(segs[i], segs[i].b));
+        for (size_t j = 0; j < segs.size(); ++j) {
+            if (i == j) continue;
+            for (Pt p : {segs[j].a, segs[j].b})
+                if (point_on(p, segs[i])) cuts[i].push_back(seg_proj(segs[i], p));
+        }
+    }
+    // Perpendicular intersections that are not an endpoint of either segment
+    // (a T or a cross) also become graph nodes.
+    for (size_t i = 0; i < segs.size(); ++i) {
+        for (size_t j = i + 1; j < segs.size(); ++j) {
+            Pt x;
+            bool have = false;
+            if (segs[i].h && segs[j].v) {
+                x = Pt{segs[j].a.first, segs[i].a.second};
+                have = true;
+            } else if (segs[i].v && segs[j].h) {
+                x = Pt{segs[i].a.first, segs[j].a.second};
+                have = true;
+            }
+            if (!have) continue;
+            if (!point_on(x, segs[i]) || !point_on(x, segs[j])) continue;
+            cuts[i].push_back(seg_proj(segs[i], x));
+            cuts[j].push_back(seg_proj(segs[j], x));
+        }
+    }
+
+    std::map<std::pair<long long, long long>, int> node_id;
+    std::vector<Pt> node_pt;
+    std::vector<std::vector<int>> adj;
+    auto node_of = [&](Pt p) {
+        auto key = std::make_pair((long long)std::llround(p.first * 1000.0),
+                                  (long long)std::llround(p.second * 1000.0));
+        auto it = node_id.find(key);
+        if (it != node_id.end()) return it->second;
+        int id = int(node_pt.size());
+        node_id[key] = id;
+        node_pt.push_back(p);
+        adj.emplace_back();
+        return id;
+    };
+    struct Edge {
+        int a, b;
+    };
+    std::vector<Edge> edges;
+    std::set<std::pair<int, int>> edge_set;
+    for (size_t i = 0; i < segs.size(); ++i) {
+        std::sort(cuts[i].begin(), cuts[i].end());
+        cuts[i].erase(std::unique(cuts[i].begin(), cuts[i].end(),
+                                  [](double a, double b) {
+                                      return std::fabs(a - b) < 1e-6;
+                                  }),
+                      cuts[i].end());
+        for (size_t k = 1; k < cuts[i].size(); ++k) {
+            if (cuts[i][k] - cuts[i][k - 1] < 1e-9) continue;
+            int u = node_of(seg_pt(segs[i], cuts[i][k - 1]));
+            int v = node_of(seg_pt(segs[i], cuts[i][k]));
+            if (u == v) continue;
+            auto key = std::make_pair(std::min(u, v), std::max(u, v));
+            if (!edge_set.insert(key).second) continue;
+            int eid = int(edges.size());
+            edges.push_back({u, v});
+            adj[u].push_back(eid);
+            adj[v].push_back(eid);
+        }
+    }
+    adj.resize(node_pt.size());
+    if (edges.empty()) return false;
+
+    // Pin bindings at graph nodes: a wire end or an interior merged pin.
+    std::vector<WireEnd> node_pin(node_pt.size());
+    std::vector<bool> node_has_pin(node_pt.size(), false);
+    auto set_pin = [&](Pt p, const WireEnd& e) {
+        int n = node_of(p);
+        if (n >= int(node_pin.size())) {
+            node_pin.resize(n + 1);
+            node_has_pin.resize(n + 1, false);
+        }
+        if (!node_has_pin[n]) {
+            node_has_pin[n] = true;
+            node_pin[n] = e;
+        }
+    };
+    for (const auto& w : wires) {
+        if (w.pts.size() < 2) continue;
+        if (w.a.kind == WireEnd::Kind::Pin) set_pin(w.pts.front(), w.a);
+        if (w.b.kind == WireEnd::Kind::Pin) set_pin(w.pts.back(), w.b);
+        for (const auto& pp : w.pin_points) {
+            if (pp.waypoint < 0 || pp.waypoint >= int(w.waypoints.size()))
+                continue;
+            if (pp.end.kind == WireEnd::Kind::Pin)
+                set_pin(w.waypoints[pp.waypoint], pp.end);
+        }
+    }
+    adj.resize(node_pt.size());
+
+    auto other = [&](int eid, int n) {
+        return edges[eid].a == n ? edges[eid].b : edges[eid].a;
+    };
+    auto edge_dir = [&](int eid, int n) {
+        int o = other(eid, n);
+        return Pt{node_pt[o].first - node_pt[n].first,
+                  node_pt[o].second - node_pt[n].second};
+    };
+    auto straight_through = [&](int in, int n, int out) {
+        Pt d1 = edge_dir(in, n), d2 = edge_dir(out, n);
+        double l1 = std::hypot(d1.first, d1.second);
+        double l2 = std::hypot(d2.first, d2.second);
+        if (l1 < 1e-12 || l2 < 1e-12) return false;
+        double dot = (d1.first * d2.first + d1.second * d2.second) / (l1 * l2);
+        return dot < -0.999;
+    };
+
+    std::vector<bool> used(edges.size(), false);
+    struct Path {
+        std::vector<int> nodes;
+    };
+    std::vector<Path> paths;
+    auto walk = [&](int start, int first) {
+        Path p;
+        p.nodes.push_back(start);
+        int cur = start, eid = first;
+        while (!used[eid]) {
+            used[eid] = true;
+            int nxt = other(eid, cur);
+            if (nxt != p.nodes.back()) p.nodes.push_back(nxt);
+            if (adj[nxt].size() != 2) {
+                int cont = -1, count = 0;
+                for (int e2 : adj[nxt]) {
+                    if (e2 == eid || used[e2]) continue;
+                    if (straight_through(eid, nxt, e2)) {
+                        cont = e2;
+                        ++count;
+                    }
+                }
+                if (count == 1) {
+                    cur = nxt;
+                    eid = cont;
+                    continue;
+                }
+                break;
+            }
+            int e2 = -1;
+            for (int x : adj[nxt])
+                if (x != eid) {
+                    e2 = x;
+                    break;
+                }
+            if (e2 < 0 || used[e2]) break;
+            cur = nxt;
+            eid = e2;
+        }
+        if (p.nodes.size() >= 2) paths.push_back(std::move(p));
+    };
+    for (int n = 0; n < int(node_pt.size()); ++n) {
+        if (adj[n].size() == 2) continue;
+        for (int eid : adj[n])
+            if (!used[eid]) walk(n, eid);
+    }
+    for (int eid = 0; eid < int(edges.size()); ++eid)
+        if (!used[eid]) walk(edges[eid].a, eid);
+
+    std::vector<Wire> out;
+    for (const auto& p : paths) {
+        if (p.nodes.size() < 2) continue;
+        // Drop interior graph nodes that are just collinear continuations;
+        // keep bends and pins.
+        std::vector<int> keep;
+        keep.push_back(p.nodes.front());
+        for (size_t i = 1; i + 1 < p.nodes.size(); ++i) {
+            int prev = keep.back(), cur = p.nodes[i], next = p.nodes[i + 1];
+            const Pt& a = node_pt[prev];
+            const Pt& b = node_pt[cur];
+            const Pt& c = node_pt[next];
+            bool collinear =
+                (std::fabs(a.first - b.first) < 1e-9 &&
+                 std::fabs(b.first - c.first) < 1e-9) ||
+                (std::fabs(a.second - b.second) < 1e-9 &&
+                 std::fabs(b.second - c.second) < 1e-9);
+            if (node_has_pin[cur] || !collinear) keep.push_back(cur);
+        }
+        if (p.nodes.back() != keep.back()) keep.push_back(p.nodes.back());
+        Wire w;
+        for (int n : keep) {
+            Pt q = node_pt[n];
+            if (w.pts.empty() ||
+                std::hypot(q.first - w.pts.back().first,
+                           q.second - w.pts.back().second) > 1e-9)
+                w.pts.push_back(q);
+        }
+        if (w.pts.size() < 2) continue;
+        if (node_has_pin[keep.front()]) w.a = node_pin[keep.front()];
+        if (node_has_pin[keep.back()]) w.b = node_pin[keep.back()];
+        if (w.pts.size() > 2)
+            w.waypoints.assign(w.pts.begin() + 1, w.pts.end() - 1);
+        for (size_t i = 1; i + 1 < keep.size(); ++i) {
+            if (!node_has_pin[keep[i]]) continue;
+            Wire::PinPoint pp;
+            pp.waypoint = int(i) - 1;
+            pp.end = node_pin[keep[i]];
+            w.pin_points.push_back(pp);
+        }
+        out.push_back(std::move(w));
+    }
+    if (out.empty()) return false;
+    wires = std::move(out);
+
+    // Labels follow the new path that carries their anchor.
+    auto point_seg_dist = [](Pt p, Pt a, Pt b) {
+        double vx = b.first - a.first, vy = b.second - a.second;
+        double wx = p.first - a.first, wy = p.second - a.second;
+        double L2 = vx * vx + vy * vy;
+        double t = L2 > 1e-18 ? (wx * vx + wy * vy) / L2 : 0.0;
+        t = std::max(0.0, std::min(1.0, t));
+        return std::hypot(p.first - (a.first + t * vx),
+                          p.second - (a.second + t * vy));
+    };
+    for (auto& l : labels) {
+        l.bind_wire = -1;
+        for (size_t wi = 0; wi < wires.size(); ++wi) {
+            const Wire& w = wires[wi];
+            bool on = false;
+            for (size_t k = 1; k < w.pts.size() && !on; ++k)
+                on = point_seg_dist(l.anchor, w.pts[k - 1], w.pts[k]) <= 1.0;
+            if (!on) continue;
+            l.bind_wire = int(wi);
+            l.bind_frac = wire_frac_of(int(wi), l.anchor);
+            break;
+        }
+    }
+    dirty = true;
+    return true;
+}
+
 // Remove every net label whose anchor no longer lies on a wire or a pin (e.g.
 // after the wire it named was deleted). Called after any wire removal.
 void Document::prune_orphan_labels() {

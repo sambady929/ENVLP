@@ -567,9 +567,15 @@ const char* envlp_doc_set(const char* ops_json) {
                 error = "no such wire";
                 continue;
             }
-            const int merged = g_doc.join_with_neighbours(wi);
+            g_doc.join_with_neighbours(wi);
+            // A global normalisation pass merges every collinear overlap,
+            // including L+L and interior segment overlaps that the pairwise
+            // join cannot express as one polyline.
+            g_doc.normalize_wire_geometry();
             g_doc.sync_wire_endpoints();
-            g_last_wire = merged;
+            // The pass rebuilds the wire list, so the old drawing index is
+            // meaningless; the front-end is finishing the wire anyway.
+            g_last_wire = -1;
         } else if (op == "move_wire") {
             // Drag a wire (or one of its segments). A segment moves
             // perpendicular to itself, so its neighbours stretch instead of
