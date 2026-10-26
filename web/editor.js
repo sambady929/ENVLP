@@ -1028,6 +1028,25 @@ function wireLine(w) {
   return null;
 }
 
+// Does a corner wire's first or last segment lie on a straight wire and
+// overlap it? That is the 90-degree case the backend trims/absorbs.
+function cornerOverlap(poly, line) {
+  if (!line || !poly || !poly.pts || poly.pts.length < 2) return false;
+  const on = (p) =>
+    Math.abs((line.axis === 'h' ? p[1] : p[0]) - line.v) <= 1;
+  const proj = (p) => (line.axis === 'h' ? p[0] : p[1]);
+  const check = (a, b) => {
+    if (!on(a) || !on(b)) return false;
+    const lo = Math.min(proj(a), proj(b));
+    const hi = Math.max(proj(a), proj(b));
+    return Math.max(lo, line.lo) <= Math.min(hi, line.hi) + 1;
+  };
+  const n = poly.pts.length;
+  if (check(poly.pts[0], poly.pts[1])) return true;
+  if (check(poly.pts[n - 2], poly.pts[n - 1])) return true;
+  return false;
+}
+
 function wireJoinsEndToEnd(wi) {
   const wires = ED.doc.wires || [];
   const w = wires[wi];
@@ -1046,6 +1065,9 @@ function wireJoinsEndToEnd(wi) {
     if (wl && ol && wl.axis === ol.axis && Math.abs(wl.v - ol.v) <= 1 &&
         Math.max(wl.lo, ol.lo) <= Math.min(wl.hi, ol.hi) + 1)
       return true;
+    // A 90-degree wire whose end segment lies on a straight wire.
+    if (wl && !ol && cornerOverlap(o, wl)) return true;
+    if (ol && !wl && cornerOverlap(w, ol)) return true;
   }
   return false;
 }
@@ -1082,18 +1104,6 @@ function wireClick(w) {
     return;
   }
   wireCommit(target);
-}
-
-// Does the point land on a vertex of a wire other than `exceptIndex`? A wire
-// that ends on another wire's vertex is finished, exactly like the desktop;
-// endWiring() then joins the two shapes end to end (Virtuoso).
-function onWireNode(p, exceptIndex) {
-  for (const w of ED.doc.wires || []) {
-    if (w.i === exceptIndex) continue;
-    for (const q of w.pts || [])
-      if (Math.hypot(p.x - q[0], p.y - q[1]) <= 9) return true;
-  }
-  return false;
 }
 
 // Commit the segment from the last point to the target.
@@ -1138,10 +1148,11 @@ function wireCommit(target) {
     : [{ x: target.x, y: target.y }];
   ED.wireFrom = { x: target.x, y: target.y, pin: target.pin };
 
-  // Landing on a pin or on another wire's vertex finishes the wire, like in
-  // the desktop; clicking empty canvas simply continues the route. The wire
-  // tool stays armed, so the next click starts the next wire (Virtuoso).
-  if (target.pin || onWireNode(target, ED.wireIndex)) {
+  // Only a component terminal finishes the wire. Landing on another wire's
+  // vertex must NOT finish it: an L-shaped wire often turns exactly on the
+  // endpoint of a straight wire, and the next click must be able to add the
+  // perpendicular leg. The overlap/join is resolved on Enter/Esc/double-click.
+  if (target.pin) {
     endWiring();
   } else {
     draw();

@@ -123,6 +123,12 @@ public:
     // two straight wires that lie on the same line one physical segment even
     // when neither endpoint of one meets an endpoint of the other.
     bool merge_collinear(int i, int j);
+    // A 90-degree wire whose first or last segment lies on a straight wire:
+    // absorb the overlapping collinear part into the straight wire and trim it
+    // off the corner wire. If the corner is the straight wire's endpoint, the
+    // subsequent endpoint join makes one polyline; if it is in the middle, the
+    // trimmed branch stays a branch (a T-junction).
+    bool trim_corner_overlap(int i, int j);
     // Replace wires i/j with the merged `Wire`, fix label bindings and return
     // the merged wire's new index.
     int finish_join(int i, int j, Wire merged);

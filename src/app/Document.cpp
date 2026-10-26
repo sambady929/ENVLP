@@ -542,6 +542,165 @@ bool Document::merge_collinear(int i, int j) {
     return true;
 }
 
+namespace {
+// A straight wire as a 1D interval on one axis.
+struct WireLine {
+    bool ok = false;
+    bool horizontal = false;
+    double axis = 0;
+    double lo = 0, hi = 0;
+};
+
+WireLine wire_line(const Wire& w) {
+    if (w.pts.size() < 2) return {};
+    double y = w.pts[0].second, x = w.pts[0].first;
+    bool h = true, v = true;
+    double xmin = x, xmax = x, ymin = y, ymax = y;
+    for (const auto& p : w.pts) {
+        if (std::fabs(p.second - y) > 1.0) h = false;
+        if (std::fabs(p.first - x) > 1.0) v = false;
+        xmin = std::min(xmin, p.first);
+        xmax = std::max(xmax, p.first);
+        ymin = std::min(ymin, p.second);
+        ymax = std::max(ymax, p.second);
+    }
+    WireLine r;
+    if (h && xmax - xmin > 1e-9) {
+        r.ok = true;
+        r.horizontal = true;
+        r.axis = y;
+        r.lo = xmin;
+        r.hi = xmax;
+    } else if (v && ymax - ymin > 1e-9) {
+        r.ok = true;
+        r.horizontal = false;
+        r.axis = x;
+        r.lo = ymin;
+        r.hi = ymax;
+    }
+    return r;
+}
+
+double line_proj(const WireLine& l, const Pt& p) {
+    return l.horizontal ? p.first : p.second;
+}
+bool line_on(const WireLine& l, const Pt& p) {
+    return std::fabs((l.horizontal ? p.second : p.first) - l.axis) <= 1.0;
+}
+Pt line_pt(const WireLine& l, double t) {
+    return l.horizontal ? Pt{t, l.axis} : Pt{l.axis, t};
+}
+} // namespace
+
+// A 90-degree wire whose first or last segment lies on a straight wire:
+// absorb the overlapping collinear run into the straight wire and trim that
+// run off the corner wire. If the corner is the straight wire's endpoint the
+// caller's endpoint join then makes one polyline; if the corner is in the
+// middle, the trimmed wire stays a branch (a T-junction) and the overlap is
+// gone from the drawing.
+bool Document::trim_corner_overlap(int i, int j) {
+    if (i == j || i < 0 || j < 0 || i >= int(wires.size()) ||
+        j >= int(wires.size()))
+        return false;
+    WireLine li = wire_line(wires[i]);
+    WireLine lj = wire_line(wires[j]);
+    if (li.ok == lj.ok) return false; // both straight or both bent
+    const int ai = li.ok ? i : j;
+    const int bi = li.ok ? j : i;
+    WireLine la = li.ok ? li : lj;
+    Wire& A = wires[ai];
+    Wire& B = wires[bi];
+    if (B.pts.size() < 3) return false; // a straight B is merge_collinear's job
+
+    auto recompute_labels = [&]() {
+        for (auto& l : labels) {
+            if (l.bind_wire == ai || l.bind_wire == bi)
+                l.bind_frac = wire_frac_of(l.bind_wire, l.anchor);
+        }
+    };
+
+    auto extend_A = [&](double u0, double u1) -> bool {
+        if (A.pts.size() < 2) return false;
+        const int lo_i =
+            line_proj(la, A.pts.front()) <= line_proj(la, A.pts.back())
+                ? 0
+                : int(A.pts.size()) - 1;
+        const int hi_i = (lo_i == 0) ? int(A.pts.size()) - 1 : 0;
+        WireEnd& lo_e = (lo_i == 0) ? A.a : A.b;
+        WireEnd& hi_e = (hi_i == 0) ? A.a : A.b;
+        if (u0 < la.lo - 1e-6) {
+            // Extending a pin end would move the terminal and lose the
+            // binding; leave that pair separate rather than break the part.
+            if (lo_e.kind == WireEnd::Kind::Pin) return false;
+            A.pts[lo_i] = line_pt(la, u0);
+            lo_e = WireEnd{};
+            la.lo = u0;
+        }
+        if (u1 > la.hi + 1e-6) {
+            if (hi_e.kind == WireEnd::Kind::Pin) return false;
+            A.pts[hi_i] = line_pt(la, u1);
+            hi_e = WireEnd{};
+            la.hi = u1;
+        }
+        return true;
+    };
+
+    auto trim_front = [&]() -> bool {
+        int c = 0;
+        while (c + 1 < int(B.pts.size()) && line_on(la, B.pts[c + 1])) ++c;
+        if (c < 1) return false;                    // no collinear segment
+        if (c + 1 >= int(B.pts.size())) return false; // B is straight
+        double p0 = line_proj(la, B.pts[0]);
+        double p1 = line_proj(la, B.pts[c]);
+        double lo = std::min(p0, p1), hi = std::max(p0, p1);
+        if (std::max(lo, la.lo) > std::min(hi, la.hi) + 1.0) return false;
+        if (!extend_A(std::min(la.lo, lo), std::max(la.hi, hi))) return false;
+        B.pts.erase(B.pts.begin(), B.pts.begin() + c);
+        B.a = WireEnd{};
+        if (B.pts.size() > 2)
+            B.waypoints.assign(B.pts.begin() + 1, B.pts.end() - 1);
+        else
+            B.waypoints.clear();
+        B.pin_points.clear();
+        recompute_labels();
+        dirty = true;
+        return true;
+    };
+
+    auto trim_back = [&]() -> bool {
+        int c = int(B.pts.size()) - 1;
+        while (c - 1 >= 0 && line_on(la, B.pts[c - 1])) --c;
+        if (c > int(B.pts.size()) - 2) return false; // no collinear segment
+        if (c <= 0) return false;                    // B is straight
+        double p0 = line_proj(la, B.pts[c]);
+        double p1 = line_proj(la, B.pts.back());
+        double lo = std::min(p0, p1), hi = std::max(p0, p1);
+        if (std::max(lo, la.lo) > std::min(hi, la.hi) + 1.0) return false;
+        if (!extend_A(std::min(la.lo, lo), std::max(la.hi, hi))) return false;
+        B.pts.erase(B.pts.begin() + c + 1, B.pts.end());
+        B.b = WireEnd{};
+        if (B.pts.size() > 2)
+            B.waypoints.assign(B.pts.begin() + 1, B.pts.end() - 1);
+        else
+            B.waypoints.clear();
+        B.pin_points.clear();
+        recompute_labels();
+        dirty = true;
+        return true;
+    };
+
+    bool changed = false;
+    if (trim_front()) changed = true;
+    if (trim_back()) changed = true;
+    if (changed) {
+        // The new corner/extension can land on a pin, so bind the endpoints
+        // before the caller's endpoint join.
+        bind_wire_ends(A);
+        bind_wire_ends(B);
+    }
+    return changed;
+}
+
 int Document::join_with_neighbours(int wire_index) {
     int wi = wire_index;
     const int max_joins = int(wires.size());
@@ -549,8 +708,10 @@ int Document::join_with_neighbours(int wire_index) {
         bool joined = false;
         for (size_t k = 0; k < wires.size(); ++k) {
             if (int(k) == wi) continue;
-            // A partial overlap is a 1D union of collinear intervals; a corner
-            // or a non-collinear T-junction is an endpoint join.
+            // A 90-degree wire whose end segment lies on a straight wire has
+            // its overlapping run absorbed first; then a partial overlap is a
+            // 1D union, and a corner or non-collinear T is an endpoint join.
+            trim_corner_overlap(wi, int(k));
             if (!merge_collinear(wi, int(k)) && !join_wires(wi, int(k)))
                 continue;
             // The merged wire took the place of the other one, so its index

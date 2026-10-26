@@ -299,24 +299,26 @@ void SchematicCanvas::wire_finish() {
 
     const size_t before = doc_->wires.size();
     doc_->join_with_neighbours(wi);
-    if (doc_->wires.size() == before) return;
-
+    const bool merged = doc_->wires.size() != before;
     doc_->sync_wire_endpoints();
-    // A wire selection names a wire by index; after a merge those indices
-    // have moved, so drop the wire part of the selection instead of showing
-    // the properties of the wrong path.
+
+    // A trim-only change (a 90-degree overlap absorbed into a straight wire,
+    // leaving a T-branch) keeps the wire count but changes geometry, so it
+    // still needs the sync/repaint above. Only a merge shifts wire indices.
     bool sel_changed = false;
-    for (auto it = sel_set_.begin(); it != sel_set_.end();) {
-        if (it->rfind("#wire", 0) == 0) {
-            it = sel_set_.erase(it);
-            sel_changed = true;
-        } else {
-            ++it;
+    if (merged) {
+        for (auto it = sel_set_.begin(); it != sel_set_.end();) {
+            if (it->rfind("#wire", 0) == 0) {
+                it = sel_set_.erase(it);
+                sel_changed = true;
+            } else {
+                ++it;
+            }
         }
-    }
-    if (sel_.rfind("#wire", 0) == 0) {
-        sel_ = sel_set_.empty() ? "" : *sel_set_.begin();
-        sel_changed = true;
+        if (sel_.rfind("#wire", 0) == 0) {
+            sel_ = sel_set_.empty() ? "" : *sel_set_.begin();
+            sel_changed = true;
+        }
     }
     if (sel_changed) notify_sel();
     notify_doc();
@@ -1155,20 +1157,13 @@ void SchematicCanvas::on_left_down(wxMouseEvent& e) {
         }
         wire_pts_ = seg;
 
-        // A wire that ends on another wire's vertex is finished. wire_finish()
-        // then joins the two end to end into one shape (Virtuoso); a wire that
-        // ends in the *middle* of another stays a separate branch and is drawn
-        // with a junction dot by the net/junction pass.
-        bool on_wire_node = false;
-        for (size_t wi = 0; wi < doc_->wires.size() && !on_wire_node; ++wi) {
-            if (int(wi) == wire_idx_) continue;
-            for (const auto& v : doc_->wires[wi].pts)
-                if (dist(v, target) <= 9.0) { on_wire_node = true; break; }
-        }
-
+        // Do not end just because a click landed on another wire's vertex: an
+        // L-shaped wire often turns exactly on the endpoint of a straight
+        // wire. The wire ends on a pin, or on Enter/Esc/double-click; clicking
+        // keeps adding segments. The overlap/join is resolved in wire_finish().
         notify_doc();
-        if (pin >= 0 || on_wire_node) {
-            // terminated: leave wiring mode (the committed wire stays)
+        if (pin >= 0) {
+            // terminated on a component terminal
             wire_finish();
             Refresh();
         } else {
