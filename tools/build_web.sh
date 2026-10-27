@@ -51,6 +51,11 @@ bash "$ROOT/tools/build_deps.sh" --toolchain=emscripten --prefix="$DEPS" --jobs=
 
 # --- 2. the engine --------------------------------------------------------
 say "compiling envlp.js + envlp.wasm"
+# A large symbolic circuit (transconductance block + coupled inductors)
+# recurses deeply enough to exhaust the default wasm stack; the trap surfaced
+# as "table index is out of bounds" in the browser and left the module
+# unusable. A 16 MiB stack is comfortably above the native stack these
+# analyses need. Keep these comments *outside* the line-continued em++ call.
 em++ -O2 -std=c++17 -fexceptions \
     -I"$ROOT/src" -I"$DEPS/include" \
     "$ROOT"/src/core/*.cpp \
@@ -64,10 +69,6 @@ em++ -O2 -std=c++17 -fexceptions \
     -sMODULARIZE=1 -sEXPORT_NAME=createEnvLp \
     -sEXPORTED_FUNCTIONS='["_envlp_run","_envlp_free","_envlp_doc_open","_envlp_doc_geometry","_envlp_doc_serialize","_envlp_doc_palette","_envlp_doc_set","_envlp_doc_undo","_envlp_doc_redo","_envlp_symbol_art"]' \
     -sEXPORTED_RUNTIME_METHODS='["ccall","UTF8ToString"]' \
-    # A large symbolic circuit (transconductance block + coupled inductors)
-    # recurses deeply enough to exhaust the default wasm stack; the trap
-    # surfaced as "table index is out of bounds" in the browser. 16 MiB is
-    # comfortably above the native stack these analyses need.
     -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=16777216 -sENVIRONMENT=web \
     -o "$WEB/envlp.js"
 
