@@ -9,6 +9,7 @@
 
 #include "Netlist.h"
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,11 @@ struct ParamTable {
     std::map<std::string, double> est;    // symbol name -> SI estimate
     std::map<std::string, UnitClass> cls; // symbol name -> unit class
     std::map<std::string, GiNaC::symbol> syms;
+    // Model parameters that are switched off. Their symbols stay in the table
+    // (the model editor shows the whole device) but they must never seed a
+    // time-constant candidate: a pole must not be labelled Cds_M1 when the
+    // user has Cds switched off.
+    std::set<std::string> off;
 
     GiNaC::ex get(const std::string& name) {
         auto it = syms.find(name);

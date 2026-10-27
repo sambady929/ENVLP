@@ -25,6 +25,7 @@ GiNaC::ex reg_param(ParamTable& pt, const Component& c,
     GiNaC::ex sym = pt.get(name);
     UnitClass uc = param_unit_class(c.kind, p);
     pt.set(name, c.param_estimate(p), uc);
+    if (!c.param_enabled(p)) pt.off.insert(name);
     if (c.mirror_ref.empty()) return sym;
     // Unit symbol name: `<param>_<unit ref>`. The unit is stamped as a normal
     // component and always registers this symbol (with its own estimate).

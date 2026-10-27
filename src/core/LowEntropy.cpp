@@ -303,6 +303,9 @@ std::vector<Candidate> build_tau_candidates(const ParamTable& pt) {
         if (sit == pt.syms.end()) continue;
         if (kv.second <= 0.0 || !std::isfinite(kv.second)) continue;
         const std::string& name = kv.first;
+        // A switched-off model parameter is not part of the circuit, so it
+        // cannot explain a pole or zero. Keep it out of the candidate set.
+        if (pt.off.count(name)) continue;
         if (name.rfind("A_", 0) == 0) amps.push_back({kv.second, sit->second});
         else if (name.rfind("GBW_", 0) == 0)
             gbws.push_back({kv.second, sit->second});
@@ -616,11 +619,17 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             out.push_back(r);
             continue;
         }
+        // A factor from approximate factoring may itself be a product of
+        // first-order factors. GiNaC's coeff() does not distribute over an
+        // unexpanded product, so expand it before reading coefficients --
+        // otherwise the coefficients still contain s and the root table
+        // reports "none" for a perfectly real pole.
+        ex fe = f.expr.expand();
         int deg = 0;
-        try { deg = f.expr.degree(s); } catch (...) { continue; }
+        try { deg = fe.degree(s); } catch (...) { continue; }
         if (deg == 1) {
-            ex c1 = f.expr.coeff(s, 1);
-            ex c0 = f.expr.coeff(s, 0);
+            ex c1 = fe.coeff(s, 1);
+            ex c0 = fe.coeff(s, 0);
             ex tau_ex = (c1 / c0).normal();
             ex tau_n = pt.eval_real(tau_ex);
             Root r;
@@ -645,7 +654,7 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
             std::vector<double> coeffs;
             bool ok = true;
             for (int k = 0; k <= deg; ++k) {
-                ex v = pt.eval_real(f.expr.coeff(s, k));
+                ex v = pt.eval_real(fe.coeff(s, k));
                 if (!is_a<numeric>(v)) { ok = false; break; }
                 coeffs.push_back(GiNaC::ex_to<numeric>(v).to_double());
             }
@@ -678,12 +687,13 @@ void roots_from_factors(const std::vector<Factor>& factors, ParamTable& pt,
 // frequency). The slowest (largest tau) is the dominant one.
 static bool factor_root_taus(const ex& poly, ParamTable& pt, const ex& s,
                              std::vector<double>& taus) {
+    ex pe = poly.expand();
     int deg = 0;
-    try { deg = poly.degree(s); } catch (...) { return false; }
+    try { deg = pe.degree(s); } catch (...) { return false; }
     if (deg < 1) return false;
     std::vector<double> c;
     for (int k = 0; k <= deg; ++k) {
-        ex v = pt.eval_real(poly.coeff(s, k));
+        ex v = pt.eval_real(pe.coeff(s, k));
         if (!is_a<numeric>(v)) return false;
         c.push_back(GiNaC::ex_to<numeric>(v).to_double());
     }
@@ -705,11 +715,12 @@ static bool factor_root_taus(const ex& poly, ParamTable& pt, const ex& s,
 // factor the slowest of its numeric roots' time constants. 0 when unknown.
 static double factor_tau(const Factor& f, ParamTable& pt, const ex& s) {
     if (f.origin) return 0.0;
+    ex fe = f.expr.expand();
     int deg = 0;
-    try { deg = f.expr.degree(s); } catch (...) { return 0.0; }
+    try { deg = fe.degree(s); } catch (...) { return 0.0; }
     if (deg == 1) {
-        ex c1 = f.expr.coeff(s, 1);
-        ex c0 = f.expr.coeff(s, 0);
+        ex c1 = fe.coeff(s, 1);
+        ex c0 = fe.coeff(s, 0);
         if (c0.is_zero()) return 0.0;
         ex tv = pt.eval_real((c1 / c0).normal());
         if (!is_a<numeric>(tv)) return 0.0;
@@ -717,7 +728,7 @@ static double factor_tau(const Factor& f, ParamTable& pt, const ex& s) {
         return (v > 0.0 && std::isfinite(v)) ? v : 0.0;
     }
     std::vector<double> taus;
-    if (!factor_root_taus(f.expr, pt, s, taus)) return 0.0;
+    if (!factor_root_taus(fe, pt, s, taus)) return 0.0;
     double mt = 0.0;
     for (double t : taus)
         if (t > 0.0 && std::isfinite(t)) mt = std::max(mt, t);
@@ -781,12 +792,13 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
                              const std::vector<Candidate>& cands,
                              const std::string& where,
                              std::vector<Dropped>& dropped) {
+    ex fe = f.expr.expand();
     int deg = 0;
-    try { deg = f.expr.degree(s); } catch (...) { return false; }
+    try { deg = fe.degree(s); } catch (...) { return false; }
     if (deg < 2) return false;
     std::vector<double> c;
     for (int k = 0; k <= deg; ++k) {
-        ex v = pt.eval_real(f.expr.coeff(s, k));
+        ex v = pt.eval_real(fe.coeff(s, k));
         if (!is_a<numeric>(v)) return false;
         c.push_back(GiNaC::ex_to<numeric>(v).to_double());
     }
@@ -803,10 +815,14 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
         if (!real_root && im < 0.0) continue;
         double tau = real_root ? (re != 0.0 ? -1.0 / re : 0.0)
                                : 1.0 / std::abs(r);
-        bool by_ratio = ref_tau > 0.0 && tau > 0.0 && std::isfinite(tau) &&
-                        tau <= ref_tau / lim * 1.000001;
+        // Use the magnitude: a right-half-plane zero has a negative
+        // time constant, but it is just as far above the sweep as a positive
+        // one and must not sneak through the band rule.
+        const double atau = std::fabs(tau);
+        bool by_ratio = ref_tau > 0.0 && atau > 0.0 && std::isfinite(tau) &&
+                        atau <= ref_tau / lim * 1.000001;
         bool by_band =
-            band_tau > 0.0 && tau > 0.0 && std::isfinite(tau) && tau < band_tau;
+            band_tau > 0.0 && atau > 0.0 && std::isfinite(tau) && atau < band_tau;
         if (by_ratio || by_band) {
             double ref = by_ratio ? ref_tau : band_tau;
             dropped.push_back({where + ", factor", f.text,
@@ -872,9 +888,10 @@ void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
         // *1.000001 tolerates floating-point error at an exact power-of-ten.
         // A pole/zero above the top of the sweep is outside the analysed band
         // altogether, so it is dropped whatever the threshold says.
+        const double atau = std::fabs(tau);
         bool by_ratio =
-            ref_tau > 0.0 && tau > 0.0 && tau <= ref_tau / lim * 1.000001;
-        bool by_band = band_tau > 0.0 && tau > 0.0 && tau < band_tau;
+            ref_tau > 0.0 && atau > 0.0 && atau <= ref_tau / lim * 1.000001;
+        bool by_band = band_tau > 0.0 && atau > 0.0 && atau < band_tau;
         if (by_ratio || by_band) {
             // Report against whichever reference did the dropping, so a
             // band-dropped pole reads relative to the top of the sweep.
