@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '45';
+const BUILD = '46';
 
 const $ = (id) => document.getElementById(id);
 
@@ -295,27 +295,39 @@ function figureFor(mode, s) {
   };
 }
 
+// Plotly's calls are asynchronous. Queue them so a fast second analysis cannot
+// race the first one's newPlot/react, and so a "no plot" message is applied
+// after any graph that was still being drawn.
+let plotQueue = Promise.resolve();
+
 function drawPlot() {
   const s = currentSeries();
   const el = $('plot');
   if (!s || !s.f.length) {
-    // Purge the graph as well as the DOM: Plotly keeps its state on the node,
-    // and a later analysis would otherwise try to react to a graph that is no
-    // longer on the page -- leaving the "no plot" message up for good.
-    if (window.Plotly) { try { Plotly.purge(el); } catch (e) { /* not a graph */ } }
-    el.innerHTML = '<p class="status">this analysis has no frequency response to plot</p>';
+    plotQueue = plotQueue.then(() => {
+      // Purge the graph state too: a later analysis must start from a clean
+      // node rather than react to a graph whose DOM is gone.
+      if (window.Plotly) { try { Plotly.purge(el); } catch (e) { /* not a graph */ } }
+      el.innerHTML = '<p class="status">this analysis has no frequency response to plot</p>';
+    }).catch(() => { /* the next analysis still gets a chance */ });
     return;
   }
-  el.innerHTML = '';
+
   const fig = figureFor($('plot-mode').value, s);
-  // After a "no plot" result the element has been purged, so there is no
-  // layout to react to. Start a fresh graph in that case; react() on a purged
-  // node is what used to leave the "no plot" message up for good.
-  if (el._fullLayout) {
-    Plotly.react(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
-  } else {
-    Plotly.newPlot(el, fig.traces, fig.layout, { responsive: true, displaylogo: false });
-  }
+  plotQueue = plotQueue.then(() => {
+    // react() updates the graph in place and needs its existing DOM. Only a
+    // fresh plot may clear the container; clearing it before react() is what
+    // left the pane blank on every run after the first.
+    if (window.Plotly && el._fullLayout && el.children.length) {
+      return Plotly.react(el, fig.traces, fig.layout,
+                          { responsive: true, displaylogo: false });
+    }
+    // A purged node, or the "no plot" message, has no graph to react to.
+    if (window.Plotly) { try { Plotly.purge(el); } catch (e) { /* not a graph */ } }
+    el.innerHTML = '';
+    return Plotly.newPlot(el, fig.traces, fig.layout,
+                          { responsive: true, displaylogo: false });
+  }).catch(() => { /* the next analysis still gets a chance */ });
 }
 
 // The plot follows its pane when the layout changes (the gutters).
