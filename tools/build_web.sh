@@ -64,7 +64,11 @@ em++ -O2 -std=c++17 -fexceptions \
     -sMODULARIZE=1 -sEXPORT_NAME=createEnvLp \
     -sEXPORTED_FUNCTIONS='["_envlp_run","_envlp_free","_envlp_doc_open","_envlp_doc_geometry","_envlp_doc_serialize","_envlp_doc_palette","_envlp_doc_set","_envlp_doc_undo","_envlp_doc_redo","_envlp_symbol_art"]' \
     -sEXPORTED_RUNTIME_METHODS='["ccall","UTF8ToString"]' \
-    -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web \
+    # A large symbolic circuit (transconductance block + coupled inductors)
+    # recurses deeply enough to exhaust the default wasm stack; the trap
+    # surfaced as "table index is out of bounds" in the browser. 16 MiB is
+    # comfortably above the native stack these analyses need.
+    -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=16777216 -sENVIRONMENT=web \
     -o "$WEB/envlp.js"
 
 # --- 3. assets ------------------------------------------------------------
