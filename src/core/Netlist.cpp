@@ -369,8 +369,9 @@ UnitClass value_unit_class(Kind k) {
 
 // Which kinds actually use `value_text`. Everything else is described by its
 // model parameters (transistors, diodes, transformers, coupling) or by its
-// topology (nullor, ideal blocks, ground/supply), so a generic value row would
-// be meaningless there.
+// topology (nullor, ground/supply), so a generic value row would be meaningless
+// there. The ideal s / 1/s blocks are the exception: their one value is the
+// coefficient that sets their 0 dB crossing.
 bool has_value(Kind k) {
     switch (k) {
         case Kind::R:
@@ -385,6 +386,11 @@ bool has_value(Kind k) {
         case Kind::G:
         case Kind::CCCS:
         case Kind::CCVS:
+        // The ideal s and 1/s blocks carry one dimensionless/time coefficient:
+        // SBLK: i = K*s*(v(in)-v(out)); IS: v(in)-v(out) = K*s*i. The value
+        // sets their 0 dB crossing, and an empty value means K = 1.
+        case Kind::IS:
+        case Kind::SBLK:
             return true;
         default:
             return false;

@@ -992,25 +992,29 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
         }
         case Kind::IS: {
             // ideal 1/s block: branch current i flows in at `in`, out at `out`,
-            // with s*i = v(in) - v(out)  (integrator into a 1 ohm sense port)
+            // with K*s*i = v(in) - v(out). K is the value (empty = 1); K=12
+            // gives the 1/(12*s) behaviour. The default K=1 is the plain 1/s
+            // integrator used by the op-amp macro-model.
             int a = idx(nd[0]), bb = idx(nd[1]);
-            int k = sys.branch_idx.at(c.ref);
-            stamp_branch(a, bb, k);
-            sys.Y(k, k) -= s;
+            int br = sys.branch_idx.at(c.ref);
+            stamp_branch(a, bb, br);
+            sys.Y(br, br) -= gain_ex(c) * s;
             break;
         }
         case Kind::SBLK: {
-            // ideal s block (differentiator): i = s*(v(in) - v(out)).
+            // ideal s block (differentiator): i = K*s*(v(in) - v(out)).
             // The branch current i flows in at `in` and out at `out`; the
-            // KVL row is i - s*v(in) + s*v(out) = 0.  (The 1/s block uses
-            // the dual row v(in) - v(out) - s*i = 0.)
+            // KVL row is i - K*s*v(in) + K*s*v(out) = 0. K is the value
+            // (empty = 1); K=12 gives the 12*s behaviour. (The 1/s block uses
+            // the dual row v(in) - v(out) - K*s*i = 0.)
             int a = idx(nd[0]), bb = idx(nd[1]);
-            int k = sys.branch_idx.at(c.ref);
-            if (a >= 0) sys.Y(a, k) += 1;
-            if (bb >= 0) sys.Y(bb, k) -= 1;
-            sys.Y(k, k) += 1;
-            if (a >= 0) sys.Y(k, a) -= s;
-            if (bb >= 0) sys.Y(k, bb) += s;
+            int br = sys.branch_idx.at(c.ref);
+            if (a >= 0) sys.Y(a, br) += 1;
+            if (bb >= 0) sys.Y(bb, br) -= 1;
+            sys.Y(br, br) += 1;
+            ex k = gain_ex(c);
+            if (a >= 0) sys.Y(br, a) -= k * s;
+            if (bb >= 0) sys.Y(br, bb) += k * s;
             break;
         }
         case Kind::AMP: {
