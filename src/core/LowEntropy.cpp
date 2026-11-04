@@ -869,7 +869,7 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
 void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
                       const ex& s, double ref_tau, double threshold_db,
                       double band_tau, const std::vector<Candidate>& cands,
-                      const std::string& where,
+                      bool allow_numeric, const std::string& where,
                       std::vector<Dropped>& dropped) {
     if (ref_tau <= 0.0 && band_tau <= 0.0) return;
     double lim = std::pow(10.0, threshold_db / 20.0);
@@ -878,9 +878,18 @@ void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
         int deg = 0;
         try { deg = f.expr.degree(s); } catch (...) { deg = 0; }
         if (!f.origin && deg >= 2) {
-            reduce_far_roots(f, pt, s, ref_tau, lim, band_tau, cands, where,
-                             dropped);
-            if (!f.expr.is_equal(ex(1))) kept.push_back(f);
+            // Dropping individual roots of an unfactored polynomial requires
+            // numeric roots, and those rewrite the factor with numeric
+            // coefficients. That is exactly what "approx roots" opts into;
+            // with it off, keep the symbolic factor whole rather than silently
+            // replacing its coefficients with estimates.
+            if (allow_numeric) {
+                reduce_far_roots(f, pt, s, ref_tau, lim, band_tau, cands, where,
+                                 dropped);
+                if (!f.expr.is_equal(ex(1))) kept.push_back(f);
+            } else {
+                kept.push_back(f);
+            }
             continue;
         }
         double tau = factor_tau(f, pt, s);
@@ -1934,9 +1943,9 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                               ? 1.0 / (2.0 * M_PI * opts.band_hi_hz)
                               : 0.0;
         drop_far_factors(R.den_factors, params, s, pole_ref_tau, pz_db, band_tau,
-                         cands, "denominator", R.dropped);
+                         cands, opts.approx_factor, "denominator", R.dropped);
         drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, band_tau,
-                         cands, "numerator", R.dropped);
+                         cands, opts.approx_factor, "numerator", R.dropped);
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);

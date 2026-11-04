@@ -11,7 +11,9 @@
   --mono: "Cascadia Mono", "Consolas", "SF Mono", monospace;
   /* the widths of the two side panels and the height of the results pane;
      they are dragged by the gutters and remembered in localStorage */
-  --palette-w: 132px;
+  /* Three columns of 74px symbol tiles plus their labels; all palette parts
+     are visible without widening the panel first. */
+  --palette-w: 300px;
   --dock-w: 340px;
   --results-h: 34%;
   --plot-w: 46%;
@@ -78,11 +80,18 @@ main {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px; overflow: auto; min-height: 0;
 }
-#palette-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#palette-list {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 6px;
+}
 .part {
   display: flex; flex-direction: column; align-items: center;
-  padding: 4px 2px; background: var(--surface); border: 1px solid var(--border);
+  min-width: 0; padding: 4px 2px; background: var(--surface); border: 1px solid var(--border);
   border-radius: 7px; cursor: pointer; font-size: 11px; color: var(--dim);
+}
+.part span {
+  max-width: 100%; text-align: center; line-height: 1.2;
+  overflow-wrap: break-word;
 }
 .part:hover { background: var(--muted); }
 .part.armed { border-color: var(--accent); background: var(--accent-soft); }
@@ -261,7 +270,7 @@ table.keys td:first-child { white-space: nowrap; width: 1%; }
    embedded in an iframe), and below that they stack above and below the
    canvas instead of disappearing. */
 @media (max-width: 1180px) {
-  main { grid-template-columns: 112px 7px minmax(0, 1fr) 7px 268px; }
+  main { grid-template-columns: 168px 7px minmax(0, 1fr) 7px 268px; }
 }
 @media (max-width: 820px) {
   main {
