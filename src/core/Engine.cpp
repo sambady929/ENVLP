@@ -438,6 +438,9 @@ std::string metrics_latex(const AnalysisResult& r) {
 std::string format_report(const AnalysisResult& r) {
     std::string out;
     out += r.label + " = " + r.pruned.text + "\n";
+    for (const auto& kv : r.params.defs)
+        if (r.pruned.text.find(kv.first) != std::string::npos)
+            out += "  " + kv.second + "\n";
     if (r.pruned.numeric_factors)
         out += "(one or more factors are approximate: the exact denominator "
                "does not factor symbolically, so numeric estimate-based roots "

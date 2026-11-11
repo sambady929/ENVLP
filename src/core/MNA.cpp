@@ -174,6 +174,21 @@ void add_gbw_pole(MnaSystem& sys, const Component& c, const ex& gain,
     if (!rout.is_zero()) sys.Y(k, k) -= s * gain / gbw * rout;
 }
 
+// Mutual inductance is kept as one symbol, M_<ref>, rather than expanded to
+// k*sqrt(Lp*Ls) in every stamp. The symbol carries the numeric estimate for
+// pruning/plotting, while the transfer-function form stays compact.
+ex mutual_symbol(MnaSystem& sys, const Component& c, double k,
+                 double lp, double ls, const std::string& definition) {
+    std::string name = "M_" + c.ref;
+    ex sym = sys.params.get(name);
+    if (k > 1.0) k = 1.0;
+    if (k < -1.0) k = -1.0;
+    double m = k * std::sqrt(std::max(0.0, lp * ls));
+    sys.params.set(name, m, UnitClass::Henry);
+    sys.params.defs[name] = definition;
+    return sym;
+}
+
 // --- structural series folding (low-entropy by construction) --------------
 //
 // Two components are in SERIES when they share a node that no other component
@@ -1199,7 +1214,12 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
             if (pn >= 0) sys.Y(kp, pn) -= 1;
             if (sp >= 0) sys.Y(kn, sp) += 1;
             if (sn >= 0) sys.Y(kn, sn) -= 1;
-            ex m = kk * GiNaC::sqrt((lp * ls).expand());
+            ex m = mutual_symbol(
+                sys, c, c.param_estimate("k"), c.param_estimate("Lp"),
+                c.param_estimate("Ls"),
+                "M_" + c.ref + " = " + param_symbol(c, "k") + "*sqrt(" +
+                    param_symbol(c, "Lp") + "*" + param_symbol(c, "Ls") +
+                    ")");
             // Coupled windings: v_p = s*Lp*ip + s*M*is and
             // v_s = s*M*ip + s*Ls*is. At DC an ideal winding is a short, so
             // the s terms are absent (as for an inductor).
@@ -1243,8 +1263,14 @@ MnaSystem build_mna(const Circuit& cin, const std::string& input_ref,
                 // run yet: component order is arbitrary).
                 ex l1 = value_symbol_scaled(sys.params, circ, *la);
                 ex l2 = value_symbol_scaled(sys.params, circ, *lb);
+                (void)l1;
+                (void)l2;
                 sys.params.set(c.ref, c.estimate(), UnitClass::Plain);
-                ex m = k_val * GiNaC::sqrt((l1 * l2).expand());
+                ex m = mutual_symbol(
+                    sys, c, c.param_estimate("K"), la->estimate(),
+                    lb->estimate(),
+                    "M_" + c.ref + " = " + param_symbol(c, "K") + "*sqrt(" +
+                        la->ref + "*" + lb->ref + ")");
                 // Mutual EMF: the voltage of each winding also depends on the
                 // current through the other one --
                 //   v_a = s*La*i_a + s*M*i_b,  v_b = s*M*i_a + s*Lb*i_b

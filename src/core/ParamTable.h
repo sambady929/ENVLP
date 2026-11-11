@@ -43,6 +43,9 @@ struct ParamTable {
     // time-constant candidate: a pole must not be labelled Cds_M1 when the
     // user has Cds switched off.
     std::set<std::string> off;
+    // Human-readable definitions for derived symbols, e.g.
+    // "M_K1 = k_K1*sqrt(L1*L2)". Printed next to the result when used.
+    std::map<std::string, std::string> defs;
 
     GiNaC::ex get(const std::string& name) {
         auto it = syms.find(name);
