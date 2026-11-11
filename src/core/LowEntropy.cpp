@@ -821,8 +821,14 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
         const double atau = std::fabs(tau);
         bool by_ratio = ref_tau > 0.0 && atau > 0.0 && std::isfinite(tau) &&
                         atau <= ref_tau / lim * 1.000001;
+        // A corner only just above the top of the sweep is still part of the
+        // circuit's passband (a band-pass's upper pole, say). Drop by band
+        // only when it is two orders of magnitude beyond the sweep, so a pole
+        // at 17x the stop frequency survives instead of vanishing and leaving
+        // a one-sided transfer function.
         bool by_band =
-            band_tau > 0.0 && atau > 0.0 && std::isfinite(tau) && atau < band_tau;
+            band_tau > 0.0 && atau > 0.0 && std::isfinite(tau) &&
+            atau < band_tau / 100.0;
         if (by_ratio || by_band) {
             double ref = by_ratio ? ref_tau : band_tau;
             dropped.push_back({where + ", factor", f.text,
@@ -900,7 +906,7 @@ void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
         const double atau = std::fabs(tau);
         bool by_ratio =
             ref_tau > 0.0 && atau > 0.0 && atau <= ref_tau / lim * 1.000001;
-        bool by_band = band_tau > 0.0 && atau > 0.0 && atau < band_tau;
+        bool by_band = band_tau > 0.0 && atau > 0.0 && atau < band_tau / 100.0;
         if (by_ratio || by_band) {
             // Report against whichever reference did the dropping, so a
             // band-dropped pole reads relative to the top of the sweep.

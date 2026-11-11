@@ -286,12 +286,62 @@ Metrics compute_metrics(const AnalysisResult& r) {
         if (v <= f0) return "< " + fmt_hz(f0);
         return fmt_hz(v);
     };
-    m.bw3 = fmt_bw(bw3);
+    // A band-pass (zero at DC, two or more poles) has no single dominant
+    // pole: the magnitude rises from DC to a peak and then falls. The single-
+    // pole "-3 dB bandwidth" is meaningless there and used to print "> f_stop"
+    // because the scan starts below the passband. Compute the actual passband
+    // from the magnitude peak instead.
+    bool bandpass = !std::isfinite(dc) && r.pruned.poles.size() >= 2;
+    if (bandpass) {
+        const auto& poles = r.pruned.poles;
+        double flo = std::max(1.0, poles.front().omega / (2.0 * M_PI) * 0.1);
+        double fhi = std::max(poles.back().omega / (2.0 * M_PI) * 10.0, f1);
+        if (fhi <= flo) fhi = flo * 1e3;
+        const int Nbp = 800;
+        std::vector<double> fb(Nbp), mb(Nbp);
+        double peak = -1e300; int peak_i = 0;
+        for (int i = 0; i < Nbp; ++i) {
+            double t = double(i) / (Nbp - 1);
+            fb[i] = flo * std::pow(fhi / flo, t);
+            mb[i] = eval_mag_db(H, r.params, 2.0 * M_PI * fb[i]);
+            if (mb[i] > peak) { peak = mb[i]; peak_i = i; }
+        }
+        double fLow = -1.0, fHigh = -1.0;
+        for (int i = 1; i <= peak_i; ++i)
+            if (mb[i - 1] < peak - 3.0 && mb[i] >= peak - 3.0) {
+                double frac = (mb[i - 1] - (peak - 3.0)) / (mb[i - 1] - mb[i]);
+                fLow = fb[i - 1] + frac * (fb[i] - fb[i - 1]);
+                break;
+            }
+        for (int i = peak_i + 1; i < Nbp; ++i)
+            if (mb[i - 1] > peak - 3.0 && mb[i] <= peak - 3.0) {
+                double frac = (mb[i - 1] - (peak - 3.0)) / (mb[i - 1] - mb[i]);
+                fHigh = fb[i - 1] + frac * (fb[i] - fb[i - 1]);
+                break;
+            }
+        if (fLow > 0.0 && fHigh > 0.0)
+            m.bw3 = fmt_hz(fLow) + " - " + fmt_hz(fHigh);
+        else
+            m.bw3 = fmt_bw(bw3);
+    } else {
+        m.bw3 = fmt_bw(bw3);
+    }
     m.ugbw = ugbw < 0.0 ? "none within sweep" : fmt_bw(ugbw);
 
     // ---- symbolic -3 dB: the dominant pole (angular form, rad/s) ----
     const std::string W = "\xCF\x89"; // UTF-8 omega
-    if (others_far(r, kBandwidthPoleDb) && !r.pruned.poles.empty()) {
+    if (bandpass) {
+        const auto& poles = r.pruned.poles;
+        m.bw3_sym = W + "_p0 ... " + W + "_p" +
+                    std::to_string(poles.size() - 1) + " = " +
+                    pretty(poles.front().omega_expr) + " ... " +
+                    pretty(poles.back().omega_expr);
+        m.bw3_ENVLP_latex =
+            "\\omega_{p0} \\dots \\omega_{p" +
+            std::to_string(poles.size() - 1) + "} = " +
+            to_latex(poles.front().omega_expr) + " \\dots " +
+            to_latex(poles.back().omega_expr);
+    } else if (others_far(r, kBandwidthPoleDb) && !r.pruned.poles.empty()) {
         const RootInfo& p0 = r.pruned.poles.front();
         if (!p0.omega_expr.is_zero()) {
             m.bw3_sym = W + "_(-3dB) = " + W + "_p0 = " +
