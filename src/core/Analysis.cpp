@@ -1258,8 +1258,18 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
-    // Signal path: H_sig = Vout/Vin (input = user-selected source)
-    RawTF sig = raw_tf(c, s.input_ref, s.output);
+    // Signal path: H_sig = Vout/Vin (input = user-selected source). The same
+    // return-ratio front end used by H(s) keeps this factored when a feedback
+    // loop is present; otherwise raw_tf falls back to the direct MNA solve.
+    auto tf_for = [&](const std::string& in) {
+        RawTF rt;
+        AnalysisSpec sp = s;
+        sp.input_ref = in;
+        if (!g_return_ratio_active && try_return_ratio_tf(c, sp, rt))
+            return rt;
+        return raw_tf(c, in, s.output);
+    };
+    RawTF sig = tf_for(s.input_ref);
 
     // Supply path: drive the VDD rail directly. VDD stamps as an ideal V
     // source so the rail is the input -- no test source needed (and adding
@@ -1270,7 +1280,7 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
         if (cc.kind == Kind::VDD) { vdd_ref = cc.ref; break; }
     }
     if (vdd_ref.empty()) vdd_ref = "VDD";
-    RawTF psr = raw_tf(c, vdd_ref, s.output);
+    RawTF psr = tf_for(vdd_ref);
 
     ex s_sym = sig.params.get("s");
     ex Hsig = (sig.num / sig.den).normal();
