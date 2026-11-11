@@ -875,8 +875,13 @@ static bool reduce_far_roots(Factor& f, ParamTable& pt, const ex& s,
 void drop_far_factors(std::vector<Factor>& factors, ParamTable& pt,
                       const ex& s, double ref_tau, double threshold_db,
                       double band_tau, const std::vector<Candidate>& cands,
-                      bool allow_numeric, const std::string& where,
+                      bool allow_numeric, bool keep_all,
+                      const std::string& where,
                       std::vector<Dropped>& dropped) {
+    // A band-pass (zero at DC, two or more poles) must keep its upper corner
+    // even when it lies beyond the sweep: dropping it leaves a one-sided
+    // transfer function and a meaningless -3 dB figure.
+    if (keep_all) return;
     if (ref_tau <= 0.0 && band_tau <= 0.0) return;
     double lim = std::pow(10.0, threshold_db / 20.0);
     std::vector<Factor> kept;
@@ -1932,6 +1937,9 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         // reference both are judged against omega_ug.
         double pole_ref_tau = dominant_tau(R.den_factors, params, s);
         double zero_ref_tau = dominant_tau(R.num_factors, params, s);
+        // A zero at DC with at least two poles is a band-pass: its upper
+        // corner must survive, even out of band.
+        bool bandpass = (s_zeros > 0 && d.degree(s) >= 2);
         if (opts.pole_ref == LowEntropyOptions::PoleRef::UgBw) {
             double wug = opts.ugbw_rads;
             if (!(wug > 0.0)) wug = ugbw_rads_of(R, params, s);
@@ -1949,9 +1957,11 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                               ? 1.0 / (2.0 * M_PI * opts.band_hi_hz)
                               : 0.0;
         drop_far_factors(R.den_factors, params, s, pole_ref_tau, pz_db, band_tau,
-                         cands, opts.approx_factor, "denominator", R.dropped);
+                         cands, opts.approx_factor, bandpass, "denominator",
+                         R.dropped);
         drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, band_tau,
-                         cands, opts.approx_factor, "numerator", R.dropped);
+                         cands, opts.approx_factor, false, "numerator",
+                         R.dropped);
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);
