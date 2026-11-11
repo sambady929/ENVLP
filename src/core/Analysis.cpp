@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -109,37 +110,43 @@ struct EetTF {
     std::string out_desc;
 };
 
-// EET's linear-fractional fit needs ordinary algebra. The low-entropy MNA
-// keeps R1||R2 and (R2+R3) as held atoms, which are opaque to that fit, so
-// expand them only inside the EET coefficient derivation. LowEntropy can put
-// the parallel atoms back into the final printed form.
-ex eet_expand_held(const ex& e) {
-    GiNaC::exmap m;
-    std::function<void(const ex&)> collect = [&](const ex& x) {
-        if (is_parallel(x)) {
-            auto a = parallel_args(x);
-            if (a.size() == 2) {
-                ex av = eet_expand_held(a[0]);
-                ex bv = eet_expand_held(a[1]);
-                m[x] = (av * bv / (av + bv)).normal();
+// EET's linear-fractional fit needs the held R1||R2 / (R2+R3) groups to behave
+// as algebraic atoms, but we must not expand them: that destroys exactly the
+// low-entropy grouping the solver is trying to preserve. Give each distinct
+// held group a temporary symbol for the derivation, then restore the group in
+// the final expression.
+struct EetGroups {
+    std::map<ex, ex> to_sym;
+    std::map<std::string, ex> from_sym;
+    int next = 0;
+
+    ex atomize(const ex& e) {
+        GiNaC::exmap m;
+        std::function<void(const ex&)> collect = [&](const ex& x) {
+            if (is_parallel(x) || is_series(x)) {
+                auto it = to_sym.find(x);
+                if (it == to_sym.end()) {
+                    std::string name = "__EET_GROUP_" + std::to_string(next++);
+                    ex sym = GiNaC::symbol(name);
+                    to_sym[x] = sym;
+                    from_sym[name] = x;
+                    it = to_sym.find(x);
+                }
+                m[x] = it->second;
                 return;
             }
-        }
-        if (is_series(x)) {
-            auto a = series_args(x);
-            if (a.size() == 2) {
-                ex av = eet_expand_held(a[0]);
-                ex bv = eet_expand_held(a[1]);
-                m[x] = (av + bv).normal();
-                return;
-            }
-        }
-        for (size_t i = 0; i < x.nops(); ++i) collect(x.op(i));
-    };
-    collect(e);
-    if (m.empty()) return e;
-    return e.subs(m).normal();
-}
+            for (size_t i = 0; i < x.nops(); ++i) collect(x.op(i));
+        };
+        collect(e);
+        return m.empty() ? e : e.subs(m);
+    }
+
+    ex restore(const ex& e) const {
+        GiNaC::exmap m;
+        for (const auto& kv : from_sym) m[GiNaC::symbol(kv.first)] = kv.second;
+        return m.empty() ? e : e.subs(m).normal();
+    }
+};
 
 bool eet_solve_h(const Circuit& c, const std::string& input,
                  const std::string& output,
@@ -151,7 +158,7 @@ bool eet_solve_h(const Circuit& c, const std::string& input,
         r.output = output;
         r.used_nodes = used;
         Solved s = solve(c, r);
-        H = eet_expand_held((s.num / s.den).normal());
+        H = (s.num / s.den).normal();
         params = std::move(s.params);
         if (out_desc) *out_desc = s.output_desc;
         return true;
@@ -207,11 +214,15 @@ Circuit eet_variant(const Circuit& c, const std::string& ref, int mode) {
 
 bool eet_rec(const Circuit& c, std::vector<std::string> elems,
              const std::string& input, const std::string& output,
-             const std::set<std::string>& used, ex& H, ParamTable& params,
-             std::string& out_desc, int depth) {
+             const std::set<std::string>& used, EetGroups& groups,
+             ex& H, ParamTable& params, std::string& out_desc, int depth) {
     if (depth > 8) return false;
-    if (elems.empty())
-        return eet_solve_h(c, input, output, used, H, params, &out_desc);
+    if (elems.empty()) {
+        if (!eet_solve_h(c, input, output, used, H, params, &out_desc))
+            return false;
+        H = groups.atomize(H);
+        return true;
+    }
 
     for (size_t pick = 0; pick < elems.size(); ++pick) {
         const std::string elem = elems[pick];
@@ -239,6 +250,10 @@ bool eet_rec(const Circuit& c, std::vector<std::string> elems,
             sub2[p2.get("__EET_SMALL__")] = ex(1) / ex(1000);
             H2 = H2.subs(sub2).normal();
         }
+        H0 = groups.atomize(H0);
+        Hinf = groups.atomize(Hinf);
+        H1 = groups.atomize(H1);
+        H2 = groups.atomize(H2);
         // Prefer the shorted reference (H0) when it exists and is non-zero,
         // but a shorted port can make the network singular (e.g. an output
         // capacitor). Fall back to the open reference; two finite impedance
@@ -304,8 +319,8 @@ bool eet_rec(const Circuit& c, std::vector<std::string> elems,
             if (i != pick) rest.push_back(elems[i]);
         ex Href_f;
         ParamTable pref;
-        if (!eet_rec(cref, rest, input, output, used, Href_f, pref, out_desc,
-                     depth + 1))
+        if (!eet_rec(cref, rest, input, output, used, groups, Href_f, pref,
+                     out_desc, depth + 1))
             continue;
         ex candidate = (Href_f * F).normal();
         // Verify against the ordinary exact solve. This is the guard that
@@ -315,6 +330,7 @@ bool eet_rec(const Circuit& c, std::vector<std::string> elems,
         ParamTable pexact;
         std::string od;
         if (!eet_solve_h(c, input, output, used, exact, pexact, &od)) continue;
+        exact = groups.atomize(exact);
         if (!(candidate - exact).normal().is_zero()) continue;
 
         H = candidate;
@@ -333,8 +349,10 @@ bool eet_transfer(const Circuit& c, const std::string& input,
     ex H;
     ParamTable params;
     std::string desc;
-    if (!eet_rec(c, elems, input, output, used, H, params, desc, 0))
+    EetGroups groups;
+    if (!eet_rec(c, elems, input, output, used, groups, H, params, desc, 0))
         return false;
+    H = groups.restore(H);
     out.ok = true;
     out.num = H.numer();
     out.den = H.denom();
