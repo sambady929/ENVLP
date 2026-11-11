@@ -124,7 +124,10 @@ ex amp_gain(ParamTable& pt, const Component& c) {
     ex sym = pt.get(name);
     double a = c.estimate();
     double mag = std::fabs(a);
-    if (!(mag > 0.0) || !std::isfinite(mag)) mag = 1.0;
+    // An explicit value of zero is meaningful: it is the zero-gain limit used
+    // by return-ratio H0 extraction. Only non-finite values fall back to the
+    // unity estimate (an empty/unparseable value already estimates to 1).
+    if (!std::isfinite(mag)) mag = 1.0;
     pt.set(name, mag, UnitClass::Plain);
     return (a < 0.0) ? -sym : sym;
 }
@@ -137,7 +140,9 @@ ex amp_gm(ParamTable& pt, const Component& c) {
     ex sym = pt.get(name);
     double g = c.estimate();
     double mag = std::fabs(g);
-    if (!(mag > 0.0) || !std::isfinite(mag)) mag = 1e-3;
+    // Keep an explicit zero gm: H0 for an OTA/Gm is the network with the
+    // controlled output current switched off (its Rout/parasitics remain).
+    if (!std::isfinite(mag)) mag = 1e-3;
     pt.set(name, mag, UnitClass::Plain);
     return (g < 0.0) ? -sym : sym;
 }

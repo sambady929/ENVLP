@@ -1,4 +1,4 @@
-#include "core/Analysis.h"
+﻿#include "core/Analysis.h"
 #include "core/DcNumeric.h"
 #include "core/Eng.h"
 #include "core/LowEntropy.h"
@@ -9,8 +9,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <functional>
+#include <iomanip>
 #include <map>
+#include <queue>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -471,7 +474,22 @@ struct RawTF {
     // every analysis that prunes a transfer function gets the physical
     // element-to-pole attribution.
     std::vector<TimeConstant> octc;
+    // A return-ratio result can carry its low-entropy presentation separately
+    // from the exact raw numerator/denominator. This keeps the plot/metrics
+    // numerically identical while avoiding a second generic prune.
+    bool ready_pruned = false;
+    Pruned ready;
 };
+
+// Return-ratio H(s) needs the ordinary symbolic solve for its H_inf, beta and
+// H0 pieces. This guard keeps those inner solves from recursively attempting
+// another return-ratio extraction.
+thread_local bool g_return_ratio_active = false;
+
+// Try to assemble H(s) from a feedback loop (Rosenstark/Mason). Declared here
+// because analyze_tf() is defined before the return-ratio machinery.
+bool try_return_ratio_tf(const Circuit& c, const AnalysisSpec& s, RawTF& out);
+ex pruned_to_expr(const Pruned& p);
 
 RawTF raw_tf(const Circuit& c, const std::string& input_ref,
              const std::string& output,
@@ -527,7 +545,9 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     res.opts = o;
     res.sweep = s.sweep;
     res.octc = t.octc;
-    res.pruned = prune_low_entropy(t.num, t.den, res.params, o);
+    res.pruned = t.ready_pruned
+                     ? t.ready
+                     : prune_low_entropy(t.num, t.den, res.params, o);
     res.report = format_report(res);
 
     cr.transfer = res;
@@ -571,7 +591,16 @@ std::string strip_first_line(const std::string& report) {
 // s-domain transfer function
 // ---------------------------------------------------------------------------
 CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
-    RawTF t = raw_tf(c, s.input_ref, s.output);
+    RawTF t;
+    // First look for a forward path plus a feedback loop and use the
+    // return-ratio assembly. The result is numerically verified against a
+    // direct MNA solve before it is accepted, so a topology that is not a
+    // single-reference feedback loop falls back to the ordinary solver.
+    if (s.kind == AnalysisKind::TransferFunction && !g_return_ratio_active &&
+        try_return_ratio_tf(c, s, t)) {
+        return make_transfer(t, s, "Transfer function");
+    }
+    t = raw_tf(c, s.input_ref, s.output);
     CardResult cr = make_transfer(t, s, "Transfer function");
     return cr;
 }
@@ -615,6 +644,8 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
     // result reads V(out) = V1*H_1(s) + V2*H_2(s) + ... -- the sources are
     // part of the answer, not silently divided out.
     ex num = 0;
+    ex le_num = 0;
+    bool all_low_entropy = true;
     ParamTable params;
     std::string out_desc;
     double w0 = 2.0 * M_PI * s.f0_hz;
@@ -627,11 +658,34 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
         if (s.output.size() > 3 && s.output.front() == 'V' &&
             s.output.back() == ')')
             r.used_nodes.insert(s.output.substr(2, s.output.size() - 3));
-        Solved sv = solve(c, r);
-        if (params.syms.empty()) params = sv.params;
-        out_desc = sv.output_desc;
-        ex h = (sv.num / sv.den).normal();
+        ex h;
+        ex h_le = 0;
+        bool have_le = false;
+        ParamTable src_params;
+        std::string src_desc;
+        RawTF rr;
+        AnalysisSpec acspec = s;
+        acspec.kind = AnalysisKind::AC;
+        acspec.input_ref = src.ref;
+        if (src.ac != 0.0 && !g_return_ratio_active &&
+            try_return_ratio_tf(c, acspec, rr)) {
+            h = (rr.num / rr.den).normal();
+            src_params = rr.params;
+            src_desc = rr.out_desc;
+            if (rr.ready_pruned) {
+                h_le = pruned_to_expr(rr.ready);
+                have_le = true;
+            }
+        } else {
+            Solved sv = solve(c, r);
+            h = (sv.num / sv.den).normal();
+            src_params = sv.params;
+            src_desc = sv.output_desc;
+        }
+        if (params.syms.empty()) params = src_params;
+        out_desc = src_desc;
         ex term = 0;
+        ex le_term = 0;
         if (src.ac != 0.0) {
             // The source's value symbol. Its numeric estimate is the AC
             // amplitude (what actually drives the node), not the DC value.
@@ -639,27 +693,39 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
             params.set(src.ref, std::abs(src.ac),
                        value_unit_class(src.comp->kind));
             term = (ex(src.ac) * vsym * h).normal();
+            if (have_le) {
+                le_term = (ex(src.ac) * vsym * h_le).normal();
+            } else {
+                all_low_entropy = false;
+            }
         }
         num = (num + term).normal();
+        le_num = (le_num + le_term).normal();
         // A source with a zero AC value is off, not -inf dB.
         char b2[64];
         if (src.ac == 0.0)
             std::snprintf(b2, sizeof(b2), "off");
         else
             std::snprintf(b2, sizeof(b2), "%.3g dB",
-                          eval_mag_db(h, sv.params, w0) +
+                          eval_mag_db(h, src_params, w0) +
                               20.0 * std::log10(std::abs(src.ac)));
         contrib.push_back({src.ref, b2});
-        // Print the term in the same s-ordering as the main result.
+        // Print the term in the same s-ordering as the main result. Use the
+        // factored return-ratio form when available.
+        ex shown = have_le ? le_term : term;
         term_text.push_back(
-            pretty_ratio(term.numer(), term.denom(), params.get("s")));
+            pretty_ratio(shown.numer(), shown.denom(), params.get("s")));
     }
 
     // Low-entropy prune of the combined response. Normalize the denominator so
     // the result factors as gain * (1 + s*tau)...; for a response the scale is
     // simply folded into the reported gain K.
     PruneOptions o = opts_of(s);
-    Pruned p = prune_low_entropy(num.numer(), num.denom(), params, o);
+    Pruned p;
+    if (all_low_entropy && !le_num.is_zero())
+        p = prune_low_entropy(le_num.numer(), le_num.denom(), params, o);
+    else
+        p = prune_low_entropy(num.numer(), num.denom(), params, o);
 
     // The measured quantity is the output itself, not a ratio: name it so.
     const std::string label = out_desc;
@@ -1461,6 +1527,7 @@ struct AmpPorts {
     std::string cp, cn; // control port (cp - cn is the returned voltage)
     std::string op, on; // output port the test source drives
     bool ok = false;
+    bool current_control = false; // CCCS/CCVS: control is a branch current
 };
 
 AmpPorts amp_ports(const Component& c) {
@@ -1477,11 +1544,26 @@ AmpPorts amp_ports(const Component& c) {
             if (nd.size() >= 4) return {nd[0], nd[1], nd[2], nd[3], true};
             break;
         case Kind::AMP:
-            if (nd.size() >= 2) return {nd[0], nd[1], nd[1], "0", true};
+            // single-ended input to ground, output to ground
+            if (nd.size() >= 2) return {nd[0], "0", nd[1], "0", true};
+            break;
+        case Kind::OTA:
+            // in+, in-, out
+            if (nd.size() >= 3) return {nd[0], nd[1], nd[2], "0", true};
+            break;
+        case Kind::GM:
+            // in, out (both single-ended to ground)
+            if (nd.size() >= 2) return {nd[0], "0", nd[1], "0", true};
             break;
         case Kind::E:
-            // VCVS: control port (ctrl+, ctrl-), output port (out+, out-).
+        case Kind::G:
+            // control port (ctrl+, ctrl-), output port (out+, out-).
             if (nd.size() >= 4) return {nd[2], nd[3], nd[0], nd[1], true};
+            break;
+        case Kind::CCCS:
+        case Kind::CCVS:
+            // current control is the current through the shorted input port.
+            if (nd.size() >= 4) return {nd[0], nd[1], nd[2], nd[3], true, true};
             break;
         case Kind::NMOS:
         case Kind::PMOS:
@@ -1498,6 +1580,739 @@ AmpPorts amp_ports(const Component& c) {
             break;
     }
     return {};
+}
+
+// ---------------------------------------------------------------------------
+// Shared return-ratio pieces
+// ---------------------------------------------------------------------------
+
+std::string rr_num_text(double v) {
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
+// Add a synthetic passive carrying a model-parameter symbol. The component
+// reference is deliberately the parameter symbol itself (e.g. Cds_M1), so the
+// synthesized H_inf/beta network keeps the same symbolic names as the device
+// model and the low-entropy pruner can still recognise them.
+void add_synth_passive(Circuit& circ, Kind kind, const std::string& ref,
+                       const std::string& a, const std::string& b, double value) {
+    if (ref.empty() || circ.find(ref)) return;
+    Component x;
+    x.kind = kind;
+    x.ref = ref;
+    x.nodes = {a, b};
+    x.value_text = rr_num_text(value);
+    circ.comps.push_back(x);
+}
+
+void add_device_parasitics(Circuit& circ, const Component& orig,
+                           const AmpPorts& ports) {
+    const auto& nd = orig.nodes;
+    if (orig.kind == Kind::NMOS || orig.kind == Kind::PMOS) {
+        if (nd.size() < 3) return;
+        if (orig.param_enabled("ro"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "ro"),
+                              nd[0], nd[2], orig.param_estimate("ro"));
+        if (orig.param_enabled("Cgs"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cgs"),
+                              nd[1], nd[2], orig.param_estimate("Cgs"));
+        if (orig.param_enabled("Cgd"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cgd"),
+                              nd[1], nd[0], orig.param_estimate("Cgd"));
+        if (orig.param_enabled("Cds"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cds"),
+                              nd[0], nd[2], orig.param_estimate("Cds"));
+        if (orig.param_enabled("Cdb"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cdb"),
+                              nd[0], nd[2], orig.param_estimate("Cdb"));
+        return;
+    }
+    if (orig.kind == Kind::NPN || orig.kind == Kind::PNP) {
+        if (nd.size() < 3) return;
+        if (orig.param_enabled("rpi"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "rpi"),
+                              nd[1], nd[2], orig.param_estimate("rpi"));
+        if (orig.param_enabled("ro"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "ro"),
+                              nd[0], nd[2], orig.param_estimate("ro"));
+        if (orig.param_enabled("Cpi"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cpi"),
+                              nd[1], nd[2], orig.param_estimate("Cpi"));
+        if (orig.param_enabled("Cmu"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cmu"),
+                              nd[1], nd[0], orig.param_estimate("Cmu"));
+        return;
+    }
+    if (orig.kind == Kind::OTA || orig.kind == Kind::GM) {
+        if (orig.param_enabled("Rout"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "Rout"),
+                              ports.op, ports.on, orig.param_estimate("Rout"));
+        return;
+    }
+    if (orig.kind == Kind::OPAMP || orig.kind == Kind::FDOPAMP ||
+        orig.kind == Kind::AMP) {
+        if (orig.param_enabled("Rin"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "Rin"),
+                              ports.cp, ports.cn, orig.param_estimate("Rin"));
+        if (orig.param_enabled("Cin"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cin"),
+                              ports.cp, ports.cn, orig.param_estimate("Cin"));
+        if (orig.kind == Kind::FDOPAMP &&
+            orig.param_enabled("Rout"))
+            add_synth_passive(circ, Kind::R, param_symbol(orig, "Rout"),
+                              ports.op, ports.on, orig.param_estimate("Rout"));
+        if (orig.param_enabled("Cout"))
+            add_synth_passive(circ, Kind::C, param_symbol(orig, "Cout"),
+                              ports.op, ports.on, orig.param_estimate("Cout"));
+    }
+}
+
+Circuit nullor_reference_circuit(const Circuit& c, const std::string& ref,
+                                 const AmpPorts& ports,
+                                 bool include_parasitics = true) {
+    Circuit ci = c;
+    for (auto& cc : ci.comps) {
+        if (cc.ref != ref) continue;
+        Component orig = cc;
+        cc.kind = Kind::NULLOR;
+        cc.nodes = {ports.cp, ports.cn, ports.op, ports.on};
+        cc.value_text.clear();
+        cc.param_on.clear();
+        cc.param_text.clear();
+        cc.param_override.clear();
+        cc.links.clear();
+        // A reference that is itself a copy must not remain a copy of a
+        // MOSFET/BJT after becoming a nullor.
+        cc.mirror_ref.clear();
+        if (include_parasitics) add_device_parasitics(ci, orig, ports);
+        break;
+    }
+    // The reference has become a nullor; copies still pointing at it would make
+    // resolve_mirrors reject a kind mismatch. They keep their materialised
+    // parameters and become independent devices in this reduced network.
+    for (auto& cc : ci.comps)
+        if (cc.mirror_ref == ref) cc.mirror_ref.clear();
+    return ci;
+}
+
+Circuit beta_reference_circuit(const Circuit& c, const std::string& ref,
+                               const AmpPorts& ports,
+                               bool include_parasitics = true) {
+    Circuit ct = c;
+    Component orig;
+    bool found = false;
+    for (size_t i = 0; i < ct.comps.size(); ++i) {
+        if (ct.comps[i].ref == ref) {
+            orig = ct.comps[i];
+            ct.comps.erase(ct.comps.begin() + i);
+            found = true;
+            break;
+        }
+    }
+    if (found && include_parasitics) add_device_parasitics(ct, orig, ports);
+    for (auto& cc : ct.comps)
+        if (cc.mirror_ref == ref) cc.mirror_ref.clear();
+    return ct;
+}
+
+Circuit zero_gain_reference_circuit(const Circuit& c, const std::string& ref,
+                                    const AmpPorts& ports) {
+    Circuit c0 = c;
+    for (auto& cc : c0.comps) {
+        if (cc.ref != ref) continue;
+        Component orig = cc;
+        if (orig.kind == Kind::NMOS || orig.kind == Kind::PMOS ||
+            orig.kind == Kind::NPN || orig.kind == Kind::PNP) {
+            cc.param_text["gm"] = "0";
+            cc.param_on["gm"] = true;
+            cc.param_override.erase("gm");
+        } else if (orig.kind == Kind::OPAMP || orig.kind == Kind::AMP ||
+                   orig.kind == Kind::FDOPAMP) {
+            Component off;
+            off.kind = Kind::V;
+            off.ref = ref;
+            off.nodes = {ports.op, ports.on};
+            off.value_text = "0";
+            cc = off;
+            add_device_parasitics(c0, orig, ports);
+        } else {
+            // OTA/GM, VCVS/VCCS, CCCS/CCVS: an explicit zero value is the
+            // zero-gain limit. A zero-voltage output (E, CCVS) is a 0 V
+            // branch; a zero current gain is an open output.
+            cc.value_text = "0";
+        }
+        break;
+    }
+    return c0;
+}
+
+ex controlled_gain(ParamTable& pt, const Component& c) {
+    switch (c.kind) {
+        case Kind::NMOS:
+        case Kind::PMOS:
+        case Kind::NPN:
+        case Kind::PNP:
+            return reg_param(pt, c, "gm");
+        case Kind::OTA:
+        case Kind::GM: {
+            std::string name = param_symbol(c, "gm");
+            ex sym = pt.get(name);
+            double g = c.estimate();
+            double mag = std::fabs(g);
+            if (!std::isfinite(mag)) mag = 1e-3;
+            pt.set(name, mag, UnitClass::Siemens);
+            return (g < 0.0) ? -sym : sym;
+        }
+        case Kind::OPAMP:
+        case Kind::FDOPAMP:
+        case Kind::AMP: {
+            std::string name = "A_" + c.ref;
+            ex sym = pt.get(name);
+            double a = c.estimate();
+            double mag = std::fabs(a);
+            if (!std::isfinite(mag)) mag = 1.0;
+            pt.set(name, mag, UnitClass::Plain);
+            return (a < 0.0) ? -sym : sym;
+        }
+        case Kind::E:
+        case Kind::G:
+        case Kind::CCCS:
+        case Kind::CCVS:
+            // These blocks use a numeric gain in the MNA stamp.
+            return ex(c.estimate());
+        default:
+            break;
+    }
+    return ex(0);
+}
+
+bool has_reference_pole(Kind k) {
+    return k == Kind::OPAMP || k == Kind::FDOPAMP || k == Kind::AMP ||
+           k == Kind::OTA || k == Kind::GM;
+}
+
+bool reference_uses_current_test(const Component& c) {
+    // A transconductance/current-output reference is tested with a current
+    // source (its natural output quantity); a voltage-output reference with a
+    // voltage source. With the matching test the return ratio is dimensionless
+    // and T = -A*beta is exact for every controlled-source type.
+    switch (c.kind) {
+        case Kind::NMOS:
+        case Kind::PMOS:
+        case Kind::NPN:
+        case Kind::PNP:
+        case Kind::OTA:
+        case Kind::GM:
+        case Kind::G:
+        case Kind::CCCS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::string reference_gain_symbol(const Component& c) {
+    switch (c.kind) {
+        case Kind::NMOS:
+        case Kind::PMOS:
+        case Kind::NPN:
+        case Kind::PNP:
+        case Kind::OTA:
+        case Kind::GM:
+            return param_symbol(c, "gm");
+        case Kind::OPAMP:
+        case Kind::FDOPAMP:
+        case Kind::AMP:
+            return "A_" + c.ref;
+        default:
+            return "";
+    }
+}
+
+ex pruned_to_expr(const Pruned& p) {
+    ex e = p.gain;
+    for (const auto& f : p.num_factors) e *= f.expr;
+    ex d = ex(1);
+    for (const auto& f : p.den_factors) d *= f.expr;
+    return (e / d).normal();
+}
+
+// ---------------------------------------------------------------------------
+// Signal-flow graph used to find the loop-defining controlled source.
+// ---------------------------------------------------------------------------
+struct FlowGraph {
+    std::map<std::string, std::vector<std::string>> adj;
+    void add(const std::string& a, const std::string& b) {
+        if (!a.empty() && !b.empty() && a != b) adj[a].push_back(b);
+    }
+    void bi(const std::string& a, const std::string& b) {
+        add(a, b);
+        add(b, a);
+    }
+};
+
+void add_component_flow(FlowGraph& g, const Component& c) {
+    const auto& nd = c.nodes;
+    auto node = [&](size_t i) -> std::string {
+        return i < nd.size() ? nd[i] : std::string("0");
+    };
+    switch (c.kind) {
+        case Kind::R:
+        case Kind::C:
+        case Kind::L:
+        case Kind::D:
+            if (nd.size() >= 2) g.bi(nd[0], nd[1]);
+            break;
+        case Kind::V:
+            if (nd.size() >= 2) g.bi(nd[0], nd[1]);
+            break;
+        case Kind::VDD:
+            if (!nd.empty()) g.bi(nd[0], "0");
+            break;
+        case Kind::T:
+            if (nd.size() >= 4) {
+                g.bi(nd[0], nd[1]);
+                g.bi(nd[2], nd[3]);
+                g.bi(nd[0], nd[2]);
+                g.bi(nd[1], nd[3]);
+            }
+            break;
+        case Kind::NMOS:
+        case Kind::PMOS:
+            if (nd.size() >= 3) {
+                // gate and source both drive the drain current; the output
+                // conductance couples drain and source in both directions.
+                g.add(nd[1], nd[0]);
+                g.add(nd[1], nd[2]);
+                g.add(nd[2], nd[0]);
+                g.bi(nd[0], nd[2]);
+            }
+            break;
+        case Kind::NPN:
+        case Kind::PNP:
+            if (nd.size() >= 3) {
+                g.add(nd[1], nd[0]);
+                g.add(nd[1], nd[2]);
+                g.add(nd[2], nd[0]);
+                g.bi(nd[0], nd[2]);
+            }
+            break;
+        case Kind::IS:
+        case Kind::SBLK:
+            if (nd.size() >= 2) g.add(nd[0], nd[1]);
+            break;
+        default: {
+            AmpPorts p = amp_ports(c);
+            if (p.ok) {
+                // A controlled source transfers its control port to its
+                // output port; this is the directed SFG edge whose return
+                // path identifies a feedback loop.
+                g.add(p.cp, p.op);
+                g.add(p.cp, p.on);
+                g.add(p.cn, p.op);
+                g.add(p.cn, p.on);
+                if (p.current_control) g.bi(p.cp, p.cn);
+            }
+            break;
+        }
+    }
+    (void)node;
+}
+
+int flow_distance(const FlowGraph& g, const std::vector<std::string>& starts,
+                  const std::vector<std::string>& goals, bool allow_equal) {
+    if (goals.empty()) return -1;
+    std::set<std::string> goal_set(goals.begin(), goals.end());
+    std::queue<std::pair<std::string, int>> q;
+    std::set<std::string> seen;
+    for (const auto& s : starts) {
+        if (s.empty() || seen.count(s)) continue;
+        if (allow_equal && goal_set.count(s)) return 0;
+        seen.insert(s);
+        q.push({s, 0});
+    }
+    while (!q.empty()) {
+        auto [u, d] = q.front();
+        q.pop();
+        auto it = g.adj.find(u);
+        if (it == g.adj.end()) continue;
+        for (const auto& v : it->second) {
+            if (v.empty() || seen.count(v)) continue;
+            if (goal_set.count(v)) return d + 1;
+            seen.insert(v);
+            q.push({v, d + 1});
+        }
+    }
+    return -1;
+}
+
+std::string rr_voltage_node(const std::string& output) {
+    if (output.size() < 4 || output.rfind("V(", 0) != 0 ||
+        output.back() != ')')
+        return "";
+    std::string inner = output.substr(2, output.size() - 3);
+    for (char ch : inner)
+        if (ch == '-' || ch == ')') return "";
+    return inner;
+}
+
+int rr_output_var(const MnaSystem& sys, const std::string& output) {
+    std::string want;
+    if (!rr_voltage_node(output).empty())
+        want = "v(" + rr_voltage_node(output) + ")";
+    else if (output.size() > 3 && output.rfind("I(", 0) == 0 &&
+             output.back() == ')')
+        want = "i(" + output.substr(2, output.size() - 3) + ")";
+    else
+        return -1;
+    for (size_t i = 0; i < sys.var_names.size(); ++i)
+        if (sys.var_names[i] == want) return int(i);
+    return -1;
+}
+
+bool solve_complex(std::vector<std::vector<std::complex<double>>> A,
+                   std::vector<std::complex<double>> b,
+                   std::vector<std::complex<double>>& x) {
+    const int n = int(A.size());
+    if (n == 0 || int(b.size()) != n) return false;
+    for (int col = 0; col < n; ++col) {
+        int piv = col;
+        double best = std::abs(A[col][col]);
+        for (int r = col + 1; r < n; ++r) {
+            double v = std::abs(A[r][col]);
+            if (v > best) {
+                best = v;
+                piv = r;
+            }
+        }
+        if (!(best > 1e-300)) return false;
+        if (piv != col) {
+            std::swap(A[piv], A[col]);
+            std::swap(b[piv], b[col]);
+        }
+        const std::complex<double> d = A[col][col];
+        for (int r = col + 1; r < n; ++r) {
+            const std::complex<double> f = A[r][col] / d;
+            if (std::abs(f) == 0.0) continue;
+            for (int k = col; k < n; ++k) A[r][k] -= f * A[col][k];
+            b[r] -= f * b[col];
+        }
+    }
+    x.assign(n, {});
+    for (int r = n - 1; r >= 0; --r) {
+        std::complex<double> sum = b[r];
+        for (int k = r + 1; k < n; ++k) sum -= A[r][k] * x[k];
+        x[r] = sum / A[r][r];
+    }
+    return true;
+}
+
+bool numeric_mna_value(const MnaSystem& sys, int out_idx, double omega,
+                       std::complex<double>& value) {
+    if (out_idx < 0 || out_idx >= sys.n) return false;
+    std::vector<std::vector<std::complex<double>>> A(
+        sys.n, std::vector<std::complex<double>>(sys.n));
+    std::vector<std::complex<double>> b(sys.n);
+    for (int i = 0; i < sys.n; ++i) {
+        b[i] = eval_complex(sys.b(i, 0), sys.params, omega);
+        for (int j = 0; j < sys.n; ++j)
+            A[i][j] = eval_complex(sys.Y(i, j), sys.params, omega);
+    }
+    std::vector<std::complex<double>> x;
+    if (!solve_complex(std::move(A), std::move(b), x)) return false;
+    value = x[out_idx];
+    return true;
+}
+
+void merge_params(ParamTable& dst, const ParamTable& src) {
+    // The asymptotic circuit is the master parameter set: beta/H0 are reduced
+    // versions of the same circuit and must not overwrite an estimate (most
+    // importantly the reference gm, which is zero in the H0 network).
+    for (const auto& kv : src.est)
+        if (!dst.est.count(kv.first)) dst.est[kv.first] = kv.second;
+    for (const auto& kv : src.cls)
+        if (!dst.cls.count(kv.first)) dst.cls[kv.first] = kv.second;
+    for (const auto& kv : src.syms) dst.syms[kv.first] = kv.second;
+    for (const auto& kv : src.defs) dst.defs[kv.first] = kv.second;
+    dst.off.insert(src.off.begin(), src.off.end());
+}
+
+bool verify_return_ratio(const Circuit& c, const AnalysisSpec& s,
+                         const std::string& out_node, const ex& Hraw,
+                         const ParamTable& pt, double tolerance = 2e-5) {
+    try {
+        std::set<std::string> used;
+        used.insert(out_node);
+        MnaSystem sys = build_mna(c, s.input_ref, used);
+        int idx = rr_output_var(sys, s.output);
+        if (idx < 0) return false;
+        const double freqs[] = {10.0, 1e3, 1e5, 1e7, 1e9};
+        int tested = 0, failed = 0;
+        for (double f : freqs) {
+            double w = 2.0 * M_PI * f;
+            std::complex<double> direct;
+            if (!numeric_mna_value(sys, idx, w, direct)) return false;
+            std::complex<double> rr = eval_complex(Hraw, pt, w);
+            if (!std::isfinite(rr.real()) || !std::isfinite(rr.imag()))
+                continue;
+            ++tested;
+            double scale = std::max(std::abs(direct), 1e-30);
+            if (std::abs(rr - direct) / scale > tolerance) ++failed;
+        }
+        return tested >= 2 && failed == 0;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
+                          const Component& ref, const AmpPorts& ports,
+                          RawTF& out) {
+    struct Guard {
+        bool old;
+        Guard() : old(g_return_ratio_active) { g_return_ratio_active = true; }
+        ~Guard() { g_return_ratio_active = old; }
+    } guard;
+
+    ParamTable pt;
+    ex Hinf_raw = 0, Hinf_le = 0;
+    ex H0_raw = 0, H0_le = 0;
+    Pruned Hinf_ready;
+    std::string out_desc;
+    std::vector<TimeConstant> octc;
+
+    try {
+        Circuit ci = nullor_reference_circuit(c, ref.ref, ports);
+        CardResult ideal = analyze_tf(ci, s);
+        if (!ideal.has_transfer) return false;
+        Hinf_raw = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
+        Hinf_le = pruned_to_expr(ideal.transfer.pruned);
+        Hinf_ready = ideal.transfer.pruned;
+        pt = ideal.transfer.params;
+        out_desc = ideal.transfer.output_desc;
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    // High-loop-gain shortcut. The asymptotic gain is already a factored
+    // expression; when it matches the network to the pruning tolerance, use it
+    // as the presentation and take the exact raw MNA ratio only for plotting
+    // and metrics. This avoids the large T/H0 symbolic expansion entirely.
+    {
+        std::string out_node = rr_voltage_node(s.output);
+        if (!out_node.empty() &&
+            verify_return_ratio(c, s, out_node, Hinf_le, pt, 0.20)) {
+            try {
+                AnalysisRequest r;
+                r.input_ref = s.input_ref;
+                r.output = s.output;
+                Solved sv = solve(c, r);
+                merge_params(pt, sv.params);
+                out.num = sv.num;
+                out.den = sv.den;
+                out.params = pt;
+                out.out_desc = sv.output_desc;
+                std::set<std::string> used;
+                used.insert(out_node);
+                out.octc = open_circuit_time_constants(c, s.input_ref, pt, used);
+                out.ready_pruned = true;
+                out.ready = Hinf_ready;
+                return true;
+            } catch (const std::exception&) {
+                // fall through to the full return-ratio assembly
+            }
+        }
+    }
+
+    // Feedback factor with the reference gain opened. The device's passive
+    // parasitics stay in place; only the controlled transfer is removed.
+    ex beta = 0;
+    try {
+        Circuit ct = beta_reference_circuit(c, ref.ref, ports);
+        Component vt;
+        vt.kind = reference_uses_current_test(ref) ? Kind::I : Kind::V;
+        vt.ref = "__TEST__";
+        // A voltage test is applied + at op, - at on. A current test is the
+        // dual: inject 1 A into the output terminal on and remove it from op.
+        // (For a MOSFET's D-S port this makes the returned T positive for
+        // negative feedback, i.e. T = -A*beta with beta measured at the
+        // control port.)
+        vt.nodes = reference_uses_current_test(ref)
+                       ? std::vector<std::string>{ports.op, ports.on}
+                       : std::vector<std::string>{ports.op, ports.on};
+        vt.value_text = "1";
+        ct.comps.push_back(vt);
+        if (ports.current_control) {
+            Component sense;
+            sense.kind = Kind::V;
+            sense.ref = "__SENSE__";
+            sense.nodes = {ports.cp, ports.cn};
+            sense.value_text = "0";
+            ct.comps.push_back(sense);
+            RawTF t = raw_tf(ct, "__TEST__", "I(__SENSE__)", {}, false);
+            beta = (t.num / t.den).normal();
+            merge_params(pt, t.params);
+        } else {
+            std::string probe;
+            auto add_node = [&](const std::string& node, bool neg) {
+                if (node == "0" || node == "GND") return;
+                if (!probe.empty() || neg) probe += neg ? "-" : "+";
+                probe += "V(" + node + ")";
+            };
+            add_node(ports.cp, false);
+            add_node(ports.cn, true);
+            if (!probe.empty()) {
+                RawTF t = raw_tf(ct, "__TEST__", probe, {}, false);
+                beta = (t.num / t.den).normal();
+                merge_params(pt, t.params);
+            }
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    ex A = controlled_gain(pt, ref);
+    ex s_sym = pt.get("s");
+    ex T = (-A * beta).normal();
+    if (T.is_zero() || beta.is_zero()) return false;
+    if (has_reference_pole(ref.kind) && ref.param_enabled("GBW") &&
+        ref.param_estimate("GBW") > 0.0) {
+        std::string gname = "GBW_" + ref.ref;
+        ex gsym = pt.get(gname);
+        pt.set(gname, 2.0 * M_PI * ref.param_estimate("GBW"),
+               UnitClass::Plain);
+        T = (T / (1 + s_sym * A / gsym)).normal();
+    }
+
+    // Forward gain with the reference controlled source switched off. This
+    // only needs the raw MNA ratio (H0 is a small correction term), so avoid
+    // the full report/prune path.
+    try {
+        Circuit c0 = zero_gain_reference_circuit(c, ref.ref, ports);
+        AnalysisRequest r;
+        r.input_ref = s.input_ref;
+        r.output = s.output;
+        Solved sv = solve(c0, r);
+        H0_raw = (sv.num / sv.den).normal();
+        H0_le = H0_raw;
+        merge_params(pt, sv.params);
+        // The zero-gain circuit still carries the gain *symbol* in its matrix
+        // (with a zero estimate). Remove it from H0 explicitly so the
+        // assembled formula is evaluated with the reference off.
+        std::string gs = reference_gain_symbol(ref);
+        if (!gs.empty()) {
+            GiNaC::exmap zm;
+            zm[pt.get(gs)] = ex(0);
+            H0_raw = H0_raw.subs(zm).normal();
+            H0_le = H0_le.subs(zm).normal();
+        }
+    } catch (const std::exception&) {
+        H0_raw = 0;
+        H0_le = 0;
+    }
+
+    ex denom = (1 + T).normal();
+    if (denom.is_zero()) return false;
+    ex Hraw = ((Hinf_raw * T + H0_raw) / denom).normal();
+    ex Hle = ((Hinf_le * T + H0_le) / denom).normal();
+    if (Hraw.is_zero()) return false;
+
+    if (!verify_return_ratio(c, s, rr_voltage_node(s.output), Hraw, pt))
+        return false;
+
+    try {
+        std::set<std::string> used;
+        std::string node = rr_voltage_node(s.output);
+        if (!node.empty()) used.insert(node);
+        octc = open_circuit_time_constants(c, s.input_ref, pt, used);
+    } catch (const std::exception&) {
+        octc.clear();
+    }
+    // For a high-gain loop Hcl -> H_inf. Keep the exact raw H for plots and
+    // metrics, but publish the already-factored asymptotic gain as the
+    // low-entropy presentation. The loose numeric check guards this shortcut.
+    bool high_gain = false;
+    try {
+        double w0 = 2.0 * M_PI * (s.f0_hz > 0.0 ? s.f0_hz : 1.0);
+        double tm = std::abs(eval_complex(T, pt, w0));
+        double hm = std::abs(eval_complex(Hinf_raw, pt, w0));
+        double h0m = std::abs(eval_complex(H0_raw, pt, w0));
+        high_gain = std::isfinite(tm) && tm > 20.0 &&
+                    std::isfinite(hm) &&
+                    (!std::isfinite(h0m) || h0m < 0.25 * (hm + 1e-30));
+    } catch (const std::exception&) {
+    }
+    if (high_gain &&
+        verify_return_ratio(c, s, rr_voltage_node(s.output), Hinf_le, pt,
+                            0.20)) {
+        out.num = Hraw.numer();
+        out.den = Hraw.denom();
+        out.params = pt;
+        out.out_desc = out_desc.empty() ? s.output : out_desc;
+        out.octc = octc;
+        out.ready_pruned = true;
+        out.ready = Hinf_ready;
+        return true;
+    }
+
+    // Do not hand an enormous expanded expression to the generic pruner: in a
+    // moderate-loop case that can take minutes. The direct solver remains the
+    // safe fallback for such topologies.
+    if (Hle.numer().nops() + Hle.denom().nops() > 300) return false;
+
+    out.num = Hle.numer();
+    out.den = Hle.denom();
+    out.params = pt;
+    out.out_desc = out_desc.empty() ? s.output : out_desc;
+    out.octc = octc;
+    return true;
+}
+
+bool try_return_ratio_tf(const Circuit& c, const AnalysisSpec& s, RawTF& out) {
+    if (g_return_ratio_active) return false;
+    std::string out_node = rr_voltage_node(s.output);
+    if (out_node.empty()) return false;
+    const Component* input = c.find(s.input_ref);
+    if (!input || input->nodes.empty()) return false;
+
+    FlowGraph g;
+    for (const auto& cc : c.comps) add_component_flow(g, cc);
+    std::vector<std::string> input_nodes = input->nodes;
+
+    struct Cand {
+        const Component* comp;
+        AmpPorts ports;
+        int score;
+    };
+    std::vector<Cand> cands;
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::NULLOR) continue; // no finite H0 reference
+        AmpPorts p = amp_ports(cc);
+        if (!p.ok) continue;
+        // The source must have a forward path from the input to its control
+        // port and a return path from its output to that control port.
+        if (flow_distance(g, input_nodes, {p.cp, p.cn}, false) < 0) continue;
+        if (flow_distance(g, {p.op, p.on}, {p.cp, p.cn}, true) < 0) continue;
+        int od = flow_distance(g, {p.op, p.on}, {out_node}, true);
+        if (od < 0) continue;
+        int score = od * 1000;
+        if (p.current_control) score += 20;
+        // Prefer a reference whose output sits directly at the requested
+        // output (the usual single-loop case).
+        cands.push_back({&cc, p, score});
+    }
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
+        return a.score < b.score;
+    });
+    // Trying a handful of candidates keeps pathological circuits bounded.
+    const size_t limit = std::min<size_t>(cands.size(), 4);
+    for (size_t i = 0; i < limit; ++i) {
+        if (try_one_return_ratio(c, s, *cands[i].comp, cands[i].ports, out))
+            return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -1531,33 +2346,11 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // The nullor is a two-port: the INPUT port (in+, in-) is the nullator and
     // the OUTPUT port (out+, out-) is the norator. Map each amplifier kind's
     // ports onto it.
-    Circuit ci = c;
-    for (auto& cc : ci.comps) {
-        if (cc.ref != s.probe_ref) continue;
-        Kind orig = cc.kind;
-        cc.kind = Kind::NULLOR;
-        if (orig == Kind::NMOS || orig == Kind::PMOS || orig == Kind::NPN ||
-            orig == Kind::PNP) {
-            // control port (G,B -> S,E); output port (D,C -> S,E).
-            cc.nodes = {cc.nodes[1], cc.nodes[2], cc.nodes[0], cc.nodes[2]};
-        } else if (orig == Kind::OPAMP) {
-            // (in+, in-) ; (out, gnd)
-            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[2], "0"};
-        } else if (orig == Kind::FDOPAMP) {
-            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[2], cc.nodes[3]};
-        } else if (orig == Kind::AMP) {
-            // (in, gnd) ; (out, gnd)
-            cc.nodes = {cc.nodes[0], "0", cc.nodes[1], "0"};
-        } else if (orig == Kind::E) {
-            // (ctrl+, ctrl-) ; (out+, out-)
-            cc.nodes = {cc.nodes[2], cc.nodes[3], cc.nodes[0], cc.nodes[1]};
-        } else if (orig == Kind::NULLOR) {
-            // Already a two-port: (in+, in-, out+, out-). Keep it as is.
-        } else {
-            // already a two-port (or unknown): keep the ports, ground the rest
-            cc.nodes = {cc.nodes[0], cc.nodes[1], cc.nodes[0], "0"};
-        }
-    }
+    // Loop gain keeps the previous ideal reference (no synthesized ro/caps):
+    // T is the controlled-source return ratio, and retaining every parasitic
+    // here makes the symbolic T expansion needlessly large. The H(s) path
+    // below keeps them, because there they are needed for numerical identity.
+    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
@@ -1570,32 +2363,40 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     s_ex = pt.get("s");
 
     // ---- 2. beta: drive the output with a test voltage, control opened ----
-    Circuit ct = c;
-    for (size_t i = 0; i < ct.comps.size(); ++i) {
-        if (ct.comps[i].ref == s.probe_ref) {
-            ct.comps.erase(ct.comps.begin() + i);
-            break;
-        }
-    }
+    Circuit ct = beta_reference_circuit(c, s.probe_ref, ports, false);
     {
         Component vt;
-        vt.kind = Kind::V;
+        vt.kind = reference_uses_current_test(*ref) ? Kind::I : Kind::V;
         vt.ref = "__TEST__";
-        vt.nodes = {ports.op, ports.on};
+        vt.nodes = std::vector<std::string>{ports.op, ports.on};
         vt.value_text = "1";
         ct.comps.push_back(vt);
+        if (ports.current_control) {
+            Component sense;
+            sense.kind = Kind::V;
+            sense.ref = "__SENSE__";
+            sense.nodes = {ports.cp, ports.cn};
+            sense.value_text = "0";
+            ct.comps.push_back(sense);
+        }
     }
     ex beta;
     try {
-        // One differential probe instead of two separate MNA solves.
         std::string out;
-        auto add_node = [&](const std::string& node, bool negative) {
-            if (node == "0" || node == "GND") return;
-            if (!out.empty() || negative) out += negative ? "-" : "+";
-            out += "V(" + node + ")";
-        };
-        add_node(ports.cp, false);
-        add_node(ports.cn, true);
+        if (ports.current_control) {
+            // A CCCS/CCVS control quantity is the current through its shorted
+            // input port, so beta is the sense-branch current per test volt.
+            out = "I(__SENSE__)";
+        } else {
+            // One differential probe instead of two separate MNA solves.
+            auto add_node = [&](const std::string& node, bool negative) {
+                if (node == "0" || node == "GND") return;
+                if (!out.empty() || negative) out += negative ? "-" : "+";
+                out += "V(" + node + ")";
+            };
+            add_node(ports.cp, false);
+            add_node(ports.cn, true);
+        }
         if (out.empty()) {
             beta = 0;
         } else {
@@ -1654,13 +2455,17 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
 
     // A(s) = A / (1 + s*A/GBW)  (GBW_<ref> is the unity-gain angular frequency
     // in rad/s -- the user's Hz value converted once here); T(s) = -A(s)*beta.
-    ex A_sym = pt.get("A_" + s.probe_ref);
-    pt.set("A_" + s.probe_ref, ref->estimate(), UnitClass::Plain);
+    // The reference gain is the actual controlled-source gain: gm for a
+    // transistor/OTA/Gm, A for a voltage amplifier, and the numeric gain for a
+    // VCVS/VCCS/CCCS/CCVS.
+    ex A_sym = controlled_gain(pt, *ref);
     ex gbw_sym = pt.get("GBW_" + s.probe_ref);
     double gbw_num = 2.0 * M_PI * ref->param_estimate("GBW"); // rad/s
-    bool gbw_on = ref->param_enabled("GBW") && gbw_num > 0.0;
-    pt.set("GBW_" + s.probe_ref, gbw_num, UnitClass::Plain);
-    ex T = -A_sym * beta;
+    bool gbw_on = has_reference_pole(ref->kind) &&
+                  ref->param_enabled("GBW") && gbw_num > 0.0;
+    if (gbw_on)
+        pt.set("GBW_" + s.probe_ref, gbw_num, UnitClass::Plain);
+    ex T = (-A_sym * beta).normal();
     if (gbw_on)
         T = (T / (1 + s_ex * A_sym / gbw_sym)).normal();
 
@@ -1757,42 +2562,21 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // provides whatever feedforward the output sees with the amplifier off.
     ex H0 = 0;
     {
-        Circuit c0 = c;
-        bool ok = false;
-        for (size_t i = 0; i < c0.comps.size(); ++i) {
-            Component& cc = c0.comps[i];
-            if (cc.ref != s.probe_ref) continue;
-            std::string o1, o2;
-            if (cc.kind == Kind::OPAMP || cc.kind == Kind::AMP) {
-                o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
-                o2 = "0";
-            } else if (cc.kind == Kind::E) {
-                // VCVS: out+ , out-
-                o1 = cc.nodes.size() > 0 ? cc.nodes[0] : "0";
-                o2 = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
-            } else if (cc.kind == Kind::FDOPAMP) {
-                o1 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
-                o2 = cc.nodes.size() > 3 ? cc.nodes[3] : "0";
-            } else {
-                break;
+        try {
+            Circuit c0 = zero_gain_reference_circuit(c, s.probe_ref, ports);
+            AnalysisRequest r;
+            r.input_ref = s.input_ref;
+            r.output = s.output;
+            Solved sv = solve(c0, r);
+            H0 = (sv.num / sv.den).normal();
+            std::string gs = reference_gain_symbol(*ref);
+            if (!gs.empty()) {
+                GiNaC::exmap zm;
+                zm[pt.get(gs)] = ex(0);
+                H0 = H0.subs(zm).normal();
             }
-            Component off;
-            off.kind = Kind::V;
-            off.ref = "__AOFF__";
-            off.nodes = {o1, o2};
-            off.value_text = "0";
-            cc = off;
-            ok = true;
-            break;
-        }
-        if (ok) {
-            try {
-                CardResult direct = analyze_tf(c0, s);
-                H0 = (direct.transfer.num_raw / direct.transfer.den_raw)
-                         .normal();
-            } catch (const std::exception&) {
-                H0 = 0;
-            }
+        } catch (const std::exception&) {
+            H0 = 0;
         }
     }
 
@@ -1818,12 +2602,32 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     };
     ex Hinf = le_expr(ideal.transfer.pruned);
     ex Tle = le_expr(Tp);
-    ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
-    // Factor each s-coefficient and recover any parallel atoms before
-    // factoring, so a residual R1*R2/(R1+R2) collapses back to (R1||R2).
-    ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
-    Pruned Hcl_p = prune_low_entropy(Hcl_ratio.numer(), Hcl_ratio.denom(), pt,
-                                     o);
+    // A high-gain loop has Hcl -> H_inf. In that region expanding
+    // (H_inf*T+H0)/(1+T) and pruning it is both unnecessary and extremely
+    // expensive (the symbolic cancellation is large); report the already
+    // factored asymptotic gain instead. For moderate loop gain keep the exact
+    // assembled expression.
+    bool use_hinf_hcl = false;
+    try {
+        double w0 = 2.0 * M_PI * (s.f0_hz > 0.0 ? s.f0_hz : 1.0);
+        // Use the unpruned T for the regime test: pruning T can remove the
+        // small terms that distinguish a 30 dB loop from a 45 dB one.
+        double tm = std::abs(eval_complex(T, pt, w0));
+        double hm = std::abs(eval_complex(Hinf, pt, w0));
+        double h0m = std::abs(eval_complex(H0, pt, w0));
+        use_hinf_hcl = std::isfinite(tm) && tm > 20.0 &&
+                        std::isfinite(hm) &&
+                        (!std::isfinite(h0m) || h0m < 0.25 * (hm + 1e-30));
+    } catch (const std::exception&) {
+    }
+    Pruned Hcl_p;
+    if (use_hinf_hcl) {
+        Hcl_p = ideal.transfer.pruned;
+    } else {
+        ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
+        ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
+        Hcl_p = prune_low_entropy(Hcl_ratio.numer(), Hcl_ratio.denom(), pt, o);
+    }
 
     // Publish the phase margin on the return-ratio result so the gain/bandwidth
     // metrics block can print it alongside the other characteristics.
