@@ -80,6 +80,16 @@ std::string Document::add(const syms::Component& c, double x, double y) {
     syms::Component nc = c;
     nc.ref = syms::next_ref(circuit, c.kind);
     nc.nodes.assign(syms::pin_count(c.kind), "");
+    // A freshly placed main passive gets a sensible, non-degenerate value.
+    // Explicit values (and values on copies/pastes) are left untouched.
+    if (nc.value_text.empty()) {
+        switch (nc.kind) {
+            case syms::Kind::R: nc.value_text = "1k"; break;
+            case syms::Kind::C: nc.value_text = "1p"; break;
+            case syms::Kind::L: nc.value_text = "1n"; break;
+            default: break;
+        }
+    }
     circuit.comps.push_back(nc);
 
     Placement pl;
