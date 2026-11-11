@@ -475,13 +475,14 @@ struct RawTF {
 
 RawTF raw_tf(const Circuit& c, const std::string& input_ref,
              const std::string& output,
-             const std::set<std::string>& used_nodes = {}) {
+             const std::set<std::string>& used_nodes = {},
+             bool allow_eet = true) {
     RawTF t;
     // Prefer the graph/EET construction for small explicit-RLC networks: it
     // builds a factored expression directly. It is verified against MNA, so
     // unsupported topologies fall through to the existing solver.
     EetTF eet;
-    if (eet_transfer(c, input_ref, output, used_nodes, eet)) {
+    if (allow_eet && eet_transfer(c, input_ref, output, used_nodes, eet)) {
         t.num = std::move(eet.num);
         t.den = std::move(eet.den);
         t.params = std::move(eet.params);
@@ -1598,7 +1599,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         if (out.empty()) {
             beta = 0;
         } else {
-            RawTF t = raw_tf(ct, "__TEST__", out);
+            // beta is a single low-order transfer; the direct MNA solve is
+            // cheaper than setting up EET probes for it.
+            RawTF t = raw_tf(ct, "__TEST__", out, {}, false);
             beta = (t.num / t.den).normal();
         }
     } catch (const std::exception& e) {
