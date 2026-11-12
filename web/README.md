@@ -1,6 +1,7 @@
 # Running ENVLP in a browser
 
-ENVLP's analysis engine is portable C++ (GiNaC, plus the `.scx` loader, which is
+ENVLP's analysis engine is portable C++ (GiNaC, plus the `.envlp` XML loader
+with legacy `.scx` import, which is
 wx-free), so it compiles to WebAssembly and the whole analyser runs **inside the
 visitor's browser** — nothing is uploaded, and the site only serves static files.
 
@@ -157,7 +158,7 @@ The app itself still works with the wrong type — it falls back to
 | | |
 |---|---|
 | ✅ the symbolic engine (DC, AC, transfer function, PSRR, loop gain, Zin/Zout, noise, differential) | `src/core` |
-| ✅ the schematic editor's **model**: components, wire bindings, waypoints, the orthogonal router, net naming, labels, copies, undo, `.scx` round-trip | `src/app/Document.cpp`, exposed by `src/web/EditorApi.cpp` |
+| ✅ the schematic editor's **model**: components, wire bindings, waypoints, the orthogonal router, net naming, labels, copies, undo, `.envlp` XML round-trip | `src/app/Document.cpp`, exposed by `src/web/EditorApi.cpp` |
 | ✅ the schematic editor's **canvas**: palette, place (with a ghost), wire (orthogonal, Space swaps the route), select/marquee, drag, rotate, flip, delete, net labels, pan, zoom | `web/editor.js` |
 | ✅ the **model parameters** — gm, ro, W/L, Cgs/Cgd/Cds, the passives' parasitics (Cpar, Lser, Rser, …) — with their switches | `src/core/Netlist.cpp` → `web/editor.js` |
 | ✅ the **low-entropy thresholds**: the component ratio, the pole/zero ratio and the reference (dominant pole/zero or the unity-gain bandwidth) | `web/index.html` → `src/web/WebApi.cpp` |
@@ -170,7 +171,7 @@ The app itself still works with the wrong type — it falls back to
 
 The editor is deliberately *not* a JavaScript re-implementation of the
 electrical rules: the page renders the geometry the C++ model returns and sends
-it batched edits, so wiring, net naming and `.scx` output are identical to the
+it batched edits, so wiring, net naming and `.envlp` output are identical to the
 desktop app.
 
 ## CLN on wasm32 (fixed)

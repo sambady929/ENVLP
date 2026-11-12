@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<envlp version="2">
+  <netlist>
+    <tech dc-mode="0" vdd="5" vthn="0.6" vthp="0.6" is="1e-16" uncox="0.0002" upcox="0.0001" assume-saturation="true" include-clm="false"/>
+    <request input="V1" output="V(out)" f0="1000" f-start="1" f-stop="1000000000" sweep="0" points="10" prune="true" parallel="true" approx="true" pole-ref="0" component-threshold="10" pole-zero-threshold="1000" threshold-db="20" pole-zero-threshold-db="60" global="false" normalize="true"/>
+    <components>
+      <component id="GND1" kind="GND" value="" size-db="0">
+        <pin name="GND" net="0"/>
+      </component>
+      <component id="R1" kind="R" value="1k" size-db="0">
+        <pin name="a" net="out"/>
+        <pin name="b" net="in"/>
+      </component>
+      <component id="C1" kind="C" value="1p" size-db="0">
+        <pin name="a" net="0"/>
+        <pin name="b" net="out"/>
+      </component>
+      <component id="GND2" kind="GND" value="" size-db="0">
+        <pin name="GND" net="0"/>
+      </component>
+      <component id="V1" kind="V" value="" size-db="0">
+        <pin name="+" net="in"/>
+        <pin name="-" net="0"/>
+        <source dc="1" ac="1"/>
+      </component>
+    </components>
+    <analyses>
+      <analysis kind="AC (small-signal)" input="V1" output="V(out)" probe="" f-start="1" f-stop="1e+09" sweep="0" points="10" prune="true" parallel="true" enabled="true" approx="true" title="AC (small-signal)" port-p="" port-n="" component-threshold="10" pole-zero-threshold="1000" pole-ref="0"/>
+      <analysis kind="Input impedance" input="I1" output="V(out)" probe="" f-start="1" f-stop="1e+09" sweep="0" points="10" prune="true" parallel="true" enabled="true" approx="false" title="Input impedance" port-p="" port-n="" component-threshold="10" pole-zero-threshold="1000" pole-ref="0"/>
+      <analysis kind="Output impedance" input="V1" output="V(out)" probe="" f-start="1" f-stop="1e+09" sweep="0" points="10" prune="true" parallel="true" enabled="true" approx="true" title="Output impedance" port-p="" port-n="" component-threshold="10" pole-zero-threshold="1000" pole-ref="0"/>
+    </analyses>
+  </netlist>
+  <schematic>
+    <placements>
+      <placement ref="C1" x="380" y="190" rot="90" flip-h="false" flip-v="false"/>
+      <placement ref="GND1" x="230" y="240" rot="0" flip-h="false" flip-v="false"/>
+      <placement ref="GND2" x="380" y="240" rot="0" flip-h="false" flip-v="false"/>
+      <placement ref="R1" x="300" y="140" rot="180" flip-h="false" flip-v="false"/>
+      <placement ref="V1" x="230" y="190" rot="0" flip-h="false" flip-v="false"/>
+    </placements>
+    <wires>
+      <wire id="w1" net="0">
+        <start ref="GND2" pin="GND"/>
+        <end ref="C1" pin="a"/>
+      </wire>
+      <wire id="w2" net="out">
+        <start ref="C1" pin="b"/>
+        <end ref="R1" pin="a"/>
+        <point x="380" y="140"/>
+        <waypoint x="380" y="140"/>
+      </wire>
+      <wire id="w3" net="in">
+        <start ref="R1" pin="b"/>
+        <end ref="V1" pin="+"/>
+        <point x="230" y="140"/>
+        <waypoint x="230" y="140"/>
+      </wire>
+      <wire id="w4" net="0">
+        <start ref="V1" pin="-"/>
+        <end ref="GND1" pin="GND"/>
+      </wire>
+    </wires>
+    <labels>
+      <label net="in" text="in" x="243.206" y="140" text-x="252.786" text-y="129.25" font-size="9" rotation="0"/>
+      <label net="out" text="out" x="356.771" y="140" text-x="369.141" text-y="129.25" font-size="9" rotation="0"/>
+    </labels>
+  </schematic>
+</envlp>

@@ -980,7 +980,9 @@ void MainFrame::on_new(wxCommandEvent&) { make_page(-1); }
 
 void MainFrame::on_open(wxCommandEvent&) {
     wxFileDialog dlg(this, "Open schematic", "", "",
-                     "ENVLP circuits (*.scx)|*.scx|All files (*.*)|*.*",
+                     "ENVLP circuits (*.envlp;*.scx)|*.envlp;*.scx|"
+                     "ENVLP XML (*.envlp;*.xml)|*.envlp;*.xml|"
+                     "Legacy ENVLP (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
     if (dlg.ShowModal() != wxID_OK) return;
     wxArrayString paths;
@@ -1038,8 +1040,10 @@ void MainFrame::on_save(wxCommandEvent&) {
 bool MainFrame::do_save_as() {
     SchematicPage* pg = page();
     if (!pg) return false;
-    wxFileDialog dlg(this, "Save schematic", "", "",
-                     "ENVLP circuits (*.scx)|*.scx|All files (*.*)|*.*",
+    wxFileDialog dlg(this, "Save schematic", "", "schematic.envlp",
+                     "ENVLP circuit (*.envlp)|*.envlp|"
+                     "ENVLP XML (*.xml)|*.xml|"
+                     "Legacy ENVLP (*.scx)|*.scx|All files (*.*)|*.*",
                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
     if (dlg.ShowModal() != wxID_OK) return false;
     std::string err;

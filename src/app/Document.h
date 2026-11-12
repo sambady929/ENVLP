@@ -39,6 +39,10 @@ struct WireEnd {
 // and last points are the endpoints described by `a` / `b`; the points in
 // between are free bends.
 struct Wire {
+    // Stable document identity for the text format. It is not used by the
+    // electrical solver; it lets labels/tools refer to a wire without relying
+    // on its position in the array.
+    std::string id;
     std::vector<Pt> pts;
     WireEnd a, b;
     // Authored interior vertices (analog-canvas "waypoints"). These are the
@@ -87,8 +91,9 @@ struct NetMap {
 };
 
 // The schematic: circuit data + graphical data + analysis request.
-// Component.pin node names are *derived* from wire topology at analyze time
-// (Document::resolved), so the .scx file stays geometry-based.
+// The .envlp XML format keeps the electrical netlist and the visual schematic
+// in separate sections. Explicit pin net names are authoritative; legacy .scx
+// files derive them from wire geometry at analyze time.
 class Document {
 public:
     syms::Circuit circuit;
@@ -102,8 +107,9 @@ public:
     std::string path;  // "" = never saved
     bool dirty = false;
 
-    // Analysis cards are owned by the UI; the document stores them verbatim
-    // so a .scx round-trips the configured analysis steps.
+    // Analysis cards are owned by the UI; the document stores their canonical
+    // line form so a round-trip preserves the configured analysis steps. The
+    // XML writer expands these into structured <analysis> elements.
     std::string analysis_cards;
 
     // Adds the component and gives it a free reference/placement.
@@ -209,8 +215,13 @@ public:
     bool save(const std::string& p, std::string& err);
     bool load(const std::string& p, std::string& err);
 
+    // New canonical format: ENVLP XML (.envlp). deserialize() also accepts
+    // legacy line-based .scx files.
     std::string serialize() const;
     bool deserialize(const std::string& data, std::string& err);
+    // Legacy line format, retained for reading and for saving an old .scx path.
+    std::string serialize_legacy() const;
+    bool deserialize_legacy(const std::string& data, std::string& err);
 
     // Undo / redo: whole-document snapshots of the serialized form, so every
     // kind of edit (components, wires, labels, placements) is covered.

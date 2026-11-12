@@ -3,9 +3,13 @@
 #include "core/Eng.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -1301,8 +1305,16 @@ syms::Circuit Document::resolved(std::string& err) const {
 
     syms::Circuit out = circuit;
     for (size_t i = 0; i < nm.pin_comp.size(); ++i) {
+        auto& comp = out.comps[nm.pin_comp[i]];
+        const int pin = nm.pin_index[i];
+        // An explicit <pin name="..." net="..."/> from the XML netlist is the
+        // electrical truth. Only legacy/geometry-only pins (empty node) fall
+        // back to the visual wire topology.
+        if (pin >= 0 && pin < int(comp.nodes.size()) &&
+            !comp.nodes[pin].empty())
+            continue;
         const std::string& name = nm.name[nm.pin_root[i]];
-        out.comps[nm.pin_comp[i]].nodes[nm.pin_index[i]] = name;
+        comp.nodes[pin] = name;
     }
 
     // Materialise mirror copies (scaled device parameters from their unit).
@@ -1850,9 +1862,609 @@ bool Document::label_attached(int label_index, const NetMap& nm) const {
 }
 
 // ---------------------------------------------------------------------------
-// serialization
+// serialization: canonical ENVLP XML (.envlp)
+//
+// The format deliberately has two independent sections:
+//
+//   <netlist>    electrical truth: components, pin->net, models, analyses
+//   <schematic>  visual only: placements, wire polylines, labels, junction dots
+//
+// A missing or stale <schematic> never changes the analysis. Wires are routes,
+// not connections; the <pin net="..."> attributes are authoritative.
 // ---------------------------------------------------------------------------
+namespace {
+
+std::string xml_escape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size() + 16);
+    for (char c : s) {
+        switch (c) {
+            case '&': o += "&amp;"; break;
+            case '<': o += "&lt;"; break;
+            case '>': o += "&gt;"; break;
+            case '"': o += "&quot;"; break;
+            case '\'': o += "&apos;"; break;
+            default: o += c; break;
+        }
+    }
+    return o;
+}
+
+std::string xml_unescape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] != '&') { o += s[i++]; continue; }
+        size_t semi = s.find(';', i + 1);
+        if (semi == std::string::npos) { o += s[i++]; continue; }
+        std::string ent = s.substr(i + 1, semi - i - 1);
+        if (ent == "amp") o += '&';
+        else if (ent == "lt") o += '<';
+        else if (ent == "gt") o += '>';
+        else if (ent == "quot") o += '"';
+        else if (ent == "apos") o += '\'';
+        else if (!ent.empty() && ent[0] == '#') {
+            long code = 0;
+            try {
+                if (ent.size() > 1 && (ent[1] == 'x' || ent[1] == 'X'))
+                    code = std::strtol(ent.c_str() + 2, nullptr, 16);
+                else
+                    code = std::strtol(ent.c_str() + 1, nullptr, 10);
+            } catch (...) {
+                code = 0;
+            }
+            if (code > 0 && code < 0x80) o += char(code);
+            else o += '?';
+        } else {
+            o += s.substr(i, semi - i + 1);
+        }
+        i = semi + 1;
+    }
+    return o;
+}
+
+struct XmlNode {
+    std::string name;
+    std::map<std::string, std::string> attrs;
+    std::string text;
+    std::vector<XmlNode> children;
+    int line = 0;
+
+    const XmlNode* child(const std::string& n) const {
+        for (const auto& c : children)
+            if (c.name == n) return &c;
+        return nullptr;
+    }
+    std::string attr(const std::string& n,
+                     const std::string& fallback = "") const {
+        auto it = attrs.find(n);
+        return it == attrs.end() ? fallback : it->second;
+    }
+};
+
+class XmlParser {
+public:
+    explicit XmlParser(std::string s) : s_(std::move(s)) {}
+
+    bool parse(XmlNode& root, std::string& err) {
+        skip_ws();
+        while (p_ < s_.size()) {
+            if (starts("<!--")) {
+                if (!skip_comment()) return fail(err, "unterminated comment");
+                skip_ws();
+            } else if (starts("<?")) {
+                if (!skip_until("?>")) return fail(err, "unterminated processing instruction");
+                skip_ws();
+            } else if (starts("<!DOCTYPE")) {
+                if (!skip_until(">")) return fail(err, "unterminated DOCTYPE");
+                skip_ws();
+            } else {
+                break;
+            }
+        }
+        if (!parse_element(root, err)) return false;
+        skip_ws();
+        if (p_ != s_.size()) return fail(err, "text after the root element");
+        return true;
+    }
+
+private:
+    std::string s_;
+    size_t p_ = 0;
+    int line_ = 1;
+
+    bool starts(const char* t) const {
+        size_t n = std::char_traits<char>::length(t);
+        return s_.compare(p_, n, t) == 0;
+    }
+    void adv(size_t n) {
+        for (size_t k = 0; k < n && p_ < s_.size(); ++k) {
+            if (s_[p_] == '\n') ++line_;
+            ++p_;
+        }
+    }
+    void skip_ws() {
+        while (p_ < s_.size() && std::isspace((unsigned char)s_[p_])) adv(1);
+    }
+    bool skip_comment() {
+        size_t e = s_.find("-->", p_ + 4);
+        if (e == std::string::npos) return false;
+        adv(e + 3 - p_);
+        return true;
+    }
+    bool skip_until(const char* end) {
+        size_t e = s_.find(end, p_);
+        if (e == std::string::npos) return false;
+        adv(e + std::char_traits<char>::length(end) - p_);
+        return true;
+    }
+    bool fail(std::string& err, const std::string& msg) {
+        err = "XML line " + std::to_string(line_) + ": " + msg;
+        return false;
+    }
+    bool name(std::string& out) {
+        if (p_ >= s_.size()) return false;
+        size_t b = p_;
+        while (p_ < s_.size()) {
+            unsigned char c = (unsigned char)s_[p_];
+            if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.' ||
+                  c == ':'))
+                break;
+            adv(1);
+        }
+        out = s_.substr(b, p_ - b);
+        return !out.empty();
+    }
+    bool quoted(std::string& out) {
+        if (p_ >= s_.size() || (s_[p_] != '"' && s_[p_] != '\'')) return false;
+        char q = s_[p_++];
+        std::string raw;
+        while (p_ < s_.size() && s_[p_] != q) {
+            raw += s_[p_++];
+            if (raw.back() == '\n') ++line_;
+        }
+        if (p_ >= s_.size()) return false;
+        ++p_; // closing quote
+        out = xml_unescape(raw);
+        return true;
+    }
+    bool parse_element(XmlNode& n, std::string& err) {
+        skip_ws();
+        if (p_ >= s_.size() || s_[p_] != '<') return fail(err, "expected '<'");
+        n.line = line_;
+        adv(1);
+        if (p_ < s_.size() && s_[p_] == '/') return fail(err, "unexpected closing tag");
+        if (!name(n.name)) return fail(err, "missing element name");
+        for (;;) {
+            skip_ws();
+            if (starts("/>")) { adv(2); return true; }
+            if (p_ < s_.size() && s_[p_] == '>') { adv(1); break; }
+            std::string a;
+            if (!name(a)) return fail(err, "bad attribute in <" + n.name + ">");
+            skip_ws();
+            if (p_ >= s_.size() || s_[p_] != '=') return fail(err, "missing '=' after " + a);
+            adv(1);
+            skip_ws();
+            std::string v;
+            if (!quoted(v)) return fail(err, "missing quoted value for " + a);
+            n.attrs[a] = v;
+        }
+        while (p_ < s_.size()) {
+            if (starts("</")) {
+                adv(2);
+                std::string close;
+                if (!name(close)) return fail(err, "bad closing tag");
+                skip_ws();
+                if (p_ >= s_.size() || s_[p_] != '>')
+                    return fail(err, "unterminated closing tag");
+                adv(1);
+                if (close != n.name)
+                    return fail(err, "</" + close + "> closes <" + n.name + ">");
+                return true;
+            }
+            if (starts("<!--")) {
+                if (!skip_comment()) return fail(err, "unterminated comment");
+                continue;
+            }
+            if (starts("<![CDATA[")) {
+                size_t b = p_ + 9;
+                size_t e = s_.find("]]>", b);
+                if (e == std::string::npos) return fail(err, "unterminated CDATA");
+                n.text += s_.substr(b, e - b);
+                adv(e + 3 - p_);
+                continue;
+            }
+            if (p_ < s_.size() && s_[p_] == '<') {
+                XmlNode ch;
+                if (!parse_element(ch, err)) return false;
+                n.children.push_back(std::move(ch));
+                continue;
+            }
+            size_t b = p_;
+            while (p_ < s_.size() && s_[p_] != '<') adv(1);
+            n.text += xml_unescape(s_.substr(b, p_ - b));
+        }
+        return fail(err, "unterminated <" + n.name + ">");
+    }
+};
+
+bool xml_num(const XmlNode& n, const std::string& key, double& out,
+             double fallback) {
+    auto it = n.attrs.find(key);
+    if (it == n.attrs.end() || it->second.empty()) { out = fallback; return true; }
+    char* end = nullptr;
+    double v = std::strtod(it->second.c_str(), &end);
+    if (!end || *end != '\0') return false;
+    out = v;
+    return true;
+}
+
+bool xml_int(const XmlNode& n, const std::string& key, int& out, int fallback) {
+    double v = fallback;
+    if (!xml_num(n, key, v, fallback)) return false;
+    out = int(v);
+    return true;
+}
+
+std::string xml_bool(bool v) { return v ? "true" : "false"; }
+bool parse_bool(const std::string& s, bool fallback) {
+    if (s == "true" || s == "1" || s == "yes") return true;
+    if (s == "false" || s == "0" || s == "no") return false;
+    return fallback;
+}
+
+struct CardText {
+    std::string kind, input, output, probe, title, port_p, port_n;
+    double fs = 1.0, fe = 1e9, ctr = 10.0, pzr = 1000.0;
+    int sweep = 0, points = 10, poleref = 0;
+    bool prune = true, parallel = true, enabled = true, approx = true;
+};
+
+std::string card_unquote(std::istringstream& ls) {
+    std::string s;
+    ls >> std::ws;
+    if (ls.peek() != '"') { ls >> s; return s; }
+    ls.get();
+    char c;
+    while (ls.get(c) && c != '"') {
+        if (c == '\\' && ls.peek() != EOF) ls.get(c);
+        s += c;
+    }
+    return s;
+}
+
+bool parse_card_text(const std::string& line, CardText& c) {
+    std::istringstream ls(line);
+    std::string kw;
+    ls >> kw;
+    if (kw != "card") return false;
+    c.kind = card_unquote(ls);
+    c.input = card_unquote(ls);
+    c.output = card_unquote(ls);
+    c.probe = card_unquote(ls);
+    int ty = 0, npts = 10, pr = 1, par = 1, en = 1, af = 1;
+    if (!(ls >> c.fs >> c.fe >> ty >> npts >> pr >> par)) return false;
+    // The old gm*ro field was removed from the middle of the record. Detect it
+    // exactly as AnalysisPanel::deserialize does: the next token is quoted only
+    // when the gm*ro field is absent.
+    int x = 1;
+    if (!(ls >> x)) return false;
+    ls >> std::ws;
+    if (ls.peek() == '"') {
+        en = x;
+    } else if (!(ls >> en)) {
+        return false;
+    }
+    c.title = card_unquote(ls);
+    if (!(ls >> af)) return false;
+    c.sweep = ty;
+    c.points = npts > 0 ? npts : 10;
+    c.prune = pr != 0;
+    c.parallel = par != 0;
+    c.enabled = en != 0;
+    c.approx = af != 0;
+    ls >> std::ws;
+    if (ls.peek() == '"') c.port_p = card_unquote(ls);
+    ls >> std::ws;
+    if (ls.peek() == '"') c.port_n = card_unquote(ls);
+    ls >> std::ws;
+    if (ls.peek() != EOF) {
+        if (!(ls >> c.ctr >> c.pzr)) return true; // older truncated records
+        if (c.ctr <= 1.0) c.ctr = 10.0;
+        if (c.pzr <= 1.0) c.pzr = 1000.0;
+        ls >> c.poleref;
+    }
+    if (c.title.empty()) c.title = c.kind;
+    return true;
+}
+
+std::string card_line(const CardText& c) {
+    auto q = [](const std::string& s) {
+        std::string r = "\"";
+        for (char ch : s) {
+            if (ch == '"' || ch == '\\') r += '\\';
+            r += ch;
+        }
+        r += '"';
+        return r;
+    };
+    std::ostringstream o;
+    o << "card " << q(c.kind) << " " << q(c.input) << " " << q(c.output)
+      << " " << q(c.probe) << " " << c.fs << " " << c.fe << " " << c.sweep
+      << " " << c.points << " " << (c.prune ? 1 : 0) << " "
+      << (c.parallel ? 1 : 0) << " " << (c.enabled ? 1 : 0) << " "
+      << q(c.title) << " " << (c.approx ? 1 : 0) << " " << q(c.port_p)
+      << " " << q(c.port_n) << " " << c.ctr << " " << c.pzr << " "
+      << c.poleref << "\n";
+    return o.str();
+}
+
+std::string card_to_xml(const CardText& c, int indent) {
+    std::string pad(size_t(indent), ' ');
+    std::ostringstream o;
+    o << pad << "<analysis kind=\"" << xml_escape(c.kind) << "\" input=\""
+      << xml_escape(c.input) << "\" output=\"" << xml_escape(c.output)
+      << "\" probe=\"" << xml_escape(c.probe) << "\" f-start=\"" << c.fs
+      << "\" f-stop=\"" << c.fe << "\" sweep=\"" << c.sweep
+      << "\" points=\"" << c.points << "\" prune=\"" << xml_bool(c.prune)
+      << "\" parallel=\"" << xml_bool(c.parallel) << "\" enabled=\""
+      << xml_bool(c.enabled) << "\" approx=\"" << xml_bool(c.approx)
+      << "\" title=\"" << xml_escape(c.title) << "\" port-p=\""
+      << xml_escape(c.port_p) << "\" port-n=\"" << xml_escape(c.port_n)
+      << "\" component-threshold=\"" << c.ctr
+      << "\" pole-zero-threshold=\"" << c.pzr << "\" pole-ref=\""
+      << c.poleref << "\"/>\n";
+    return o.str();
+}
+
+std::string card_from_xml(const XmlNode& n) {
+    CardText c;
+    c.kind = n.attr("kind", "Transfer function (H(s))");
+    c.input = n.attr("input");
+    c.output = n.attr("output");
+    c.probe = n.attr("probe");
+    c.title = n.attr("title", c.kind);
+    c.port_p = n.attr("port-p");
+    c.port_n = n.attr("port-n");
+    xml_num(n, "f-start", c.fs, 1.0);
+    xml_num(n, "f-stop", c.fe, 1e9);
+    xml_int(n, "sweep", c.sweep, 0);
+    xml_int(n, "points", c.points, 10);
+    c.points = c.points > 0 ? c.points : 10;
+    c.prune = parse_bool(n.attr("prune", "true"), true);
+    c.parallel = parse_bool(n.attr("parallel", "true"), true);
+    c.enabled = parse_bool(n.attr("enabled", "true"), true);
+    c.approx = parse_bool(n.attr("approx", "true"), true);
+    xml_num(n, "component-threshold", c.ctr, 10.0);
+    xml_num(n, "pole-zero-threshold", c.pzr, 1000.0);
+    xml_int(n, "pole-ref", c.poleref, 0);
+    return card_line(c);
+}
+
+std::string fmt_num(double v) {
+    std::ostringstream o;
+    // Enough to round-trip normal component values and SI process settings
+    // without turning 0.6 into 0.59999999999999998 in every hand-edited file.
+    o << std::setprecision(12) << v;
+    return o.str();
+}
+
+std::string xml_point(Pt p, int indent) {
+    return std::string(size_t(indent), ' ') + "<point x=\"" + fmt_num(p.first) +
+           "\" y=\"" + fmt_num(p.second) + "\"/>\n";
+}
+
+} // namespace
+
 std::string Document::serialize() const {
+    std::string resolve_err;
+    syms::Circuit rc = resolved(resolve_err);
+    if (rc.comps.size() != circuit.comps.size()) rc = circuit;
+
+    auto net_of = [&](size_t ci, int pin) -> std::string {
+        if (ci < rc.comps.size() && pin >= 0 &&
+            pin < int(rc.comps[ci].nodes.size()))
+            return rc.comps[ci].nodes[pin];
+        if (ci < circuit.comps.size() && pin >= 0 &&
+            pin < int(circuit.comps[ci].nodes.size()))
+            return circuit.comps[ci].nodes[pin];
+        return "";
+    };
+
+    std::ostringstream o;
+    o << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    o << "<envlp version=\"2\">\n";
+    o << "  <netlist>\n";
+
+    o << "    <tech dc-mode=\"" << int(tech.dc_mode) << "\" vdd=\""
+      << fmt_num(tech.vdd) << "\" vthn=\"" << fmt_num(tech.vthn)
+      << "\" vthp=\"" << fmt_num(tech.vthp) << "\" is=\"" << fmt_num(tech.is)
+      << "\" uncox=\"" << fmt_num(tech.uncox) << "\" upcox=\""
+      << fmt_num(tech.upcox) << "\" assume-saturation=\""
+      << xml_bool(tech.assume_saturation) << "\" include-clm=\""
+      << xml_bool(tech.include_clm) << "\"/>\n";
+
+    o << "    <request input=\"" << xml_escape(req.input_ref)
+      << "\" output=\"" << xml_escape(req.output) << "\" f0=\""
+      << fmt_num(req.f0_hz) << "\" f-start=\""
+      << fmt_num(req.sweep.f_start_hz) << "\" f-stop=\""
+      << fmt_num(req.sweep.f_stop_hz) << "\" sweep=\""
+      << int(req.sweep.type) << "\" points=\""
+      << req.sweep.points_per_interval << "\" prune=\""
+      << xml_bool(req.prune) << "\" parallel=\"" << xml_bool(req.use_parallel)
+      << "\" approx=\"" << xml_bool(req.approx_factor) << "\" pole-ref=\""
+      << (req.pole_ref == syms::AnalysisRequest::PoleRef::UgBw ? 1 : 0)
+      << "\" component-threshold=\"" << fmt_num(req.component_threshold_ratio)
+      << "\" pole-zero-threshold=\"" << fmt_num(req.pole_zero_threshold_ratio)
+      << "\" threshold-db=\"" << fmt_num(req.threshold_db)
+      << "\" pole-zero-threshold-db=\""
+      << fmt_num(req.pole_zero_threshold_db) << "\" global=\""
+      << xml_bool(req.global_ref) << "\" normalize=\""
+      << xml_bool(req.normalize) << "\"/>\n";
+
+    o << "    <components>\n";
+    for (size_t ci = 0; ci < circuit.comps.size(); ++ci) {
+        const auto& c = circuit.comps[ci];
+        o << "      <component id=\"" << xml_escape(c.ref) << "\" kind=\""
+          << xml_escape(syms::kind_token(c.kind)) << "\" value=\""
+          << xml_escape(c.value_text) << "\" size-db=\"" << c.size_db
+          << "\">\n";
+        auto pn = syms::pin_names(c.kind);
+        for (size_t pi = 0; pi < pn.size(); ++pi)
+            o << "        <pin name=\"" << xml_escape(pn[pi])
+              << "\" net=\"" << xml_escape(net_of(ci, int(pi))) << "\"/>\n";
+        if (syms::is_independent_source(c.kind))
+            o << "        <source dc=\"" << xml_escape(c.dc_text)
+              << "\" ac=\"" << xml_escape(c.ac_text) << "\"/>\n";
+        std::set<std::string> pnames;
+        for (const auto& kv : c.param_on) pnames.insert(kv.first);
+        for (const auto& kv : c.param_text) pnames.insert(kv.first);
+        for (const auto& kv : c.param_db) pnames.insert(kv.first);
+        for (const auto& p : pnames)
+            o << "        <parameter name=\"" << xml_escape(p)
+              << "\" enabled=\"" << xml_bool(c.param_enabled(p))
+              << "\" value=\""
+              << xml_escape(c.param_text.count(p) ? c.param_text.at(p)
+                                                  : std::string())
+              << "\" db=\"" << (c.param_db.count(p) ? c.param_db.at(p) : 0)
+              << "\"/>\n";
+        if (!c.mirror_ref.empty())
+            o << "        <mirror ref=\"" << xml_escape(c.mirror_ref)
+              << "\" mult=\"" << c.mirror_num() << "\" den=\""
+              << c.mirror_dn() << "\"/>\n";
+        for (const auto& lk : c.links)
+            o << "        <link ref=\"" << xml_escape(lk) << "\"/>\n";
+        o << "      </component>\n";
+    }
+    o << "    </components>\n";
+
+    // Analyses are stored by the UI as canonical "card ..." lines. Expand them
+    // into named XML fields, while preserving an unparseable line as a <card>.
+    std::vector<std::string> card_lines;
+    {
+        std::istringstream in(analysis_cards);
+        std::string line;
+        while (std::getline(in, line))
+            if (!line.empty()) card_lines.push_back(line);
+    }
+    if (card_lines.empty()) {
+        o << "    <analyses/>\n";
+    } else {
+        o << "    <analyses>\n";
+        for (const auto& line : card_lines) {
+            CardText c;
+            if (parse_card_text(line, c)) {
+                o << card_to_xml(c, 6);
+            } else {
+                o << "      <card>" << xml_escape(line) << "</card>\n";
+            }
+        }
+        o << "    </analyses>\n";
+    }
+    o << "  </netlist>\n";
+
+    o << "  <schematic>\n";
+    if (!placements.empty()) {
+        o << "    <placements>\n";
+        for (const auto& kv : placements) {
+            const Placement& p = kv.second;
+            o << "      <placement ref=\"" << xml_escape(kv.first)
+              << "\" x=\"" << fmt_num(p.x) << "\" y=\"" << fmt_num(p.y)
+              << "\" rot=\"" << p.rot << "\" flip-h=\"" << xml_bool(p.flip_h)
+              << "\" flip-v=\"" << xml_bool(p.flip_v) << "\"/>\n";
+        }
+        o << "    </placements>\n";
+    } else {
+        o << "    <placements/>\n";
+    }
+
+    if (!wires.empty()) {
+        o << "    <wires>\n";
+        for (size_t wi = 0; wi < wires.size(); ++wi) {
+            const Wire& w = wires[wi];
+            std::string net;
+            auto end_net = [&](const WireEnd& e) -> std::string {
+                if (e.kind != WireEnd::Kind::Pin) return "";
+                for (size_t ci = 0; ci < circuit.comps.size(); ++ci)
+                    if (circuit.comps[ci].ref == e.ref)
+                        return net_of(ci, e.pin);
+                return "";
+            };
+            net = end_net(w.a);
+            if (net.empty()) net = end_net(w.b);
+            if (net.empty()) net = net_name_of_wire(int(wi));
+            std::string id = w.id.empty() ? ("w" + std::to_string(wi + 1)) : w.id;
+            o << "      <wire id=\"" << xml_escape(id) << "\" net=\""
+              << xml_escape(net) << "\">\n";
+            auto pin_name = [&](const WireEnd& e) -> std::string {
+                for (const auto& c : circuit.comps)
+                    if (c.ref == e.ref) {
+                        auto names = syms::pin_names(c.kind);
+                        if (e.pin >= 0 && e.pin < int(names.size()))
+                            return names[e.pin];
+                    }
+                return std::to_string(e.pin);
+            };
+            auto emit_end = [&](const WireEnd& e, const char* tag, bool start) {
+                if (e.kind == WireEnd::Kind::Pin)
+                    o << "        <" << tag << " ref=\"" << xml_escape(e.ref)
+                      << "\" pin=\"" << xml_escape(pin_name(e)) << "\"/>\n";
+                else {
+                    Pt p = w.pts.empty()
+                               ? Pt{0, 0}
+                               : (start ? w.pts.front() : w.pts.back());
+                    o << "        <" << tag << " x=\"" << fmt_num(p.first)
+                      << "\" y=\"" << fmt_num(p.second) << "\"/>\n";
+                }
+            };
+            emit_end(w.a, "start", true);
+            emit_end(w.b, "end", false);
+            if (w.pts.size() > 2)
+                for (size_t k = 1; k + 1 < w.pts.size(); ++k)
+                    o << xml_point(w.pts[k], 8);
+            for (const auto& wp : w.waypoints) {
+                o << "        <waypoint x=\"" << fmt_num(wp.first)
+                  << "\" y=\"" << fmt_num(wp.second) << "\"/>\n";
+            }
+            for (const auto& pp : w.pin_points) {
+                if (pp.waypoint < 0 ||
+                    pp.waypoint >= int(w.waypoints.size()))
+                    continue;
+                Pt q = w.waypoints[pp.waypoint];
+                o << "        <pin-point ref=\"" << xml_escape(pp.end.ref)
+                  << "\" pin=\"" << xml_escape(pin_name(pp.end))
+                  << "\" x=\"" << fmt_num(q.first) << "\" y=\""
+                  << fmt_num(q.second) << "\"/>\n";
+            }
+            o << "      </wire>\n";
+        }
+        o << "    </wires>\n";
+    } else {
+        o << "    <wires/>\n";
+    }
+
+    if (!labels.empty()) {
+        o << "    <labels>\n";
+        for (const auto& l : labels) {
+            o << "      <label net=\"" << xml_escape(l.name) << "\" text=\""
+              << xml_escape(l.name) << "\" x=\"" << fmt_num(l.anchor.first)
+              << "\" y=\"" << fmt_num(l.anchor.second) << "\"";
+            if (l.pt.first != l.anchor.first || l.pt.second != l.anchor.second)
+                o << " text-x=\"" << fmt_num(l.pt.first) << "\" text-y=\""
+                  << fmt_num(l.pt.second) << "\"";
+            o << " font-size=\"" << l.font_size << "\" rotation=\"" << l.rot
+              << "\"/>\n";
+        }
+        o << "    </labels>\n";
+    } else {
+        o << "    <labels/>\n";
+    }
+    o << "  </schematic>\n";
+    o << "</envlp>\n";
+    return o.str();
+}
+
+std::string Document::serialize_legacy() const {
     std::ostringstream o;
     o << "envlp 1\n";
     o << "req " << quote(req.input_ref) << " " << quote(req.output) << " "
@@ -1947,7 +2559,324 @@ std::string Document::serialize() const {
     return o.str();
 }
 
+namespace {
+
+std::string canonical_card_kind(const std::string& k) {
+    if (k == "TransferFunction") return "Transfer function (H(s))";
+    if (k == "AC") return "AC (small-signal)";
+    if (k == "DC") return "DC operating point";
+    if (k == "PSRR") return "PSR / PSRR";
+    if (k == "LoopGain") return "Loop gain (return ratio)";
+    if (k == "ShortCircuitCurrent") return "Short-circuit current";
+    if (k == "InputImpedance") return "Input impedance";
+    if (k == "OutputImpedance") return "Output impedance";
+    if (k == "Differential") return "Differential (Adm/Acm/CMRR)";
+    return k;
+}
+
+int pin_index_named(syms::Kind k, const std::string& name) {
+    auto names = syms::pin_names(k);
+    for (size_t i = 0; i < names.size(); ++i)
+        if (names[i] == name) return int(i);
+    return -1;
+}
+
+double node_num(const XmlNode& n, const std::string& key, double fallback) {
+    double v = fallback;
+    xml_num(n, key, v, fallback);
+    return v;
+}
+
+bool deserialize_xml(Document& d, const XmlNode& root, std::string& err) {
+    auto fail = [&](const std::string& m) {
+        err = "line " + std::to_string(root.line) + ": " + m;
+        return false;
+    };
+    if (root.name != "envlp" && root.name != "symcirc")
+        return fail("root element must be <envlp>");
+    const XmlNode* netlist = root.child("netlist");
+    if (!netlist) return fail("missing <netlist> section");
+
+    d.circuit.comps.clear();
+    d.placements.clear();
+    d.wires.clear();
+    d.labels.clear();
+    d.analysis_cards.clear();
+    d.req = syms::AnalysisRequest{};
+
+    if (const XmlNode* t = netlist->child("tech")) {
+        int mode = 0;
+        xml_int(*t, "dc-mode", mode, 0);
+        d.tech.dc_mode = mode == 0 ? syms::DcMode::GmOverId
+                                   : syms::DcMode::SquareLaw;
+        d.tech.vdd = node_num(*t, "vdd", 5.0);
+        d.tech.vthn = node_num(*t, "vthn", 0.6);
+        d.tech.vthp = node_num(*t, "vthp", 0.6);
+        d.tech.is = node_num(*t, "is", 1e-16);
+        d.tech.uncox = node_num(*t, "uncox", 200e-6);
+        d.tech.upcox = node_num(*t, "upcox", 100e-6);
+        d.tech.assume_saturation = parse_bool(t->attr("assume-saturation", "true"), true);
+        d.tech.include_clm = parse_bool(t->attr("include-clm", "false"), false);
+    }
+    if (const XmlNode* r = netlist->child("request")) {
+        d.req.input_ref = r->attr("input");
+        d.req.output = r->attr("output");
+        d.req.f0_hz = node_num(*r, "f0", 1000.0);
+        d.req.sweep.f_start_hz = node_num(*r, "f-start", 1.0);
+        d.req.sweep.f_stop_hz = node_num(*r, "f-stop", 1e9);
+        int ty = 0, npts = 10, poleref = 0;
+        xml_int(*r, "sweep", ty, 0);
+        xml_int(*r, "points", npts, 10);
+        xml_int(*r, "pole-ref", poleref, 0);
+        d.req.sweep.type = ty == 1 ? syms::SweepType::Octave
+                                   : ty == 2 ? syms::SweepType::Linear
+                                             : syms::SweepType::Decade;
+        d.req.sweep.points_per_interval = npts > 0 ? npts : 10;
+        d.req.prune = parse_bool(r->attr("prune", "true"), true);
+        d.req.use_parallel = parse_bool(r->attr("parallel", "true"), true);
+        d.req.approx_factor = parse_bool(r->attr("approx", "true"), true);
+        d.req.pole_ref = poleref ? syms::AnalysisRequest::PoleRef::UgBw
+                                 : syms::AnalysisRequest::PoleRef::Dominant;
+        d.req.component_threshold_ratio = node_num(*r, "component-threshold", 10.0);
+        d.req.pole_zero_threshold_ratio = node_num(*r, "pole-zero-threshold", 1000.0);
+        d.req.threshold_db = node_num(*r, "threshold-db", 20.0);
+        d.req.pole_zero_threshold_db = node_num(*r, "pole-zero-threshold-db", 60.0);
+        d.req.global_ref = parse_bool(r->attr("global", "false"), false);
+        d.req.normalize = parse_bool(r->attr("normalize", "true"), true);
+    }
+
+    const XmlNode* comps = netlist->child("components");
+    if (comps) {
+        for (const auto& x : comps->children) {
+            if (x.name != "component") continue;
+            syms::Kind kind;
+            if (!syms::kind_from_token(x.attr("kind"), kind))
+                return fail("unknown component kind " + x.attr("kind"));
+            syms::Component c;
+            c.ref = x.attr("id");
+            c.kind = kind;
+            c.value_text = x.attr("value");
+            c.size_db = int(node_num(x, "size-db", 0.0));
+            c.nodes.assign(syms::pin_count(kind), "");
+            for (const auto& ch : x.children) {
+                if (ch.name == "pin") {
+                    int pi = pin_index_named(kind, ch.attr("name"));
+                    if (pi < 0)
+                        return fail("component " + c.ref + " has unknown pin " +
+                                    ch.attr("name"));
+                    c.nodes[pi] = ch.attr("net");
+                } else if (ch.name == "source") {
+                    c.dc_text = ch.attr("dc", "0");
+                    c.ac_text = ch.attr("ac", "1");
+                } else if (ch.name == "parameter") {
+                    std::string p = ch.attr("name");
+                    if (p.empty()) continue;
+                    c.param_on[p] = parse_bool(ch.attr("enabled", "true"), true);
+                    c.param_text[p] = ch.attr("value");
+                    c.param_db[p] = int(node_num(ch, "db", 0.0));
+                } else if (ch.name == "mirror") {
+                    c.mirror_ref = ch.attr("ref");
+                    c.mirror_mult = int(node_num(ch, "mult", 1.0));
+                    c.mirror_den = int(node_num(ch, "den", 1.0));
+                    if (c.mirror_mult < 1) c.mirror_mult = 1;
+                    if (c.mirror_den < 1) c.mirror_den = 1;
+                } else if (ch.name == "link") {
+                    c.links.push_back(ch.attr("ref"));
+                }
+            }
+            if (c.ref.empty()) return fail("component without id");
+            d.circuit.comps.push_back(c);
+        }
+    }
+
+    if (const XmlNode* analyses = netlist->child("analyses")) {
+        for (const auto& x : analyses->children) {
+            if (x.name == "analysis") {
+                CardText c;
+                // Allow either the UI's display name or the enum-like token.
+                c.kind = canonical_card_kind(x.attr("kind", "Transfer function (H(s))"));
+                c.input = x.attr("input");
+                c.output = x.attr("output");
+                c.probe = x.attr("probe");
+                c.title = x.attr("title", c.kind);
+                c.port_p = x.attr("port-p");
+                c.port_n = x.attr("port-n");
+                c.fs = node_num(x, "f-start", 1.0);
+                c.fe = node_num(x, "f-stop", 1e9);
+                c.sweep = int(node_num(x, "sweep", 0.0));
+                c.points = int(node_num(x, "points", 10.0));
+                if (c.points <= 0) c.points = 10;
+                c.prune = parse_bool(x.attr("prune", "true"), true);
+                c.parallel = parse_bool(x.attr("parallel", "true"), true);
+                c.enabled = parse_bool(x.attr("enabled", "true"), true);
+                c.approx = parse_bool(x.attr("approx", "true"), true);
+                c.ctr = node_num(x, "component-threshold", 10.0);
+                c.pzr = node_num(x, "pole-zero-threshold", 1000.0);
+                c.poleref = int(node_num(x, "pole-ref", 0.0));
+                d.analysis_cards += card_line(c);
+            } else if (x.name == "card") {
+                std::string text = x.text;
+                while (!text.empty() &&
+                       std::isspace((unsigned char)text.back())) text.pop_back();
+                size_t b = 0;
+                while (b < text.size() &&
+                       std::isspace((unsigned char)text[b])) ++b;
+                text = text.substr(b);
+                if (!text.empty()) d.analysis_cards += text + "\n";
+            }
+        }
+    }
+
+    if (const XmlNode* sch = root.child("schematic")) {
+        if (const XmlNode* ps = sch->child("placements")) {
+            for (const auto& x : ps->children) {
+                if (x.name != "placement") continue;
+                Placement p;
+                p.x = node_num(x, "x", 0.0);
+                p.y = node_num(x, "y", 0.0);
+                p.rot = int(node_num(x, "rot", 0.0));
+                p.flip_h = parse_bool(x.attr("flip-h", "false"), false);
+                p.flip_v = parse_bool(x.attr("flip-v", "false"), false);
+                d.placements[x.attr("ref")] = p;
+            }
+        }
+        if (const XmlNode* ws = sch->child("wires")) {
+            int auto_id = 1;
+            for (const auto& x : ws->children) {
+                if (x.name != "wire") continue;
+                Wire w;
+                w.id = x.attr("id");
+                if (w.id.empty()) w.id = "w" + std::to_string(auto_id);
+                auto get_pin = [&](const XmlNode* e, WireEnd& out, Pt& pt) -> bool {
+                    if (!e) return false;
+                    std::string ref = e->attr("ref");
+                    if (!ref.empty()) {
+                        const syms::Component* c = d.circuit.find(ref);
+                        if (!c) return false;
+                        int pi = pin_index_named(c->kind, e->attr("pin"));
+                        if (pi < 0) return false;
+                        out.kind = WireEnd::Kind::Pin;
+                        out.ref = ref;
+                        out.pin = pi;
+                        auto pl = d.placements.find(ref);
+                        if (pl != d.placements.end())
+                            pt = pin_world(*c, pl->second, pi);
+                        else
+                            pt = {node_num(*e, "x", 0.0), node_num(*e, "y", 0.0)};
+                        return true;
+                    }
+                    out.kind = WireEnd::Kind::Free;
+                    pt = {node_num(*e, "x", 0.0), node_num(*e, "y", 0.0)};
+                    return true;
+                };
+                const XmlNode* se = x.child("start");
+                const XmlNode* ee = x.child("end");
+                Pt start{0, 0}, end{0, 0};
+                bool have_start = get_pin(se, w.a, start);
+                bool have_end = get_pin(ee, w.b, end);
+                std::vector<Pt> interior, waypoints;
+                for (const auto& ch : x.children) {
+                    if (ch.name == "point")
+                        interior.push_back({node_num(ch, "x", 0.0),
+                                            node_num(ch, "y", 0.0)});
+                    else if (ch.name == "waypoint")
+                        waypoints.push_back({node_num(ch, "x", 0.0),
+                                             node_num(ch, "y", 0.0)});
+                }
+                if (have_start) w.pts.push_back(start);
+                for (const auto& p : interior) w.pts.push_back(p);
+                if (have_end) w.pts.push_back(end);
+                if (w.pts.size() < 2) {
+                    // Allow a compact "points only" wire: first/last are free
+                    // endpoints and the rest are bends.
+                    if (w.pts.size() == 1) w.pts.push_back(w.pts.front());
+                    else continue;
+                    w.a.kind = w.b.kind = WireEnd::Kind::Free;
+                }
+                if (waypoints.empty()) w.waypoints = interior;
+                else w.waypoints = waypoints;
+                for (const auto& ch : x.children) {
+                    if (ch.name != "pin-point") continue;
+                    Pt q{node_num(ch, "x", 0.0), node_num(ch, "y", 0.0)};
+                    int best = -1;
+                    double bd = std::numeric_limits<double>::infinity();
+                    for (size_t k = 0; k < w.waypoints.size(); ++k) {
+                        double dx = w.waypoints[k].first - q.first;
+                        double dy = w.waypoints[k].second - q.second;
+                        double dd = dx * dx + dy * dy;
+                        if (dd < bd) { bd = dd; best = int(k); }
+                    }
+                    if (best >= 0) {
+                        Wire::PinPoint pp;
+                        pp.waypoint = best;
+                        pp.end.kind = WireEnd::Kind::Pin;
+                        pp.end.ref = ch.attr("ref");
+                        const syms::Component* c = d.circuit.find(pp.end.ref);
+                        if (c) pp.end.pin = pin_index_named(c->kind, ch.attr("pin"));
+                        w.pin_points.push_back(pp);
+                    }
+                }
+                d.wires.push_back(w);
+                ++auto_id;
+            }
+        }
+        if (const XmlNode* ls = sch->child("labels")) {
+            for (const auto& x : ls->children) {
+                if (x.name != "label") continue;
+                NetLabel l;
+                l.name = x.attr("text", x.attr("net"));
+                l.anchor = {node_num(x, "x", 0.0), node_num(x, "y", 0.0)};
+                l.pt = {node_num(x, "text-x", l.anchor.first),
+                        node_num(x, "text-y", l.anchor.second)};
+                l.font_size = int(node_num(x, "font-size", 9.0));
+                if (l.font_size <= 0) l.font_size = 9;
+                l.rot = int(node_num(x, "rotation", 0.0));
+                for (size_t wi = 0; wi < d.wires.size(); ++wi) {
+                    const auto& w = d.wires[wi];
+                    for (size_t k = 1; k < w.pts.size(); ++k) {
+                        if (point_on_seg(l.anchor, w.pts[k - 1], w.pts[k],
+                                         kJoinTol)) {
+                            l.bind_wire = int(wi);
+                            l.bind_frac = d.wire_frac_of(int(wi), l.anchor);
+                            break;
+                        }
+                    }
+                    if (l.bind_wire >= 0) break;
+                }
+                d.labels.push_back(l);
+            }
+        }
+    }
+
+    // Geometry-only endpoints without a semantic binding are captured against
+    // the pins, exactly like a legacy hand-written file.
+    for (auto& w : d.wires) {
+        if (w.a.kind != WireEnd::Kind::Pin || w.b.kind != WireEnd::Kind::Pin)
+            d.bind_wire_ends(w);
+    }
+
+    d.dirty = false;
+    return true;
+}
+
+} // namespace
+
 bool Document::deserialize(const std::string& data, std::string& err) {
+    size_t i = 0;
+    if (data.size() >= 3 && (unsigned char)data[0] == 0xEF &&
+        (unsigned char)data[1] == 0xBB && (unsigned char)data[2] == 0xBF)
+        i = 3;
+    while (i < data.size() && std::isspace((unsigned char)data[i])) ++i;
+    if (i < data.size() && data[i] == '<') {
+        XmlNode root;
+        XmlParser parser(data.substr(i));
+        if (!parser.parse(root, err)) return false;
+        return deserialize_xml(*this, root, err);
+    }
+    return deserialize_legacy(data, err);
+}
+
+bool Document::deserialize_legacy(const std::string& data, std::string& err) {
     circuit.comps.clear();
     placements.clear();
     wires.clear();
@@ -2280,6 +3209,9 @@ bool Document::save(const std::string& p, std::string& err) {
         err = "cannot open '" + p + "' for writing";
         return false;
     }
+    // Every save is canonical XML. The old line format is import-only; an
+    // explicit legacy writer remains available for conversion tools, but a
+    // normal Ctrl+S must not silently produce another .scx-style document.
     f << serialize();
     if (!f) {
         err = "write failed";

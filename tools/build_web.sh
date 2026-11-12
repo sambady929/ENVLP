@@ -78,7 +78,8 @@ mkdir -p "$WEB/mathjax" "$WEB/plotly" "$WEB/examples"
 cp "$ROOT/resources/mathjax/tex-svg.js"            "$WEB/mathjax/"
 cp "$ROOT/resources/plotly/plotly-basic.min.js"   "$WEB/plotly/"
 cp "$ROOT"/examples/*.scx                         "$WEB/examples/"
-( cd "$WEB/examples" && ls *.scx | sed 's/^/"/;s/$/"/' | paste -sd, - \
+cp "$ROOT"/examples/*.envlp                       "$WEB/examples/"
+( cd "$WEB/examples" && ls *.scx *.envlp | sed 's/^/"/;s/$/"/' | paste -sd, - \
     | sed 's/^/[/;s/$/]/' > index.json )
 # The stub module + its canned result are only for exercising the page before
 # the real build exists (envlp.js above is the real one now).

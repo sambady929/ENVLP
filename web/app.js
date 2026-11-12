@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '57';
+const BUILD = '58';
 
 const $ = (id) => document.getElementById(id);
 
@@ -450,7 +450,7 @@ function bindPanel() {
     r.readAsText(f);
   });
   $('btn-save').addEventListener('click', () => {
-    download('schematic.scx', docSerialize(), 'text/plain');
+    download('schematic.envlp', docSerialize(), 'application/xml');
   });
   $('btn-help').addEventListener('click', showHelp);
   $('help-close').addEventListener('click', () => $('help').close());
@@ -591,7 +591,7 @@ createEnvLp({ locateFile: (p) => (p.endsWith('.wasm') ? p + '?v=' + BUILD : p) }
     window.Module = m;
     bindPanel();
     startEditor();
-    openExample('rc_lowpass.scx');
+    openExample('rc_lowpass.envlp');
   }).catch((e) => {
     setStatus('could not start the solver: ' + (e && e.message ? e.message : e), true);
   });
