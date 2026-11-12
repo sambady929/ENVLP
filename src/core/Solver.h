@@ -138,4 +138,13 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech = TechParams{});
 // Throws std::runtime_error with a user-facing message.
 Solved solve(const Circuit& c, const AnalysisRequest& req);
 
+// Determinant of an already-built MNA system. Exposed so a caller that reuses
+// one matrix for several right-hand sides (OCTC measures a resistance at every
+// capacitor port) pays for the determinant once.
+GiNaC::ex mna_determinant(const MnaSystem& sys);
+
+// Cramer numerator for unknown `k` with an arbitrary right-hand side. The
+// solution is mna_column(...) / mna_determinant(...).
+GiNaC::ex mna_column(const MnaSystem& sys, const GiNaC::matrix& rhs, int k);
+
 } // namespace syms

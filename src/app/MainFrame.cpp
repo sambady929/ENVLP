@@ -1042,8 +1042,7 @@ bool MainFrame::do_save_as() {
     if (!pg) return false;
     wxFileDialog dlg(this, "Save schematic", "", "schematic.envlp",
                      "ENVLP circuit (*.envlp)|*.envlp|"
-                     "ENVLP XML (*.xml)|*.xml|"
-                     "Legacy ENVLP (*.scx)|*.scx|All files (*.*)|*.*",
+                     "ENVLP XML (*.xml)|*.xml|All files (*.*)|*.*",
                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
     if (dlg.ShowModal() != wxID_OK) return false;
     std::string err;

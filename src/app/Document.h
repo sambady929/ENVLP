@@ -219,7 +219,7 @@ public:
     // legacy line-based .scx files.
     std::string serialize() const;
     bool deserialize(const std::string& data, std::string& err);
-    // Legacy line format, retained for reading and for saving an old .scx path.
+    // Legacy line format, retained for reading old .scx files and conversion tools.
     std::string serialize_legacy() const;
     bool deserialize_legacy(const std::string& data, std::string& err);
 

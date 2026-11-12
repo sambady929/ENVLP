@@ -15,70 +15,11 @@ using GiNaC::matrix;
 using GiNaC::numeric;
 using GiNaC::exmap;
 
-// Prefer pivots that keep fraction-free elimination exact and cheap:
-// +-1 integers first, then integers, numbers, symbols, powers, muls, sums.
-int pivot_score(const ex& e) {
-    if (GiNaC::is_a<numeric>(e)) {
-        const numeric& n = GiNaC::ex_to<numeric>(e);
-        if (n.is_integer()) {
-            if (n.is_equal(numeric(1)) || n.is_equal(numeric(-1))) return 0;
-            return 1;
-        }
-        return 2;
-    }
-    if (GiNaC::is_a<GiNaC::symbol>(e)) return 3;
-    if (GiNaC::is_a<GiNaC::power>(e)) return 4;
-    if (GiNaC::is_a<GiNaC::mul>(e)) return 5;
-    if (GiNaC::is_a<GiNaC::add>(e)) return 6 + static_cast<int>(std::min<size_t>(e.nops(), 20));
-    return 9;
-}
-
-// Fraction-free (Bareiss) determinant. Exact division keeps entries in the
-// polynomial ring; .normal() guarantees cancellation even if a swap breaks
-// the fraction-free property (result stays mathematically correct either way).
-ex bareiss_det(matrix M) {
-    int n = static_cast<int>(M.rows());
-    if (n == 0) return ex(1);
-    if (n == 1) return M(0, 0);
-
-    ex sign(1);
-    ex prev(1);
-    for (int k = 0; k < n - 1; ++k) {
-        int piv = -1;
-        int best = 1 << 30;
-        for (int i = k; i < n; ++i) {
-            if (M(i, k).is_zero()) continue;
-            int sc = pivot_score(M(i, k));
-            if (sc < best) {
-                best = sc;
-                piv = i;
-            }
-        }
-        if (piv < 0) return ex(0);
-        if (piv != k) {
-            for (int j = 0; j < n; ++j) std::swap(M(k, j), M(piv, j));
-            sign = -sign;
-        }
-        ex pk = M(k, k);
-        for (int i = k + 1; i < n; ++i) {
-            for (int j = k + 1; j < n; ++j) {
-                ex v = M(i, j) * pk - M(i, k) * M(k, j);
-                if (prev.is_equal(ex(1)))
-                    M(i, j) = v;
-                else
-                    M(i, j) = (v / prev).normal();
-            }
-        }
-        prev = pk;
-    }
-    return sign * M(n - 1, n - 1);
-}
-
 // Determinant of Y with column k replaced by the input column b.
 ex det_with_column(const matrix& Y, int k, const matrix& bcol) {
     matrix M(Y);
     for (int i = 0; i < static_cast<int>(M.rows()); ++i) M(i, k) = bcol(i, 0);
-    return bareiss_det(std::move(M));
+    return M.determinant();
 }
 
 // Evaluate a probe sum such as "V(out)", "V(a)-V(b)", "2*V(a)-V(b)",
@@ -165,7 +106,7 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
     out.params = std::move(sys.params);
     ex s = out.params.get("s");
 
-    ex det = bareiss_det(sys.Y);
+    ex det = sys.Y.determinant();
     if (det.expand().is_zero())
         throw std::runtime_error(
             "MNA matrix is singular -- check for floating nodes or missing ground");
@@ -288,6 +229,14 @@ Solved solve(const Circuit& circ, const AnalysisRequest& req) {
     return out;
 }
 
+ex mna_determinant(const MnaSystem& sys) {
+    return sys.Y.determinant();
+}
+
+ex mna_column(const MnaSystem& sys, const matrix& rhs, int k) {
+    return det_with_column(sys.Y, k, rhs);
+}
+
 DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
     std::set<std::string> used;
     for (const auto& cc : c.comps)
@@ -306,7 +255,7 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
     dc.upcox = tech.upcox;
     MnaSystem sys = build_mna(c, std::string(), used, &dc);
 
-    ex det = bareiss_det(sys.Y);
+    ex det = sys.Y.determinant();
     if (det.expand().is_zero())
         throw std::runtime_error(
             "DC: MNA matrix is singular -- check for floating nodes or missing "
@@ -502,7 +451,7 @@ DcSolution solve_dc(const Circuit& c, const TechParams& tech) {
                     e = GiNaC::ex_to<GiNaC::numeric>(ev).to_double();
                 td.params.set("I(" + ref + ")", e, UnitClass::Plain);
             }
-            ex tdet = bareiss_det(td.Y);
+            ex tdet = td.Y.determinant();
             if (tdet.expand().is_zero()) continue;
             for (const auto& kv : td.node_idx)
                 out.node_v_td[kv.first] =

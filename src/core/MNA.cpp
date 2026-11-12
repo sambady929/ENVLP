@@ -1354,24 +1354,36 @@ std::vector<TimeConstant> open_circuit_time_constants(
         if (kv.first != "0" && kv.first != "GND" && kv.second != 2)
             protect.insert(kv.first);
 
-    // With every independent source zeroed, every capacitor opened (omitted),
-    // and every inductor except the one under test shorted (a 0 V source),
-    // inject 1 A across the element's terminals and read V(a)-V(b): that is the
-    // resistance it sees.
-    auto port_R = [&](const std::string& test_sym, const std::string& na,
-                      const std::string& nb) -> ex {
-        // Zero-value reactances: every capacitor (including the test one, since
-        // OCTC removes it and measures the resistance across its terminals) is
-        // opened; every inductor except the test one is shorted. The test
-        // inductor is removed too (we measure the resistance into its open
-        // terminals). The test element's symbol also tells us which device
-        // parasitic to disable.
+    // Map a device's parasitic capacitance to the two nodes it bridges. Kept
+    // here (not duplicated) so the shared OCTC network protects every port it
+    // will query.
+    auto cap_node_pair = [](const Component& cc,
+                            const std::string& pname)
+        -> std::pair<std::string, std::string> {
+        const std::string& n0 = cc.nodes.size() > 0 ? cc.nodes[0] : "0";
+        const std::string& n1 = cc.nodes.size() > 1 ? cc.nodes[1] : "0";
+        const std::string& n2 = cc.nodes.size() > 2 ? cc.nodes[2] : "0";
+        if (pname == "Cgs" || pname == "Cpi") return {n1, n2};
+        if (pname == "Cgd" || pname == "Cmu") return {n1, n0};
+        if (pname == "Cds" || pname == "Cdb") return {n0, n2};
+        if (pname == "Csb") return {n2, n2};
+        if (pname == "Cd") return {n0, n1};
+        if (pname == "Cps") return {n0, n2};
+        return {n0, n1};
+    };
+
+    // Zero-value reactances: every capacitor is opened; every inductor is
+    // shorted (except the one under test, which is removed when is_cap is
+    // false). With every independent source zeroed, inject 1 A across the
+    // element's terminals and read V(a)-V(b): that is the resistance it sees.
+    auto zeroed_circuit = [&](const std::string& test_inductor) {
         Circuit ct;
         for (const auto& cc : c.comps) {
-            if (cc.kind == Kind::C) continue;              // all caps open
+            if (cc.kind == Kind::C) continue; // all caps open
             if (cc.kind == Kind::L) {
-                if (cc.ref == test_sym) continue;          // remove the test L
-                Component sh = cc;                          // short the rest
+                if (!test_inductor.empty() && cc.ref == test_inductor)
+                    continue; // remove the test L
+                Component sh = cc; // short the rest
                 sh.kind = Kind::V;
                 sh.value_text = "0";
                 sh.ref = "__SHORT_" + cc.ref;
@@ -1380,36 +1392,78 @@ std::vector<TimeConstant> open_circuit_time_constants(
             }
             Component m = cc;
             if (is_independent_source(cc.kind)) m.value_text = "0";
-            // Open every device parasitic capacitance: OCTC measures the
-            // zero-value (all-other-caps-open) resistance.
-            for (const auto& pd : param_defs(cc.kind)) {
+            for (const auto& pd : param_defs(cc.kind))
                 if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad)
                     m.param_on[pd.name] = false;
-            }
             ct.comps.push_back(m);
         }
-        Component it;
-        it.kind = Kind::I;
-        it.ref = "__OCTC__";
-        // Inject 1 A *into* node `na` (and out of `nb`). With the SPICE
-        // convention ({n+,n-}: current flows n+ -> n- through the source), the
-        // source that delivers current into `na` has n- = na, so the nodes are
-        // ordered {nb, na}. Then R = (v(na) - v(nb)) / 1 A is positive.
-        it.nodes = {nb, na};
-        it.value_text = "1";
-        ct.comps.push_back(it);
+        return ct;
+    };
+
+    auto port_R_from = [&](const MnaSystem& sys, const ex& det,
+                           const std::string& na,
+                           const std::string& nb) -> ex {
+        if (det.is_zero()) return ex(0);
+        auto node_of = [&](const std::string& raw) -> int {
+            std::string key = (raw == "GND") ? "0" : raw;
+            if (key == "0") return -1;
+            auto it = sys.node_idx.find(key);
+            return it == sys.node_idx.end() ? -2 : it->second;
+        };
+        int ia = node_of(na), ib = node_of(nb);
+        if (ia == -2 || ib == -2) return ex(0);
+        matrix rhs(sys.n, 1);
+        // 1 A into `na`, out of `nb` (matches the SPICE current-source stamp).
+        if (ia >= 0) rhs(ia, 0) += 1;
+        if (ib >= 0) rhs(ib, 0) -= 1;
+        ex va = ia >= 0 ? (mna_column(sys, rhs, ia) / det).normal() : ex(0);
+        ex vb = ib >= 0 ? (mna_column(sys, rhs, ib) / det).normal() : ex(0);
+        return (va - vb).normal();
+    };
+
+    // Every capacitor (explicit or a device parasitic) sees the same network
+    // with all reactances at zero. Build and factor it once instead of paying
+    // for a fresh determinant at every port.
+    std::set<std::string> cap_protect = protect;
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::C && cc.nodes.size() >= 2) {
+            cap_protect.insert(cc.nodes[0]);
+            cap_protect.insert(cc.nodes[1]);
+        }
+        for (const auto& pd : param_defs(cc.kind)) {
+            if (param_unit_class(cc.kind, pd.name) != UnitClass::Farad)
+                continue;
+            if (!cc.param_enabled(pd.name)) continue;
+            auto pr = cap_node_pair(cc, pd.name);
+            if (pr.first != pr.second) {
+                cap_protect.insert(pr.first);
+                cap_protect.insert(pr.second);
+            }
+        }
+    }
+    bool cap_ok = true;
+    MnaSystem cap_sys;
+    ex cap_det;
+    try {
+        cap_sys = build_mna(zeroed_circuit(""), "", cap_protect);
+        cap_det = mna_determinant(cap_sys);
+    } catch (const std::exception&) {
+        cap_ok = false;
+    }
+
+    auto port_R = [&](const std::string& test_sym, const std::string& na,
+                      const std::string& nb, bool is_cap) -> ex {
         try {
-            AnalysisRequest r;
-            r.input_ref = "__OCTC__";
-            r.output = "V(" + na + ")";
-            r.used_nodes = protect;
-            Solved sa = solve(ct, r);
-            ex va = (sa.num / sa.den).normal();
-            if (nb == "0" || nb == "GND") return va;
-            r.output = "V(" + nb + ")";
-            Solved sb = solve(ct, r);
-            ex vb = (sb.num / sb.den).normal();
-            return (va - vb).normal();
+            if (is_cap) {
+                if (!cap_ok) return ex(0);
+                return port_R_from(cap_sys, cap_det, na, nb);
+            }
+            std::set<std::string> p = protect;
+            p.insert(na);
+            p.insert(nb);
+            MnaSystem sys = build_mna(zeroed_circuit(test_sym), "", p);
+            ex det = mna_determinant(sys);
+            return port_R_from(sys, det, na, nb);
         } catch (const std::exception&) {
             return ex(0);
         }
@@ -1417,7 +1471,7 @@ std::vector<TimeConstant> open_circuit_time_constants(
 
     auto add_tc = [&](const std::string& label, const std::string& na,
                       const std::string& nb, bool is_cap, const ex& sym) {
-        ex R = port_R(label, na, nb);
+        ex R = port_R(label, na, nb, is_cap);
         if (R.is_zero()) return;
         R = to_parallel(R);
         ex tau = is_cap ? (R * sym).normal() : (sym / R).normal();
