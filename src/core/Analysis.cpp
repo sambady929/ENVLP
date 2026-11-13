@@ -2035,17 +2035,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // T is the controlled-source return ratio, and retaining every parasitic
     // here makes the symbolic T expansion needlessly large. The H(s) path
     // below keeps them, because there they are needed for numerical identity.
-    //
-    // H_inf is the *asymptotic* gain, so it must not carry another device's
-    // capacitance either: a Cgs on a later stage would load the ideal
-    // reference's output and turn the ideal gain into a frequency-dependent
-    // expression (and make a single-pole circuit look much larger than it is).
-    Circuit c_ideal = c;
-    for (auto& cc : c_ideal.comps)
-        for (const auto& pd : param_defs(cc.kind))
-            if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad)
-                cc.param_on[pd.name] = false;
-    Circuit ci = nullor_reference_circuit(c_ideal, s.probe_ref, ports, false);
+    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
@@ -2296,6 +2286,19 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         return (e / d).normal();
     };
     ex Hinf = le_expr(ideal.transfer.pruned);
+    // H_inf is the ideal (asymptotic) gain: the value the loop settles to
+    // when the reference gain is infinite. Evaluate it at DC for the ideal
+    // gain; the frequency dependence of the loop belongs to T(s), not to the
+    // asymptotic gain. The network itself is solved with every capacitance in
+    // place, so no device model is altered.
+    try {
+        ex hinf_dc = Hinf.subs(s_ex == 0).normal();
+        if (!hinf_dc.has(s_ex)) Hinf = hinf_dc;
+    } catch (const std::exception&) {
+        // An origin pole makes the DC value singular; keep the full form.
+    }
+    const std::string hinf_text = pretty(Hinf);
+    const std::string hinf_tex = to_latex(Hinf);
     ex Tle = le_expr(Tp);
     // A high-gain loop has Hcl -> H_inf. In that region expanding
     // (H_inf*T+H0)/(1+T) and pruning it is both unnecessary and extremely
@@ -2317,7 +2320,10 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     }
     Pruned Hcl_p;
     if (use_hinf_hcl) {
-        Hcl_p = ideal.transfer.pruned;
+        // Hcl -> H_inf for a high-gain loop. Hinf is the DC asymptotic gain
+        // here, so the published closed-loop expression is the ideal gain;
+        // the loop's frequency response is still the T(s) report below.
+        Hcl_p = prune_low_entropy(Hinf.numer(), Hinf.denom(), pt, o);
     } else {
         ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
         ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
@@ -2338,7 +2344,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     std::string rep = "Return-ratio / loop-gain analysis\n";
     rep += "reference amplifier: " + s.probe_ref + "\n";
     rep += "----------------------------------------\n";
-    rep += "\nAsymptotic (ideal) gain:\n  H_inf(s) = " + ideal.text + "\n";
+    rep += "\nAsymptotic (ideal) gain:\n  H_inf = " + hinf_text + "\n";
     rep += "\nForward gain with the amplifier off:\n  H_0(s) = " +
            pretty(H0) + "\n";
     rep += "\nReturn ratio:\n  T(s) = -A(s)*beta(s) = " + Tp.text + "\n";
@@ -2355,7 +2361,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // ':' so MathPanel renders them as headings, exactly like poles/zeros.
     std::string lrep;
     lrep += "Asymptotic gain:\n";
-    lrep += "H_{\\infty}(s) = " + latex_rhs(ideal.latex) + "\n";
+    lrep += "H_{\\infty} = " + hinf_tex + "\n";
     lrep += "Forward gain with the amplifier off:\n";
     lrep += "H_0(s) = " + to_latex(H0) + "\n";
     lrep += "Return ratio:\n";
@@ -2374,7 +2380,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // the typeset tab leads straight with the report and does not repeat it.
     cr.latex.clear();
     cr.latex_report = lrep;
-    cr.summary = "H_inf = " + ideal.text + " ;  T = " + Tp.text;
+    cr.summary = "H_inf = " + hinf_text + " ;  T = " + Tp.text;
     cr.report = rep;
     cr.has_transfer = true;
     cr.transfer = res;
