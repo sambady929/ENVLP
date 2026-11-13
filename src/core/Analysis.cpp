@@ -2035,7 +2035,27 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // T is the controlled-source return ratio, and retaining every parasitic
     // here makes the symbolic T expansion needlessly large. The H(s) path
     // below keeps them, because there they are needed for numerical identity.
-    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
+    //
+    // The nullor's output port is referenced to AC ground, not to the
+    // transistor's source. A transistor's source is only the AC reference for
+    // its input port; making it the output-port negative as well shorts the
+    // nullor's two bottom pins and lets a capacitance at the drain load the
+    // ideal gain. If the drain itself is the AC ground (a source follower),
+    // the source is the output terminal instead.
+    AmpPorts hports = ports;
+    if (ref->kind == Kind::NMOS || ref->kind == Kind::PMOS ||
+        ref->kind == Kind::NPN || ref->kind == Kind::PNP) {
+        if (ref->nodes.size() >= 3) {
+            const std::string& d = ref->nodes[0];
+            const std::string& s = ref->nodes[2];
+            auto ac_ground = [](const std::string& n) {
+                return n == "0" || n == "GND" || n == "VDD";
+            };
+            hports.op = ac_ground(d) ? s : d;
+            hports.on = "0";
+        }
+    }
+    Circuit ci = nullor_reference_circuit(c, s.probe_ref, hports, false);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
@@ -2286,19 +2306,8 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         return (e / d).normal();
     };
     ex Hinf = le_expr(ideal.transfer.pruned);
-    // H_inf is the ideal (asymptotic) gain: the value the loop settles to
-    // when the reference gain is infinite. Evaluate it at DC for the ideal
-    // gain; the frequency dependence of the loop belongs to T(s), not to the
-    // asymptotic gain. The network itself is solved with every capacitance in
-    // place, so no device model is altered.
-    try {
-        ex hinf_dc = Hinf.subs(s_ex == 0).normal();
-        if (!hinf_dc.has(s_ex)) Hinf = hinf_dc;
-    } catch (const std::exception&) {
-        // An origin pole makes the DC value singular; keep the full form.
-    }
-    const std::string hinf_text = pretty(Hinf);
-    const std::string hinf_tex = to_latex(Hinf);
+    const std::string hinf_text = ideal.text;
+    const std::string hinf_tex = latex_rhs(ideal.latex);
     ex Tle = le_expr(Tp);
     // A high-gain loop has Hcl -> H_inf. In that region expanding
     // (H_inf*T+H0)/(1+T) and pruning it is both unnecessary and extremely
@@ -2320,10 +2329,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     }
     Pruned Hcl_p;
     if (use_hinf_hcl) {
-        // Hcl -> H_inf for a high-gain loop. Hinf is the DC asymptotic gain
-        // here, so the published closed-loop expression is the ideal gain;
-        // the loop's frequency response is still the T(s) report below.
-        Hcl_p = prune_low_entropy(Hinf.numer(), Hinf.denom(), pt, o);
+        Hcl_p = ideal.transfer.pruned;
     } else {
         ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
         ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
@@ -2344,7 +2350,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     std::string rep = "Return-ratio / loop-gain analysis\n";
     rep += "reference amplifier: " + s.probe_ref + "\n";
     rep += "----------------------------------------\n";
-    rep += "\nAsymptotic (ideal) gain:\n  H_inf = " + hinf_text + "\n";
+    rep += "\nAsymptotic (ideal) gain:\n  H_inf(s) = " + hinf_text + "\n";
     rep += "\nForward gain with the amplifier off:\n  H_0(s) = " +
            pretty(H0) + "\n";
     rep += "\nReturn ratio:\n  T(s) = -A(s)*beta(s) = " + Tp.text + "\n";
@@ -2361,7 +2367,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // ':' so MathPanel renders them as headings, exactly like poles/zeros.
     std::string lrep;
     lrep += "Asymptotic gain:\n";
-    lrep += "H_{\\infty} = " + hinf_tex + "\n";
+    lrep += "H_{\\infty}(s) = " + hinf_tex + "\n";
     lrep += "Forward gain with the amplifier off:\n";
     lrep += "H_0(s) = " + to_latex(H0) + "\n";
     lrep += "Return ratio:\n";
