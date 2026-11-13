@@ -25,6 +25,17 @@ using GiNaC::is_a;
 
 namespace {
 
+// Total node count of an expression, capped so a huge assembly can be
+// rejected without walking the whole tree. Used to keep the generic pruner
+// away from return-ratio results whose top level looks small but whose terms
+// are enormous.
+size_t expression_nodes(const ex& e, size_t limit) {
+    size_t n = 1;
+    for (size_t i = 0; i < e.nops() && n < limit; ++i)
+        n += expression_nodes(e.op(i), limit - n);
+    return n;
+}
+
 // An underscore starts a subscript in LaTeX, so a name that carries one
 // (a branch like I(__SHORT__)) has to be escaped before it goes into the
 // typeset report -- otherwise MathJax reports "Missing open brace for
@@ -109,6 +120,10 @@ struct RawTF {
 // H0 pieces. This guard keeps those inner solves from recursively attempting
 // another return-ratio extraction.
 thread_local bool g_return_ratio_active = false;
+// Set when a candidate's assembled H(s) is too large to prune cheaply. Trying
+// another amplifier reference usually produces a similarly large expression,
+// so the caller can stop and use the direct solve instead.
+thread_local bool g_rr_too_large = false;
 
 // Try to assemble H(s) from a feedback loop (Rosenstark/Mason). Declared here
 // because analyze_tf() is defined before the return-ratio machinery.
@@ -1804,6 +1819,17 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
         T = (T / (1 + s_sym * A / gsym)).normal();
     }
 
+    // A large device capacitance can make T expand into thousands of terms.
+    // Assembling H0 and Hle from it would then hand the generic pruner an
+    // expression that takes minutes (or effectively hangs). Stop here and let
+    // the caller take the direct MNA path, which is compact for these
+    // driving-point-like cases.
+    const size_t t_nodes = expression_nodes(T, 500);
+    if (t_nodes >= 500) {
+        g_rr_too_large = true;
+        return false;
+    }
+
     // Forward gain with the reference controlled source switched off. This
     // only needs the raw MNA ratio (H0 is a small correction term), so avoid
     // the full report/prune path.
@@ -1877,8 +1903,16 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
 
     // Do not hand an enormous expanded expression to the generic pruner: in a
     // moderate-loop case that can take minutes. The direct solver remains the
-    // safe fallback for such topologies.
-    if (Hle.numer().nops() + Hle.denom().nops() > 300) return false;
+    // safe fallback for such topologies. The asymptotic-gain shortcut above
+    // handles the usual high-gain case; this limit catches the assemblies that
+    // are too large to factor cheaply (e.g. a device capacitance that makes the
+    // loop expression grow by an order of magnitude).
+    const size_t hle_nodes = expression_nodes(Hle.numer(), 600) +
+                             expression_nodes(Hle.denom(), 600);
+    if (hle_nodes > 600) {
+        g_rr_too_large = true;
+        return false;
+    }
 
     out.num = Hle.numer();
     out.den = Hle.denom();
@@ -1926,9 +1960,11 @@ bool try_return_ratio_tf(const Circuit& c, const AnalysisSpec& s, RawTF& out) {
     });
     // Trying a handful of candidates keeps pathological circuits bounded.
     const size_t limit = std::min<size_t>(cands.size(), 4);
+    g_rr_too_large = false;
     for (size_t i = 0; i < limit; ++i) {
         if (try_one_return_ratio(c, s, *cands[i].comp, cands[i].ports, out))
             return true;
+        if (g_rr_too_large) break;
     }
     return false;
 }
