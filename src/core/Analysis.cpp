@@ -2511,7 +2511,11 @@ CardResult analyze_zout(const Circuit& c, const AnalysisSpec& s) {
     AnalysisSpec s2 = s;
     s2.input_ref = "__ITEST__";
     s2.output = "V(" + node + ")";
-    CardResult cr = analyze_tf(cs, s2);
+    // A driving-point impedance is not a forward transfer with a feedback
+    // loop: going through the return-ratio detector only tries (and rejects)
+    // amplifier references. Solve it directly and prune once.
+    RawTF t = raw_tf(cs, "__ITEST__", s2.output);
+    CardResult cr = make_transfer(t, s2, "Output impedance");
     cr.kind = AnalysisKind::OutputImpedance;
     cr.title = "Output impedance at " + node;
     cr.text = "Zout = " + cr.text;
@@ -2874,8 +2878,24 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         bool voltage = false;
     };
     std::vector<SrcDens> dens;
+    // Many noise sources share the same transfer to the output (a resistor
+    // and a device current both see the same H(s), for example). Factoring
+    // |H|^2 is the expensive part of the analysis, so factor each distinct
+    // transfer once and reuse it.
+    struct H2Entry {
+        ex xfer;
+        ex h2;
+    };
+    std::vector<H2Entry> h2_cache;
+    auto h2_of = [&](const ex& xfer) -> ex {
+        for (const auto& entry : h2_cache)
+            if (entry.xfer.is_equal(xfer)) return entry.h2;
+        ex h2 = mag2f(xfer);
+        h2_cache.push_back({xfer, h2});
+        return h2;
+    };
     for (const auto& src : srcs) {
-        ex h2 = mag2f(src.xfer);
+        ex h2 = h2_of(src.xfer);
         if (h2.is_zero()) continue;
         ex th = src.psd_sym.is_zero() ? ex(GiNaC::numeric(src.psd_const))
                                       : src.psd_sym;

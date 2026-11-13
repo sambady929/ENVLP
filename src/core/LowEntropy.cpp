@@ -1709,13 +1709,15 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
                     return false;
                 };
                 if (has_neg(c)) {
-                    // Normalize over a common denominator so the shared
-                    // (ro_M1 + ro_M4) factor surfaces, then factor it out:
-                    // gm_M4*gm_M1*(ro_M1+ro_M4) exposes (ro_M1+ro_M4) for the
-                    // parallel match. factor() throws on held par/ser atoms, so
-                    // keep the normalized form on failure.
-                    try { c = GiNaC::factor(c.normal()); }
-                    catch (const std::exception&) { c = c.normal(); }
+                    // Normalize over a common denominator, then pull out the
+                    // common factors structurally. A full GiNaC factor() on a
+                    // large symbolic rational is very expensive (tens of
+                    // seconds on an output impedance); the structural pass
+                    // exposes the same (ro_M1 + ro_M4)-style factor for the
+                    // parallel match without the polynomial factorization.
+                    c = c.normal();
+                    ex fc = factor_common_impl(c);
+                    if (!fc.is_zero()) c = fc;
                 }
                 if (is_a<GiNaC::add>(c)) {
                     ex cc = 0;
