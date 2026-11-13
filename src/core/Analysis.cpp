@@ -1914,6 +1914,37 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
         return false;
     }
 
+    // A linear network with N independent reactive elements has a transfer
+    // denominator of degree at most N. If the assembled expression has a
+    // higher degree, it is carrying an uncancelled common pole/zero pair (the
+    // pruner would print duplicate numerical poles). The direct solve gives
+    // the reduced form and is cheaper, so use it.
+    int reactive = 0;
+    bool reactive_known = true;
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::T || cc.kind == Kind::K) {
+            reactive_known = false; // coupled magnetics: leave the check alone
+            break;
+        }
+        if (cc.kind == Kind::C || cc.kind == Kind::L) ++reactive;
+        for (const auto& pd : param_defs(cc.kind))
+            if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad &&
+                cc.param_enabled(pd.name))
+                ++reactive;
+    }
+    if (reactive_known) {
+        int deg = 0;
+        try {
+            deg = Hle.denom().has(s_sym) ? Hle.denom().degree(s_sym) : 0;
+        } catch (...) {
+            deg = 0;
+        }
+        if (deg > reactive) {
+            g_rr_too_large = true;
+            return false;
+        }
+    }
+
     out.num = Hle.numer();
     out.den = Hle.denom();
     out.params = pt;
@@ -2004,7 +2035,17 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // T is the controlled-source return ratio, and retaining every parasitic
     // here makes the symbolic T expansion needlessly large. The H(s) path
     // below keeps them, because there they are needed for numerical identity.
-    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
+    //
+    // H_inf is the *asymptotic* gain, so it must not carry another device's
+    // capacitance either: a Cgs on a later stage would load the ideal
+    // reference's output and turn the ideal gain into a frequency-dependent
+    // expression (and make a single-pole circuit look much larger than it is).
+    Circuit c_ideal = c;
+    for (auto& cc : c_ideal.comps)
+        for (const auto& pd : param_defs(cc.kind))
+            if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad)
+                cc.param_on[pd.name] = false;
+    Circuit ci = nullor_reference_circuit(c_ideal, s.probe_ref, ports, false);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
