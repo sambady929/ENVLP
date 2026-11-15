@@ -2035,27 +2035,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // T is the controlled-source return ratio, and retaining every parasitic
     // here makes the symbolic T expansion needlessly large. The H(s) path
     // below keeps them, because there they are needed for numerical identity.
-    //
-    // The nullor's output port is referenced to AC ground, not to the
-    // transistor's source. A transistor's source is only the AC reference for
-    // its input port; making it the output-port negative as well shorts the
-    // nullor's two bottom pins and lets a capacitance at the drain load the
-    // ideal gain. If the drain itself is the AC ground (a source follower),
-    // the source is the output terminal instead.
-    AmpPorts hports = ports;
-    if (ref->kind == Kind::NMOS || ref->kind == Kind::PMOS ||
-        ref->kind == Kind::NPN || ref->kind == Kind::PNP) {
-        if (ref->nodes.size() >= 3) {
-            const std::string& d = ref->nodes[0];
-            const std::string& s = ref->nodes[2];
-            auto ac_ground = [](const std::string& n) {
-                return n == "0" || n == "GND" || n == "VDD";
-            };
-            hports.op = ac_ground(d) ? s : d;
-            hports.on = "0";
-        }
-    }
-    Circuit ci = nullor_reference_circuit(c, s.probe_ref, hports, false);
+    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
