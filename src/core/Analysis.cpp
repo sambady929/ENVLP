@@ -1273,11 +1273,31 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
     }
 
     PruneOptions o = opts_of(s);
-    // PSR low-entropy form
+    // Prune the two transfers separately, then form PSRR as their ratio of
+    // factored forms. Pruning Hsig/Hpsr directly expands a large rational
+    // expression and can spend minutes in symbolic normalization.
+    Pruned sig_p = prune_low_entropy(sig.num, sig.den, sig.params, o);
     Pruned psr_p = prune_low_entropy(psr.num, psr.den, psr.params, o);
     Pruned psrr_p;
-    if (psrr_ok)
-        psrr_p = prune_low_entropy(psrr.numer(), psrr.denom(), sig.params, o);
+    if (psrr_ok) {
+        psrr_p.gain = (sig_p.gain / psr_p.gain).normal();
+        psrr_p.num_factors = sig_p.num_factors;
+        psrr_p.num_factors.insert(psrr_p.num_factors.end(),
+                                  psr_p.den_factors.begin(),
+                                  psr_p.den_factors.end());
+        psrr_p.den_factors = psr_p.num_factors;
+        psrr_p.den_factors.insert(psrr_p.den_factors.end(),
+                                  sig_p.den_factors.begin(),
+                                  sig_p.den_factors.end());
+        ex num = psrr_p.gain;
+        for (const auto& f : psrr_p.num_factors) num *= f.expr;
+        ex den = ex(1);
+        for (const auto& f : psrr_p.den_factors) den *= f.expr;
+        psrr_p.num_poly = num;
+        psrr_p.den_poly = den;
+        psrr_p.text = pretty_ratio(num, den, s_sym);
+        psrr_p.latex = "H(s) = " + to_latex(num / den);
+    }
     if (psrr_p.text.empty()) psrr_p.text = "0 (no supply coupling)";
 
     std::string rep = "PSR / PSRR analysis\n";
