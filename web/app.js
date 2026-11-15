@@ -7,7 +7,7 @@
 /* The build id: bump it whenever the front-end or the engine changes, so a
  * browser never mixes an old envlp.js with a new envlp.wasm (or keeps a
  * stale copy of either). */
-const BUILD = '65';
+const BUILD = '66';
 
 const $ = (id) => document.getElementById(id);
 

@@ -1716,10 +1716,8 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
     ParamTable pt;
     ex Hinf_raw = 0, Hinf_le = 0;
     ex H0_raw = 0, H0_le = 0;
-    Pruned Hinf_ready;
     std::string out_desc;
     std::vector<TimeConstant> octc;
-    std::vector<TimeConstant> Hinf_octc;
 
     try {
         Circuit ci = nullor_reference_circuit(c, ref.ref, ports);
@@ -1727,36 +1725,10 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
         if (!ideal.has_transfer) return false;
         Hinf_raw = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
         Hinf_le = pruned_to_expr(ideal.transfer.pruned);
-        Hinf_ready = ideal.transfer.pruned;
-        Hinf_octc = ideal.transfer.octc;
         pt = ideal.transfer.params;
         out_desc = ideal.transfer.output_desc;
     } catch (const std::exception&) {
         return false;
-    }
-
-    // High-loop-gain shortcut. The asymptotic gain is already a factored
-    // expression; when it matches the network to the pruning tolerance, use it
-    // for both the presentation and the raw ratio/plot. This avoids the large
-    // T/H0 symbolic expansion and a second full MNA solve.
-    {
-        std::string out_node = rr_voltage_node(s.output);
-        if (!out_node.empty() &&
-            verify_return_ratio(c, s, out_node, Hinf_le, pt, 0.20)) {
-            // The asymptotic gain is the answer for a high-gain loop, and it
-            // is already the pruned expression we show. Do not pay for a
-            // second full MNA solve just to plot a nearly identical curve:
-            // the nullor solve's raw ratio and time constants describe the
-            // same high-gain limit.
-            out.num = Hinf_raw.numer();
-            out.den = Hinf_raw.denom();
-            out.params = pt;
-            out.out_desc = out_desc.empty() ? s.output : out_desc;
-            out.octc = Hinf_octc;
-            out.ready_pruned = true;
-            out.ready = Hinf_ready;
-            return true;
-        }
     }
 
     // Feedback factor with the reference gain opened. The device's passive
@@ -1874,39 +1846,11 @@ bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
     } catch (const std::exception&) {
         octc.clear();
     }
-    // For a high-gain loop Hcl -> H_inf. Keep the exact raw H for plots and
-    // metrics, but publish the already-factored asymptotic gain as the
-    // low-entropy presentation. The loose numeric check guards this shortcut.
-    bool high_gain = false;
-    try {
-        double w0 = 2.0 * M_PI * (s.f0_hz > 0.0 ? s.f0_hz : 1.0);
-        double tm = std::abs(eval_complex(T, pt, w0));
-        double hm = std::abs(eval_complex(Hinf_raw, pt, w0));
-        double h0m = std::abs(eval_complex(H0_raw, pt, w0));
-        high_gain = std::isfinite(tm) && tm > 20.0 &&
-                    std::isfinite(hm) &&
-                    (!std::isfinite(h0m) || h0m < 0.25 * (hm + 1e-30));
-    } catch (const std::exception&) {
-    }
-    if (high_gain &&
-        verify_return_ratio(c, s, rr_voltage_node(s.output), Hinf_le, pt,
-                            0.20)) {
-        out.num = Hraw.numer();
-        out.den = Hraw.denom();
-        out.params = pt;
-        out.out_desc = out_desc.empty() ? s.output : out_desc;
-        out.octc = octc;
-        out.ready_pruned = true;
-        out.ready = Hinf_ready;
-        return true;
-    }
-
     // Do not hand an enormous expanded expression to the generic pruner: in a
     // moderate-loop case that can take minutes. The direct solver remains the
-    // safe fallback for such topologies. The asymptotic-gain shortcut above
-    // handles the usual high-gain case; this limit catches the assemblies that
-    // are too large to factor cheaply (e.g. a device capacitance that makes the
-    // loop expression grow by an order of magnitude).
+    // safe fallback for such topologies. This limit catches assemblies that
+    // are too large to factor cheaply (e.g. a device capacitance that makes
+    // the loop expression grow by an order of magnitude).
     const size_t hle_nodes = expression_nodes(Hle.numer(), 600) +
                              expression_nodes(Hle.denom(), 600);
     if (hle_nodes > 600) {
@@ -2289,28 +2233,15 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     const std::string hinf_text = ideal.text;
     const std::string hinf_tex = latex_rhs(ideal.latex);
     ex Tle = le_expr(Tp);
-    // A high-gain loop has Hcl -> H_inf. In that region expanding
-    // (H_inf*T+H0)/(1+T) and pruning it is both unnecessary and extremely
-    // expensive (the symbolic cancellation is large); report the already
-    // factored asymptotic gain instead. For moderate loop gain keep the exact
-    // assembled expression.
-    bool use_hinf_hcl = false;
-    try {
-        double w0 = 2.0 * M_PI * (s.f0_hz > 0.0 ? s.f0_hz : 1.0);
-        // Use the unpruned T for the regime test: pruning T can remove the
-        // small terms that distinguish a 30 dB loop from a 45 dB one.
-        double tm = std::abs(eval_complex(T, pt, w0));
-        double hm = std::abs(eval_complex(Hinf, pt, w0));
-        double h0m = std::abs(eval_complex(H0, pt, w0));
-        use_hinf_hcl = std::isfinite(tm) && tm > 20.0 &&
-                        std::isfinite(hm) &&
-                        (!std::isfinite(h0m) || h0m < 0.25 * (hm + 1e-30));
-    } catch (const std::exception&) {
-    }
-    Pruned Hcl_p;
-    if (use_hinf_hcl) {
-        Hcl_p = ideal.transfer.pruned;
-    } else {
+    // The closed-loop gain shown on a loop-gain card is the actual H(s), not a
+    // separately re-expanded H_inf/T/H0 product. Re-expanding that product
+    // produced enormous, and sometimes inconsistent, expressions. Reuse the
+    // ordinary transfer-function analysis so H(s) and the loop-gain card agree.
+    AnalysisSpec hspec = s;
+    hspec.kind = AnalysisKind::TransferFunction;
+    CardResult hcl = analyze_tf(c, hspec);
+    Pruned Hcl_p = hcl.transfer.pruned;
+    if (!hcl.has_transfer) {
         ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
         ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
         Hcl_p = prune_low_entropy(Hcl_ratio.numer(), Hcl_ratio.denom(), pt, o);
