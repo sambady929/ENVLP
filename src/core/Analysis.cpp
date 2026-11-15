@@ -1843,6 +1843,16 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         return cr;
     }
 
+    // Compute the closed-loop H(s) before constructing any of the reduced
+    // nullor/beta/H0 networks. This keeps the card's H(s) identical to the
+    // ordinary transfer-function analysis and avoids carrying state from the
+    // reduced solves into the presentation.
+    AnalysisSpec hspec = s;
+    hspec.kind = AnalysisKind::TransferFunction;
+    CardResult hcl = analyze_tf(c, hspec);
+    Pruned Hcl_p = hcl.transfer.pruned;
+    const bool have_hcl = hcl.has_transfer;
+
     // Only the ideal/asymptotic solve and beta are needed for T. The actual
     // closed-loop H(s) is H_inf*T/(1+T) + H0/(1+T); solving it separately was
     // a full extra symbolic MNA solve and dominated the loop-gain runtime.
@@ -1853,11 +1863,11 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     // The nullor is a two-port: the INPUT port (in+, in-) is the nullator and
     // the OUTPUT port (out+, out-) is the norator. Map each amplifier kind's
     // ports onto it.
-    // Loop gain keeps the previous ideal reference (no synthesized ro/caps):
-    // T is the controlled-source return ratio, and retaining every parasitic
-    // here makes the symbolic T expansion needlessly large. The H(s) path
-    // below keeps them, because there they are needed for numerical identity.
-    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, false);
+    // Keep the reference's physical parasitics in the nullor and beta
+    // networks. Removing them for speed made T and H_inf disagree with the
+    // closed-loop transfer (e.g. Cds_M1 vanished from loop gain but remained
+    // in H(s)). The fast determinant is now cheap enough to keep them.
+    Circuit ci = nullor_reference_circuit(c, s.probe_ref, ports, true);
     CardResult ideal;
     try {
         ideal = analyze_tf(ci, s);
@@ -1870,7 +1880,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     s_ex = pt.get("s");
 
     // ---- 2. beta: drive the output with a test voltage, control opened ----
-    Circuit ct = beta_reference_circuit(c, s.probe_ref, ports, false);
+    Circuit ct = beta_reference_circuit(c, s.probe_ref, ports, true);
     {
         Component vt;
         vt.kind = reference_uses_current_test(*ref) ? Kind::I : Kind::V;
@@ -2111,15 +2121,7 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
     const std::string hinf_text = ideal.text;
     const std::string hinf_tex = latex_rhs(ideal.latex);
     ex Tle = le_expr(Tp);
-    // The closed-loop gain shown on a loop-gain card is the actual H(s), not a
-    // separately re-expanded H_inf/T/H0 product. Re-expanding that product
-    // produced enormous, and sometimes inconsistent, expressions. Reuse the
-    // ordinary transfer-function analysis so H(s) and the loop-gain card agree.
-    AnalysisSpec hspec = s;
-    hspec.kind = AnalysisKind::TransferFunction;
-    CardResult hcl = analyze_tf(c, hspec);
-    Pruned Hcl_p = hcl.transfer.pruned;
-    if (!hcl.has_transfer) {
+    if (!have_hcl) {
         ex Hcl_formula = ((Hinf * Tle + H0) / (1 + Tle)).normal();
         ex Hcl_ratio = (Hcl_formula.numer() / Hcl_formula.denom()).normal();
         Hcl_p = prune_low_entropy(Hcl_ratio.numer(), Hcl_ratio.denom(), pt, o);
