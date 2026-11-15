@@ -25,17 +25,6 @@ using GiNaC::is_a;
 
 namespace {
 
-// Total node count of an expression, capped so a huge assembly can be
-// rejected without walking the whole tree. Used to keep the generic pruner
-// away from return-ratio results whose top level looks small but whose terms
-// are enormous.
-size_t expression_nodes(const ex& e, size_t limit) {
-    size_t n = 1;
-    for (size_t i = 0; i < e.nops() && n < limit; ++i)
-        n += expression_nodes(e.op(i), limit - n);
-    return n;
-}
-
 // An underscore starts a subscript in LaTeX, so a name that carries one
 // (a branch like I(__SHORT__)) has to be escaped before it goes into the
 // typeset report -- otherwise MathJax reports "Missing open brace for
@@ -100,6 +89,403 @@ AnalysisRequest req_of(const AnalysisSpec& s, const std::string& in,
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Graph/EET transfer-function extraction
+//
+// The MNA solve produces a raw rational function by expanding a determinant.
+// For a network whose reactive elements are explicit C/L branches, the same
+// function can be built as a product of EET factors instead:
+//
+//   H = H_ref * (1 + Z/Zn) / (1 + Z/Zd)
+//
+// where Zn and Zd are the open-port driving-point impedances with the output
+// nulled and with the input zeroed. We obtain them from three EET solves:
+// the element shorted, open, and replaced by a 1-ohm resistor. The recursion
+// peels one element at a time; the reference transfer for the next step is the
+// same network with the peeled element at its reference value. The result is
+// verified symbolically against the ordinary MNA solve before it is accepted,
+// so an unsupported topology falls back to the exact MNA path.
+// ---------------------------------------------------------------------------
+struct EetTF {
+    bool ok = false;
+    ex num, den;
+    ParamTable params;
+    std::string out_desc;
+};
+
+// One peelable reactive element: an explicit C/L, or an enabled device
+// capacitance such as Cds_M1. `param` is empty for an explicit component.
+struct EetElem {
+    std::string key;                 // C1, Cds_M1, ...
+    std::string comp;                // owning component ref
+    std::string param;               // empty for explicit C/L
+    bool cap = true;
+    std::vector<std::string> nodes;  // the two terminals
+};
+
+// EET's linear-fractional fit needs the held R1||R2 / (R2+R3) groups to behave
+// as algebraic atoms, but we must not expand them: that destroys exactly the
+// low-entropy grouping the solver is trying to preserve. Give each distinct
+// held group a temporary symbol for the derivation, then restore the group in
+// the final expression.
+struct EetGroups {
+    std::map<ex, ex> to_sym;
+    std::map<ex, ex> from_sym;
+    int next = 0;
+
+    ex atomize(const ex& e) {
+        GiNaC::exmap m;
+        std::function<void(const ex&)> collect = [&](const ex& x) {
+            if (is_parallel(x) || is_series(x)) {
+                auto it = to_sym.find(x);
+                if (it == to_sym.end()) {
+                    std::string name = "__EET_GROUP_" + std::to_string(next++);
+                    ex sym = GiNaC::symbol(name);
+                    to_sym[x] = sym;
+                    from_sym[sym] = x;
+                    it = to_sym.find(x);
+                }
+                m[x] = it->second;
+                return;
+            }
+            for (size_t i = 0; i < x.nops(); ++i) collect(x.op(i));
+        };
+        collect(e);
+        return m.empty() ? e : e.subs(m);
+    }
+
+    ex restore(const ex& e) const {
+        GiNaC::exmap m;
+        for (const auto& kv : from_sym) m[kv.first] = kv.second;
+        return m.empty() ? e : e.subs(m).normal();
+    }
+};
+
+// Numeric verification of an EET candidate against the exact MNA result.
+// Symbolically normalizing the expanded candidate is very expensive on large
+// device models; evaluating a few frequencies is much cheaper and still
+// rejects an incorrect EET fit before it is presented.
+bool eet_matches_exact(const ex& candidate, const ex& exact,
+                       const ParamTable& params) {
+    const double freqs[] = {1.0, 1e3, 1e6, 1e9};
+    for (double w : freqs) {
+        std::complex<double> a = eval_complex(candidate, params, w);
+        std::complex<double> b = eval_complex(exact, params, w);
+        if (!std::isfinite(a.real()) || !std::isfinite(a.imag()) ||
+            !std::isfinite(b.real()) || !std::isfinite(b.imag()))
+            return false;
+        double scale = std::max(std::abs(b), 1e-30);
+        if (std::abs(a - b) / scale > 1e-4) return false;
+    }
+    return true;
+}
+
+// Verification-only expansion. The final result keeps the held groups, but
+// two algebraically equal expressions can use different par()/ser() nodes;
+// expand both sides just for the equality check.
+ex eet_expand_groups(const ex& e) {
+    GiNaC::exmap m;
+    std::function<void(const ex&)> collect = [&](const ex& x) {
+        if (is_parallel(x)) {
+            auto a = parallel_args(x);
+            if (a.size() == 2) {
+                ex av = eet_expand_groups(a[0]);
+                ex bv = eet_expand_groups(a[1]);
+                m[x] = (av * bv / (av + bv)).normal();
+                return;
+            }
+        }
+        if (is_series(x)) {
+            auto a = series_args(x);
+            if (a.size() == 2) {
+                m[x] = (eet_expand_groups(a[0]) +
+                        eet_expand_groups(a[1])).normal();
+                return;
+            }
+        }
+        for (size_t i = 0; i < x.nops(); ++i) collect(x.op(i));
+    };
+    collect(e);
+    return m.empty() ? e : e.subs(m).normal();
+}
+
+bool eet_solve_h(const Circuit& c, const std::string& input,
+                 const std::string& output,
+                 const std::set<std::string>& used, ex& H,
+                 ParamTable& params, std::string* out_desc = nullptr) {
+    try {
+        AnalysisRequest r;
+        r.input_ref = input;
+        r.output = output;
+        r.used_nodes = used;
+        Solved s = solve(c, r);
+        H = (s.num / s.den).normal();
+        params = std::move(s.params);
+        if (out_desc) *out_desc = s.output_desc;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool eet_eligible(const Circuit& c, std::vector<EetElem>& elems) {
+    elems.clear();
+    for (const auto& cc : c.comps) {
+        if (cc.kind == Kind::K || cc.kind == Kind::T) return false;
+        if (cc.kind == Kind::C || cc.kind == Kind::L) {
+            if (!cc.mirror_ref.empty()) return false;
+            if (cc.nodes.size() < 2) return false;
+            elems.push_back({cc.ref, cc.ref, "", cc.kind == Kind::C,
+                             {cc.nodes[0], cc.nodes[1]}});
+            // Passive parasitics change the topology inside the component;
+            // leave those to the MNA fallback.
+            for (const auto& pd : param_defs(cc.kind))
+                if (cc.param_enabled(pd.name)) return false;
+        }
+        if (cc.param_enabled("GBW") && cc.param_estimate("GBW") > 0.0)
+            return false;
+
+        // Device capacitances are two-terminal branches in the small-signal
+        // model. Cgs, Cgd and Cds are enough for the common transistor stages;
+        // Cdb/Cpi/Cmu are also visible two-terminal branches.
+        auto add_cap = [&](const char* name, const std::string& a,
+                           const std::string& b) {
+            if (!cc.param_enabled(name)) return;
+            if (cc.nodes.size() < 3) return;
+            elems.push_back({param_symbol(cc, name), cc.ref, name, true,
+                             {a, b}});
+        };
+        switch (cc.kind) {
+            case Kind::NMOS:
+            case Kind::PMOS:
+                add_cap("Cgs", cc.nodes[1], cc.nodes[2]);
+                add_cap("Cgd", cc.nodes[1], cc.nodes[0]);
+                add_cap("Cds", cc.nodes[0], cc.nodes[2]);
+                add_cap("Cdb", cc.nodes[0], cc.nodes[2]);
+                break;
+            case Kind::NPN:
+            case Kind::PNP:
+                add_cap("Cpi", cc.nodes[1], cc.nodes[2]);
+                add_cap("Cmu", cc.nodes[1], cc.nodes[0]);
+                break;
+            case Kind::D:
+                add_cap("Cd", cc.nodes[0], cc.nodes[1]);
+                break;
+            default:
+                break;
+        }
+    }
+    // EET is most useful for a single reactive element. With several device
+    // capacitances the recursive EET variants cost far more than the direct
+    // MNA solve they are meant to avoid, so let those take the direct path.
+    return !elems.empty() && elems.size() <= 1;
+}
+
+Circuit eet_variant(const Circuit& c, const EetElem& elem, int mode) {
+    Circuit out = c;
+    if (elem.param.empty()) {
+        for (size_t i = 0; i < out.comps.size(); ++i) {
+            if (out.comps[i].ref != elem.comp) continue;
+            if (mode == 0) {
+                out.comps.erase(out.comps.begin() + i);
+            } else {
+                Component replacement = out.comps[i];
+                replacement.ref = (mode == 1) ? "__EET_SHORT__"
+                                  : (mode == 2) ? "__EET_ONE__"
+                                                : "__EET_SMALL__";
+                replacement.kind = (mode == 1) ? Kind::V : Kind::R;
+                replacement.value_text = (mode == 1) ? "0"
+                                        : (mode == 2) ? "1"
+                                                      : "0.001";
+                replacement.dc_text = (mode == 1) ? "0" : "";
+                replacement.ac_text = (mode == 1) ? "0" : "";
+                out.comps[i] = replacement;
+            }
+            break;
+        }
+        return out;
+    }
+
+    for (auto& cc : out.comps) {
+        if (cc.ref != elem.comp) continue;
+        cc.param_on[elem.param] = false;
+        break;
+    }
+    if (mode != 0) {
+        Component replacement;
+        replacement.ref = (mode == 1) ? "__EET_SHORT__"
+                          : (mode == 2) ? "__EET_ONE__"
+                                        : "__EET_SMALL__";
+        replacement.kind = (mode == 1) ? Kind::V : Kind::R;
+        replacement.nodes = elem.nodes;
+        replacement.value_text = (mode == 1) ? "0"
+                                : (mode == 2) ? "1"
+                                              : "0.001";
+        replacement.dc_text = (mode == 1) ? "0" : "";
+        replacement.ac_text = (mode == 1) ? "0" : "";
+        out.comps.push_back(replacement);
+    }
+    return out;
+}
+
+bool eet_rec(const Circuit& c, std::vector<EetElem> elems,
+             const std::string& input, const std::string& output,
+             const std::set<std::string>& used, EetGroups& groups,
+             ex& H, ParamTable& params, std::string& out_desc, int depth) {
+    if (depth > 8) return false;
+    if (elems.empty()) {
+        if (!eet_solve_h(c, input, output, used, H, params, &out_desc))
+            return false;
+        H = groups.atomize(H);
+        return true;
+    }
+
+    for (size_t pick = 0; pick < elems.size(); ++pick) {
+        const EetElem elem = elems[pick];
+        if (!c.find(elem.comp)) continue;
+        const bool is_cap = elem.cap;
+
+        Circuit c_open = eet_variant(c, elem, 0);
+        Circuit c_short = eet_variant(c, elem, 1);
+        Circuit c_one = eet_variant(c, elem, 2);
+        Circuit c_small = eet_variant(c, elem, 3);
+        ex H0, Hinf, H1, H2;
+        ParamTable p0, pinf, p1, p2;
+        bool haveinf = eet_solve_h(c_open, input, output, used, Hinf, pinf);
+        bool have0 = false;
+        // For a shunt element the open-circuit reference is already non-zero;
+        // the shorted solve is unnecessary (and can be singular).
+        if (!haveinf || Hinf.is_zero())
+            have0 = eet_solve_h(c_short, input, output, used, H0, p0);
+        if (!eet_solve_h(c_one, input, output, used, H1, p1)) continue;
+        if (!eet_solve_h(c_small, input, output, used, H2, p2)) continue;
+        // The replacement resistors are stamped under their reference names;
+        // substitute their numeric values before fitting the EET coefficients.
+        {
+            GiNaC::exmap sub;
+            sub[p1.get("__EET_ONE__")] = ex(1);
+            H1 = H1.subs(sub).normal();
+            GiNaC::exmap sub2;
+            sub2[p2.get("__EET_SMALL__")] = ex(1) / ex(1000);
+            H2 = H2.subs(sub2).normal();
+        }
+        H0 = groups.atomize(H0);
+        Hinf = groups.atomize(Hinf);
+        H1 = groups.atomize(H1);
+        H2 = groups.atomize(H2);
+        // Prefer the shorted reference (H0) when it exists and is non-zero,
+        // but a shorted port can make the network singular (e.g. an output
+        // capacitor). Fall back to the open reference; two finite impedance
+        // probes then determine Zn/Zd without needing the singular state.
+        // Prefer the open-circuit reference whenever it exists: the
+        // short-circuit fit has a different algebraic form. The shorted form
+        // is only needed for a zero open-circuit transfer (a series element),
+        // which is handled by the special case below.
+        const bool use_open = haveinf && !Hinf.is_zero();
+        const bool use_short = !use_open && have0 && !H0.is_zero();
+        if (!use_short && !use_open) continue;
+        ex Href = use_open ? Hinf : H0;
+        Circuit cref = use_open ? c_open : c_short;
+
+        // For H(Z) = Href * (1 + Z/Zn)/(1 + Z/Zd) (short reference) or
+        // Href * (1 + Zn/Z)/(1 + Zd/Z) (open reference), two finite probes
+        // Z1 = 1 ohm and Z2 = 0.001 ohm solve the linear fractional fit:
+        //   A = Zn, D = Zd,
+        //   A = (r_i - 1) Zi + r_i D,   r_i = H(Zi)/Href.
+        const ex Z1 = ex(1), Z2 = ex(1) / ex(1000);
+        ex Zn, Zd;
+        bool zn_inf = false, zd_inf = false;
+        if (use_short && Hinf.is_zero()) {
+            // H = H0 * (1 + Z/Zn)/(1 + Z/Zd); a zero open-circuit transfer
+            // means Zn is infinite and only Zd is needed.
+            ex r = (H1 / Href).normal();
+            if ((r - 1).is_zero()) continue;
+            zn_inf = true;
+            Zd = (Z1 / (1 / r - 1)).normal();
+        } else if (!use_short && H0.is_zero()) {
+            // H = Hinf * (1 + Zn/Z)/(1 + Zd/Z); a zero short-circuit
+            // transfer means Zn = 0 and only Zd is needed.
+            ex r = (H1 / Href).normal();
+            if ((r - 1).is_zero()) continue;
+            Zn = ex(0);
+            Zd = (Z1 * (1 / r - 1)).normal();
+        } else {
+            ex r1 = (H1 / Href).normal();
+            ex r2 = (H2 / Href).normal();
+            ex den = (r1 - r2).normal();
+            if (den.is_zero()) continue;
+            ex D = (((r2 - 1) * Z2 - (r1 - 1) * Z1) / den).normal();
+            ex A = ((r1 - 1) * Z1 + r1 * D).normal();
+            Zn = A;
+            Zd = D;
+        }
+
+        ex zsym = p1.get(elem.key);
+        ex Z = is_cap ? (ex(1) / (p1.get("s") * zsym)).normal()
+                      : (p1.get("s") * zsym).normal();
+        ex F;
+        if (use_short) {
+            ex n = zn_inf ? ex(1) : (ex(1) + Z / Zn).normal();
+            ex d = zd_inf ? ex(1) : (Zd.is_zero() ? ex(1)
+                                                  : (ex(1) + Z / Zd).normal());
+            F = (n / d).normal();
+        } else {
+            ex n = zn_inf ? ex(1) : (Zn.is_zero() ? ex(1)
+                                                  : (ex(1) + Zn / Z).normal());
+            ex d = zd_inf ? ex(1) : (Zd.is_zero() ? ex(1)
+                                                  : (ex(1) + Zd / Z).normal());
+            F = (n / d).normal();
+        }
+
+        std::vector<EetElem> rest;
+        for (size_t i = 0; i < elems.size(); ++i)
+            if (i != pick) rest.push_back(elems[i]);
+        ex Href_f;
+        ParamTable pref;
+        if (rest.empty()) {
+            Href_f = Href;
+        } else if (!eet_rec(cref, rest, input, output, used, groups, Href_f,
+                            pref, out_desc, depth + 1)) {
+            continue;
+        }
+        ex candidate = (Href_f * F).normal();
+        // Verify against the ordinary exact solve (after restoring the held
+        // groups for the comparison). If the fit is not exact, MNA/LowEntropy
+        // remains the safe fallback.
+        ex exact;
+        ParamTable pexact;
+        std::string od;
+        if (!eet_solve_h(c, input, output, used, exact, pexact, &od)) continue;
+        if (!eet_matches_exact(groups.restore(candidate), exact, pexact))
+            continue;
+        H = candidate;
+        params = pexact;
+        out_desc = od;
+        return true;
+    }
+    return false;
+}
+
+bool eet_transfer(const Circuit& c, const std::string& input,
+                  const std::string& output,
+                  const std::set<std::string>& used, EetTF& out) {
+    std::vector<EetElem> elems;
+    if (!eet_eligible(c, elems)) return false;
+    ex H;
+    ParamTable params;
+    std::string desc;
+    EetGroups groups;
+    if (!eet_rec(c, elems, input, output, used, groups, H, params, desc, 0))
+        return false;
+    H = groups.restore(H);
+    out.ok = true;
+    out.num = H.numer();
+    out.den = H.denom();
+    out.params = std::move(params);
+    out.out_desc = desc;
+    return true;
+}
+
 // H(s) = num/den of V(node) per V(source), returned raw (unpruned).
 struct RawTF {
     ex num, den;
@@ -109,40 +495,34 @@ struct RawTF {
     // every analysis that prunes a transfer function gets the physical
     // element-to-pole attribution.
     std::vector<TimeConstant> octc;
-    // A return-ratio result can carry its low-entropy presentation separately
-    // from the exact raw numerator/denominator. This keeps the plot/metrics
-    // numerically identical while avoiding a second generic prune.
-    bool ready_pruned = false;
-    Pruned ready;
 };
 
-// Return-ratio H(s) needs the ordinary symbolic solve for its H_inf, beta and
-// H0 pieces. This guard keeps those inner solves from recursively attempting
-// another return-ratio extraction.
-thread_local bool g_return_ratio_active = false;
-// Set when a candidate's assembled H(s) is too large to prune cheaply. Trying
-// another amplifier reference usually produces a similarly large expression,
-// so the caller can stop and use the direct solve instead.
-thread_local bool g_rr_too_large = false;
-
-// Try to assemble H(s) from a feedback loop (Rosenstark/Mason). Declared here
-// because analyze_tf() is defined before the return-ratio machinery.
-bool try_return_ratio_tf(const Circuit& c, const AnalysisSpec& s, RawTF& out);
-ex pruned_to_expr(const Pruned& p);
 
 RawTF raw_tf(const Circuit& c, const std::string& input_ref,
              const std::string& output,
-             const std::set<std::string>& used_nodes = {}) {
+             const std::set<std::string>& used_nodes = {},
+             bool allow_eet = true) {
     RawTF t;
-    AnalysisRequest r;
-    r.input_ref = input_ref;
-    r.output = output;
-    r.used_nodes = used_nodes;
-    Solved sv = solve(c, r);
-    t.num = sv.num;
-    t.den = sv.den;
-    t.params = std::move(sv.params);
-    t.out_desc = sv.output_desc;
+    // Build a factored expression with EET first, and verify it against the
+    // exact MNA solve. MNA remains the verifier and the fallback for
+    // unsupported topologies; it is not the preferred producer of the result.
+    EetTF eet;
+    if (allow_eet && eet_transfer(c, input_ref, output, used_nodes, eet)) {
+        t.num = std::move(eet.num);
+        t.den = std::move(eet.den);
+        t.params = std::move(eet.params);
+        t.out_desc = eet.out_desc.empty() ? output : eet.out_desc;
+    } else {
+        AnalysisRequest r;
+        r.input_ref = input_ref;
+        r.output = output;
+        r.used_nodes = used_nodes;
+        Solved sv = solve(c, r);
+        t.num = sv.num;
+        t.den = sv.den;
+        t.params = std::move(sv.params);
+        t.out_desc = sv.output_desc;
+    }
     // OCTC must fold exactly as the main solve did: pass the same used-node set
     // (the caller's extras plus the output node).
     std::set<std::string> octc_used = used_nodes;
@@ -172,9 +552,7 @@ CardResult make_transfer(const RawTF& t, const AnalysisSpec& s,
     res.opts = o;
     res.sweep = s.sweep;
     res.octc = t.octc;
-    res.pruned = t.ready_pruned
-                     ? t.ready
-                     : prune_low_entropy(t.num, t.den, res.params, o);
+    res.pruned = prune_low_entropy(t.num, t.den, res.params, o);
     res.report = format_report(res);
 
     cr.transfer = res;
@@ -218,16 +596,7 @@ std::string strip_first_line(const std::string& report) {
 // s-domain transfer function
 // ---------------------------------------------------------------------------
 CardResult analyze_tf(const Circuit& c, const AnalysisSpec& s) {
-    RawTF t;
-    // First look for a forward path plus a feedback loop and use the
-    // return-ratio assembly. The result is numerically verified against a
-    // direct MNA solve before it is accepted, so a topology that is not a
-    // single-reference feedback loop falls back to the ordinary solver.
-    if (s.kind == AnalysisKind::TransferFunction && !g_return_ratio_active &&
-        try_return_ratio_tf(c, s, t)) {
-        return make_transfer(t, s, "Transfer function");
-    }
-    t = raw_tf(c, s.input_ref, s.output);
+    RawTF t = raw_tf(c, s.input_ref, s.output);
     CardResult cr = make_transfer(t, s, "Transfer function");
     return cr;
 }
@@ -290,25 +659,12 @@ CardResult analyze_ac(const Circuit& c, const AnalysisSpec& s) {
         bool have_le = false;
         ParamTable src_params;
         std::string src_desc;
-        RawTF rr;
-        AnalysisSpec acspec = s;
-        acspec.kind = AnalysisKind::AC;
-        acspec.input_ref = src.ref;
-        if (src.ac != 0.0 && !g_return_ratio_active &&
-            try_return_ratio_tf(c, acspec, rr)) {
-            h = (rr.num / rr.den).normal();
-            src_params = rr.params;
-            src_desc = rr.out_desc;
-            if (rr.ready_pruned) {
-                h_le = pruned_to_expr(rr.ready);
-                have_le = true;
-            }
-        } else {
-            Solved sv = solve(c, r);
-            h = (sv.num / sv.den).normal();
-            src_params = sv.params;
-            src_desc = sv.output_desc;
-        }
+        RawTF rr = raw_tf(c, src.ref, s.output, r.used_nodes);
+        h = (rr.num / rr.den).normal();
+        src_params = rr.params;
+        src_desc = rr.out_desc;
+        h_le = 0;
+        have_le = false;
         if (params.syms.empty()) params = src_params;
         out_desc = src_desc;
         ex term = 0;
@@ -889,11 +1245,6 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
     // return-ratio front end used by H(s) keeps this factored when a feedback
     // loop is present; otherwise raw_tf falls back to the direct MNA solve.
     auto tf_for = [&](const std::string& in) {
-        RawTF rt;
-        AnalysisSpec sp = s;
-        sp.input_ref = in;
-        if (!g_return_ratio_active && try_return_ratio_tf(c, sp, rt))
-            return rt;
         return raw_tf(c, in, s.output);
     };
     RawTF sig = tf_for(s.input_ref);
@@ -1468,482 +1819,9 @@ std::string reference_gain_symbol(const Component& c) {
     }
 }
 
-ex pruned_to_expr(const Pruned& p) {
-    ex e = p.gain;
-    for (const auto& f : p.num_factors) e *= f.expr;
-    ex d = ex(1);
-    for (const auto& f : p.den_factors) d *= f.expr;
-    return (e / d).normal();
-}
-
 // ---------------------------------------------------------------------------
 // Signal-flow graph used to find the loop-defining controlled source.
 // ---------------------------------------------------------------------------
-struct FlowGraph {
-    std::map<std::string, std::vector<std::string>> adj;
-    void add(const std::string& a, const std::string& b) {
-        if (!a.empty() && !b.empty() && a != b) adj[a].push_back(b);
-    }
-    void bi(const std::string& a, const std::string& b) {
-        add(a, b);
-        add(b, a);
-    }
-};
-
-void add_component_flow(FlowGraph& g, const Component& c) {
-    const auto& nd = c.nodes;
-    auto node = [&](size_t i) -> std::string {
-        return i < nd.size() ? nd[i] : std::string("0");
-    };
-    switch (c.kind) {
-        case Kind::R:
-        case Kind::C:
-        case Kind::L:
-        case Kind::D:
-            if (nd.size() >= 2) g.bi(nd[0], nd[1]);
-            break;
-        case Kind::V:
-            if (nd.size() >= 2) g.bi(nd[0], nd[1]);
-            break;
-        case Kind::VDD:
-            if (!nd.empty()) g.bi(nd[0], "0");
-            break;
-        case Kind::T:
-            if (nd.size() >= 4) {
-                g.bi(nd[0], nd[1]);
-                g.bi(nd[2], nd[3]);
-                g.bi(nd[0], nd[2]);
-                g.bi(nd[1], nd[3]);
-            }
-            break;
-        case Kind::NMOS:
-        case Kind::PMOS:
-            if (nd.size() >= 3) {
-                // gate and source both drive the drain current; the output
-                // conductance couples drain and source in both directions.
-                g.add(nd[1], nd[0]);
-                g.add(nd[1], nd[2]);
-                g.add(nd[2], nd[0]);
-                g.bi(nd[0], nd[2]);
-            }
-            break;
-        case Kind::NPN:
-        case Kind::PNP:
-            if (nd.size() >= 3) {
-                g.add(nd[1], nd[0]);
-                g.add(nd[1], nd[2]);
-                g.add(nd[2], nd[0]);
-                g.bi(nd[0], nd[2]);
-            }
-            break;
-        case Kind::IS:
-        case Kind::SBLK:
-            if (nd.size() >= 2) g.add(nd[0], nd[1]);
-            break;
-        default: {
-            AmpPorts p = amp_ports(c);
-            if (p.ok) {
-                // A controlled source transfers its control port to its
-                // output port; this is the directed SFG edge whose return
-                // path identifies a feedback loop.
-                g.add(p.cp, p.op);
-                g.add(p.cp, p.on);
-                g.add(p.cn, p.op);
-                g.add(p.cn, p.on);
-                if (p.current_control) g.bi(p.cp, p.cn);
-            }
-            break;
-        }
-    }
-    (void)node;
-}
-
-int flow_distance(const FlowGraph& g, const std::vector<std::string>& starts,
-                  const std::vector<std::string>& goals, bool allow_equal) {
-    if (goals.empty()) return -1;
-    std::set<std::string> goal_set(goals.begin(), goals.end());
-    std::queue<std::pair<std::string, int>> q;
-    std::set<std::string> seen;
-    for (const auto& s : starts) {
-        if (s.empty() || seen.count(s)) continue;
-        if (allow_equal && goal_set.count(s)) return 0;
-        seen.insert(s);
-        q.push({s, 0});
-    }
-    while (!q.empty()) {
-        auto [u, d] = q.front();
-        q.pop();
-        auto it = g.adj.find(u);
-        if (it == g.adj.end()) continue;
-        for (const auto& v : it->second) {
-            if (v.empty() || seen.count(v)) continue;
-            if (goal_set.count(v)) return d + 1;
-            seen.insert(v);
-            q.push({v, d + 1});
-        }
-    }
-    return -1;
-}
-
-std::string rr_voltage_node(const std::string& output) {
-    if (output.size() < 4 || output.rfind("V(", 0) != 0 ||
-        output.back() != ')')
-        return "";
-    std::string inner = output.substr(2, output.size() - 3);
-    for (char ch : inner)
-        if (ch == '-' || ch == ')') return "";
-    return inner;
-}
-
-int rr_output_var(const MnaSystem& sys, const std::string& output) {
-    std::string want;
-    if (!rr_voltage_node(output).empty())
-        want = "v(" + rr_voltage_node(output) + ")";
-    else if (output.size() > 3 && output.rfind("I(", 0) == 0 &&
-             output.back() == ')')
-        want = "i(" + output.substr(2, output.size() - 3) + ")";
-    else
-        return -1;
-    for (size_t i = 0; i < sys.var_names.size(); ++i)
-        if (sys.var_names[i] == want) return int(i);
-    return -1;
-}
-
-bool solve_complex(std::vector<std::vector<std::complex<double>>> A,
-                   std::vector<std::complex<double>> b,
-                   std::vector<std::complex<double>>& x) {
-    const int n = int(A.size());
-    if (n == 0 || int(b.size()) != n) return false;
-    for (int col = 0; col < n; ++col) {
-        int piv = col;
-        double best = std::abs(A[col][col]);
-        for (int r = col + 1; r < n; ++r) {
-            double v = std::abs(A[r][col]);
-            if (v > best) {
-                best = v;
-                piv = r;
-            }
-        }
-        if (!(best > 1e-300)) return false;
-        if (piv != col) {
-            std::swap(A[piv], A[col]);
-            std::swap(b[piv], b[col]);
-        }
-        const std::complex<double> d = A[col][col];
-        for (int r = col + 1; r < n; ++r) {
-            const std::complex<double> f = A[r][col] / d;
-            if (std::abs(f) == 0.0) continue;
-            for (int k = col; k < n; ++k) A[r][k] -= f * A[col][k];
-            b[r] -= f * b[col];
-        }
-    }
-    x.assign(n, {});
-    for (int r = n - 1; r >= 0; --r) {
-        std::complex<double> sum = b[r];
-        for (int k = r + 1; k < n; ++k) sum -= A[r][k] * x[k];
-        x[r] = sum / A[r][r];
-    }
-    return true;
-}
-
-bool numeric_mna_value(const MnaSystem& sys, int out_idx, double omega,
-                       std::complex<double>& value) {
-    if (out_idx < 0 || out_idx >= sys.n) return false;
-    std::vector<std::vector<std::complex<double>>> A(
-        sys.n, std::vector<std::complex<double>>(sys.n));
-    std::vector<std::complex<double>> b(sys.n);
-    for (int i = 0; i < sys.n; ++i) {
-        b[i] = eval_complex(sys.b(i, 0), sys.params, omega);
-        for (int j = 0; j < sys.n; ++j)
-            A[i][j] = eval_complex(sys.Y(i, j), sys.params, omega);
-    }
-    std::vector<std::complex<double>> x;
-    if (!solve_complex(std::move(A), std::move(b), x)) return false;
-    value = x[out_idx];
-    return true;
-}
-
-void merge_params(ParamTable& dst, const ParamTable& src) {
-    // The asymptotic circuit is the master parameter set: beta/H0 are reduced
-    // versions of the same circuit and must not overwrite an estimate (most
-    // importantly the reference gm, which is zero in the H0 network).
-    for (const auto& kv : src.est)
-        if (!dst.est.count(kv.first)) dst.est[kv.first] = kv.second;
-    for (const auto& kv : src.cls)
-        if (!dst.cls.count(kv.first)) dst.cls[kv.first] = kv.second;
-    for (const auto& kv : src.syms) dst.syms[kv.first] = kv.second;
-    for (const auto& kv : src.defs) dst.defs[kv.first] = kv.second;
-    dst.off.insert(src.off.begin(), src.off.end());
-}
-
-bool verify_return_ratio(const Circuit& c, const AnalysisSpec& s,
-                         const std::string& out_node, const ex& Hraw,
-                         const ParamTable& pt, double tolerance = 2e-5) {
-    try {
-        std::set<std::string> used;
-        used.insert(out_node);
-        MnaSystem sys = build_mna(c, s.input_ref, used);
-        int idx = rr_output_var(sys, s.output);
-        if (idx < 0) return false;
-        const double freqs[] = {10.0, 1e3, 1e5, 1e7, 1e9};
-        int tested = 0, failed = 0;
-        for (double f : freqs) {
-            double w = 2.0 * M_PI * f;
-            std::complex<double> direct;
-            if (!numeric_mna_value(sys, idx, w, direct)) return false;
-            std::complex<double> rr = eval_complex(Hraw, pt, w);
-            if (!std::isfinite(rr.real()) || !std::isfinite(rr.imag()))
-                continue;
-            ++tested;
-            double scale = std::max(std::abs(direct), 1e-30);
-            if (std::abs(rr - direct) / scale > tolerance) ++failed;
-        }
-        return tested >= 2 && failed == 0;
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
-bool try_one_return_ratio(const Circuit& c, const AnalysisSpec& s,
-                          const Component& ref, const AmpPorts& ports,
-                          RawTF& out) {
-    struct Guard {
-        bool old;
-        Guard() : old(g_return_ratio_active) { g_return_ratio_active = true; }
-        ~Guard() { g_return_ratio_active = old; }
-    } guard;
-
-    ParamTable pt;
-    ex Hinf_raw = 0, Hinf_le = 0;
-    ex H0_raw = 0, H0_le = 0;
-    std::string out_desc;
-    std::vector<TimeConstant> octc;
-
-    try {
-        Circuit ci = nullor_reference_circuit(c, ref.ref, ports);
-        CardResult ideal = analyze_tf(ci, s);
-        if (!ideal.has_transfer) return false;
-        Hinf_raw = (ideal.transfer.num_raw / ideal.transfer.den_raw).normal();
-        Hinf_le = pruned_to_expr(ideal.transfer.pruned);
-        pt = ideal.transfer.params;
-        out_desc = ideal.transfer.output_desc;
-    } catch (const std::exception&) {
-        return false;
-    }
-
-    // Feedback factor with the reference gain opened. The device's passive
-    // parasitics stay in place; only the controlled transfer is removed.
-    ex beta = 0;
-    try {
-        Circuit ct = beta_reference_circuit(c, ref.ref, ports);
-        Component vt;
-        vt.kind = reference_uses_current_test(ref) ? Kind::I : Kind::V;
-        vt.ref = "__TEST__";
-        // A voltage test is applied + at op, - at on. A current test is the
-        // dual: inject 1 A into the output terminal on and remove it from op.
-        // (For a MOSFET's D-S port this makes the returned T positive for
-        // negative feedback, i.e. T = -A*beta with beta measured at the
-        // control port.)
-        vt.nodes = reference_uses_current_test(ref)
-                       ? std::vector<std::string>{ports.op, ports.on}
-                       : std::vector<std::string>{ports.op, ports.on};
-        vt.value_text = "1";
-        ct.comps.push_back(vt);
-        if (ports.current_control) {
-            Component sense;
-            sense.kind = Kind::V;
-            sense.ref = "__SENSE__";
-            sense.nodes = {ports.cp, ports.cn};
-            sense.value_text = "0";
-            ct.comps.push_back(sense);
-            RawTF t = raw_tf(ct, "__TEST__", "I(__SENSE__)", {});
-            beta = (t.num / t.den).normal();
-            merge_params(pt, t.params);
-        } else {
-            std::string probe;
-            auto add_node = [&](const std::string& node, bool neg) {
-                if (node == "0" || node == "GND") return;
-                if (!probe.empty() || neg) probe += neg ? "-" : "+";
-                probe += "V(" + node + ")";
-            };
-            add_node(ports.cp, false);
-            add_node(ports.cn, true);
-            if (!probe.empty()) {
-                RawTF t = raw_tf(ct, "__TEST__", probe, {});
-                beta = (t.num / t.den).normal();
-                merge_params(pt, t.params);
-            }
-        }
-    } catch (const std::exception&) {
-        return false;
-    }
-
-    ex A = controlled_gain(pt, ref);
-    ex s_sym = pt.get("s");
-    ex T = (-A * beta).normal();
-    if (T.is_zero() || beta.is_zero()) return false;
-    if (has_reference_pole(ref.kind) && ref.param_enabled("GBW") &&
-        ref.param_estimate("GBW") > 0.0) {
-        std::string gname = "GBW_" + ref.ref;
-        ex gsym = pt.get(gname);
-        pt.set(gname, 2.0 * M_PI * ref.param_estimate("GBW"),
-               UnitClass::Plain);
-        T = (T / (1 + s_sym * A / gsym)).normal();
-    }
-
-    // A large device capacitance can make T expand into thousands of terms.
-    // Assembling H0 and Hle from it would then hand the generic pruner an
-    // expression that takes minutes (or effectively hangs). Stop here and let
-    // the caller take the direct MNA path, which is compact for these
-    // driving-point-like cases.
-    const size_t t_nodes = expression_nodes(T, 500);
-    if (t_nodes >= 500) {
-        g_rr_too_large = true;
-        return false;
-    }
-
-    // Forward gain with the reference controlled source switched off. This
-    // only needs the raw MNA ratio (H0 is a small correction term), so avoid
-    // the full report/prune path.
-    try {
-        Circuit c0 = zero_gain_reference_circuit(c, ref.ref, ports);
-        AnalysisRequest r;
-        r.input_ref = s.input_ref;
-        r.output = s.output;
-        Solved sv = solve(c0, r);
-        H0_raw = (sv.num / sv.den).normal();
-        H0_le = H0_raw;
-        merge_params(pt, sv.params);
-        // The zero-gain circuit still carries the gain *symbol* in its matrix
-        // (with a zero estimate). Remove it from H0 explicitly so the
-        // assembled formula is evaluated with the reference off.
-        std::string gs = reference_gain_symbol(ref);
-        if (!gs.empty()) {
-            GiNaC::exmap zm;
-            zm[pt.get(gs)] = ex(0);
-            H0_raw = H0_raw.subs(zm).normal();
-            H0_le = H0_le.subs(zm).normal();
-        }
-    } catch (const std::exception&) {
-        H0_raw = 0;
-        H0_le = 0;
-    }
-
-    ex denom = (1 + T).normal();
-    if (denom.is_zero()) return false;
-    ex Hraw = ((Hinf_raw * T + H0_raw) / denom).normal();
-    ex Hle = ((Hinf_le * T + H0_le) / denom).normal();
-    if (Hraw.is_zero()) return false;
-
-    if (!verify_return_ratio(c, s, rr_voltage_node(s.output), Hraw, pt))
-        return false;
-
-    try {
-        std::set<std::string> used;
-        std::string node = rr_voltage_node(s.output);
-        if (!node.empty()) used.insert(node);
-        octc = open_circuit_time_constants(c, s.input_ref, pt, used);
-    } catch (const std::exception&) {
-        octc.clear();
-    }
-    // Do not hand an enormous expanded expression to the generic pruner: in a
-    // moderate-loop case that can take minutes. The direct solver remains the
-    // safe fallback for such topologies. This limit catches assemblies that
-    // are too large to factor cheaply (e.g. a device capacitance that makes
-    // the loop expression grow by an order of magnitude).
-    const size_t hle_nodes = expression_nodes(Hle.numer(), 600) +
-                             expression_nodes(Hle.denom(), 600);
-    if (hle_nodes > 600) {
-        g_rr_too_large = true;
-        return false;
-    }
-
-    // A linear network with N independent reactive elements has a transfer
-    // denominator of degree at most N. If the assembled expression has a
-    // higher degree, it is carrying an uncancelled common pole/zero pair (the
-    // pruner would print duplicate numerical poles). The direct solve gives
-    // the reduced form and is cheaper, so use it.
-    int reactive = 0;
-    bool reactive_known = true;
-    for (const auto& cc : c.comps) {
-        if (cc.kind == Kind::T || cc.kind == Kind::K) {
-            reactive_known = false; // coupled magnetics: leave the check alone
-            break;
-        }
-        if (cc.kind == Kind::C || cc.kind == Kind::L) ++reactive;
-        for (const auto& pd : param_defs(cc.kind))
-            if (param_unit_class(cc.kind, pd.name) == UnitClass::Farad &&
-                cc.param_enabled(pd.name))
-                ++reactive;
-    }
-    if (reactive_known) {
-        int deg = 0;
-        try {
-            deg = Hle.denom().has(s_sym) ? Hle.denom().degree(s_sym) : 0;
-        } catch (...) {
-            deg = 0;
-        }
-        if (deg > reactive) {
-            g_rr_too_large = true;
-            return false;
-        }
-    }
-
-    out.num = Hle.numer();
-    out.den = Hle.denom();
-    out.params = pt;
-    out.out_desc = out_desc.empty() ? s.output : out_desc;
-    out.octc = octc;
-    return true;
-}
-
-bool try_return_ratio_tf(const Circuit& c, const AnalysisSpec& s, RawTF& out) {
-    if (g_return_ratio_active) return false;
-    std::string out_node = rr_voltage_node(s.output);
-    if (out_node.empty()) return false;
-    const Component* input = c.find(s.input_ref);
-    if (!input || input->nodes.empty()) return false;
-
-    FlowGraph g;
-    for (const auto& cc : c.comps) add_component_flow(g, cc);
-    std::vector<std::string> input_nodes = input->nodes;
-
-    struct Cand {
-        const Component* comp;
-        AmpPorts ports;
-        int score;
-    };
-    std::vector<Cand> cands;
-    for (const auto& cc : c.comps) {
-        if (cc.kind == Kind::NULLOR) continue; // no finite H0 reference
-        AmpPorts p = amp_ports(cc);
-        if (!p.ok) continue;
-        // The source must have a forward path from the input to its control
-        // port and a return path from its output to that control port.
-        if (flow_distance(g, input_nodes, {p.cp, p.cn}, false) < 0) continue;
-        if (flow_distance(g, {p.op, p.on}, {p.cp, p.cn}, true) < 0) continue;
-        int od = flow_distance(g, {p.op, p.on}, {out_node}, true);
-        if (od < 0) continue;
-        int score = od * 1000;
-        if (p.current_control) score += 20;
-        // Prefer a reference whose output sits directly at the requested
-        // output (the usual single-loop case).
-        cands.push_back({&cc, p, score});
-    }
-    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
-        return a.score < b.score;
-    });
-    // Trying a handful of candidates keeps pathological circuits bounded.
-    const size_t limit = std::min<size_t>(cands.size(), 4);
-    g_rr_too_large = false;
-    for (size_t i = 0; i < limit; ++i) {
-        if (try_one_return_ratio(c, s, *cands[i].comp, cands[i].ports, out))
-            return true;
-        if (g_rr_too_large) break;
-    }
-    return false;
-}
-
 } // namespace
 
 CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
