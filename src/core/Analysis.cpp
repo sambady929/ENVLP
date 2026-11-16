@@ -2164,6 +2164,9 @@ CardResult analyze_loop_gain(const Circuit& c, const AnalysisSpec& s) {
         res.pm_deg = pm;
         res.pm_sym = pm_sym;
         res.pm_ENVLP_latex = pm_ENVLP_latex;
+        // The first report pass happened before the phase margin was known;
+        // invalidate the cached metrics so the final report includes it.
+        res.metrics_cache.reset();
     }
     res.report = format_report(res);
 

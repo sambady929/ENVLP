@@ -227,17 +227,8 @@ bool others_far(const AnalysisResult& r, double db) {
     return true;
 }
 
-struct Metrics {
-    std::string dc_db, dc_sym;         // DC gain (numeric dB, symbolic)
-    std::string bw3, bw3_sym;          // -3 dB bandwidth
-    std::string ugbw, ugbw_sym;        // unity-gain bandwidth
-    std::string dc_ENVLP_latex, bw3_ENVLP_latex, ugbw_ENVLP_latex;
-    // Loop gain only: phase margin (numeric + symbolic).
-    bool has_pm = false;
-    std::string pm, pm_sym, pm_ENVLP_latex;
-};
-
 Metrics compute_metrics(const AnalysisResult& r) {
+    if (r.metrics_cache) return *r.metrics_cache;
     Metrics m;
     char buf[96];
 
@@ -246,9 +237,16 @@ Metrics compute_metrics(const AnalysisResult& r) {
     // them) made the report take seconds.
     ex H = r.num_raw / r.den_raw;
     if (!GiNaC::is_a<GiNaC::numeric>(H)) H = H.normal();
+    NumericEvaluator He(H, r.params);
+    auto mag_db = [&](double omega) {
+        std::complex<double> z = He(omega);
+        double mag = std::hypot(z.real(), z.imag());
+        if (!(mag > 0.0)) return -std::numeric_limits<double>::infinity();
+        return 20.0 * std::log10(mag);
+    };
 
     // ---- DC gain ----
-    double dc = eval_mag_db(H, r.params, 0.0);
+    double dc = mag_db(0.0);
     if (std::isfinite(dc)) {
         std::snprintf(buf, sizeof(buf), "%.2f dB", dc);
         m.dc_db = buf;
@@ -267,7 +265,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
     for (int i = 0; i < N; ++i) {
         double t = double(i) / (N - 1);
         f[i] = f0 * std::pow(f1 / f0, t);
-        mag[i] = eval_mag_db(H, r.params, 2.0 * M_PI * f[i]);
+        mag[i] = mag_db(2.0 * M_PI * f[i]);
     }
     auto find_cross = [&](double target_db) -> double {
         if (std::isfinite(mag[0]) && mag[0] <= target_db) return f0; // below start
@@ -303,7 +301,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
         for (int i = 0; i < Nbp; ++i) {
             double t = double(i) / (Nbp - 1);
             fb[i] = flo * std::pow(fhi / flo, t);
-            mb[i] = eval_mag_db(H, r.params, 2.0 * M_PI * fb[i]);
+            mb[i] = mag_db(2.0 * M_PI * fb[i]);
             if (mb[i] > peak) { peak = mb[i]; peak_i = i; }
         }
         double fLow = -1.0, fHigh = -1.0;
@@ -371,6 +369,7 @@ Metrics compute_metrics(const AnalysisResult& r) {
         m.pm_sym = r.pm_sym;
         m.pm_ENVLP_latex = r.pm_ENVLP_latex;
     }
+    r.metrics_cache = std::make_shared<const Metrics>(m);
     return m;
 }
 

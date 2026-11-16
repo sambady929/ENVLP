@@ -103,6 +103,19 @@ std::vector<std::complex<double>> poly_roots(std::vector<double> coeff);
 // Returns {re, im}; NaNs if the expression cannot be fully evaluated.
 std::complex<double> eval_complex(const GiNaC::ex& e, const ParamTable& params,
                                   double omega);
+
+// A reusable numeric evaluator for a fixed expression. Parameters are
+// substituted once at construction; each frequency evaluation then only
+// substitutes s. This is much cheaper than rebuilding the parameter map and
+// re-substituting a large expression for every sweep point.
+class NumericEvaluator {
+public:
+    NumericEvaluator(const GiNaC::ex& e, const ParamTable& params);
+    std::complex<double> operator()(double omega) const;
+private:
+    GiNaC::ex expr_;
+    GiNaC::ex s_sym_;
+};
 double eval_mag_db(const GiNaC::ex& e, const ParamTable& params, double omega);
 double eval_phase_deg(const GiNaC::ex& e, const ParamTable& params, double omega);
 

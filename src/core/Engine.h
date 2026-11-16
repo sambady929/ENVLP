@@ -9,10 +9,22 @@
 #undef As
 #endif
 
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace syms {
+
+// Numeric + symbolic gain/bandwidth report values. Computed once per result
+// and shared between the text and LaTeX report formatters.
+struct Metrics {
+    std::string dc_db, dc_sym;
+    std::string bw3, bw3_sym;
+    std::string ugbw, ugbw_sym;
+    std::string dc_ENVLP_latex, bw3_ENVLP_latex, ugbw_ENVLP_latex;
+    bool has_pm = false;
+    std::string pm, pm_sym, pm_ENVLP_latex;
+};
 
 struct AnalysisResult {
     std::string input_desc;   // "V1"
@@ -56,6 +68,10 @@ struct AnalysisResult {
     // integrated forms are in `noise_int_text` / `noise_int_latex`.
     std::string noise_ENVLP_text, noise_ENVLP_latex;
     std::string noise_int_text, noise_int_latex;
+
+    // The text and LaTeX report formatters both need the same metrics. Cache
+    // them on the result so the sweep is evaluated only once.
+    mutable std::shared_ptr<const Metrics> metrics_cache;
 };
 
 // Throws std::runtime_error with a user-facing message.

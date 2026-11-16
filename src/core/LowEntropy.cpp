@@ -1,4 +1,5 @@
 #include "core/LowEntropy.h"
+#include "core/Prune.h"
 #include "core/Eng.h"
 #include "core/Par.h"
 #include "core/Print.h"
@@ -62,6 +63,34 @@ double eval_mag_db(const ex& e, const ParamTable& params, double omega) {
 double eval_phase_deg(const ex& e, const ParamTable& params, double omega) {
     std::complex<double> z = eval_complex(e, params, omega);
     return std::atan2(z.imag(), z.real()) * 180.0 / M_PI;
+}
+
+NumericEvaluator::NumericEvaluator(const ex& e, const ParamTable& params) {
+    exmap m;
+    for (const auto& kv : params.est) {
+        auto it = params.syms.find(kv.first);
+        if (it != params.syms.end() && kv.first != "s")
+            m[it->second] = ex(kv.second);
+    }
+    expr_ = e.subs(m);
+    auto it = params.syms.find("s");
+    s_sym_ = it == params.syms.end() ? ex(0) : it->second;
+}
+
+std::complex<double> NumericEvaluator::operator()(double omega) const {
+    try {
+        exmap m;
+        m[s_sym_] = ex(GiNaC::I) * omega;
+        ex v = expr_.subs(m).evalf();
+        if (!is_a<numeric>(v))
+            return {std::numeric_limits<double>::quiet_NaN(),
+                    std::numeric_limits<double>::quiet_NaN()};
+        numeric n = GiNaC::ex_to<numeric>(v);
+        return {n.real().to_double(), n.imag().to_double()};
+    } catch (...) {
+        return {std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN()};
+    }
 }
 
 namespace {
