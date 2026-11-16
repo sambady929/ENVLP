@@ -1289,6 +1289,15 @@ CardResult analyze_psrr(const Circuit& c, const AnalysisSpec& s) {
         psrr_p.den_factors.insert(psrr_p.den_factors.end(),
                                   sig_p.den_factors.begin(),
                                   sig_p.den_factors.end());
+        psrr_p.gain = to_parallel(psrr_p.gain);
+        for (auto& f : psrr_p.num_factors) {
+            f.expr = to_parallel(f.expr);
+            f.text = pretty(f.expr);
+        }
+        for (auto& f : psrr_p.den_factors) {
+            f.expr = to_parallel(f.expr);
+            f.text = pretty(f.expr);
+        }
         ex num = psrr_p.gain;
         for (const auto& f : psrr_p.num_factors) num *= f.expr;
         ex den = ex(1);

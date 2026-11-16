@@ -1964,6 +1964,19 @@ LowEntropy low_entropy(const ex& num, const ex& den, ParamTable& params,
         drop_far_factors(R.num_factors, params, s, zero_ref_tau, pz_db, band_tau,
                          cands, opts.approx_factor, false, "numerator",
                          R.dropped);
+        // One final parallel recovery on the actual gain and factors. The
+        // earlier passes work per polynomial coefficient; a ratio of factored
+        // subexpressions (e.g. a PSRR ratio) can still expose a reciprocal
+        // parallel form such as (R1+R5)/(R1*R5) -> 1/(R1||R5).
+        R.gain = to_parallel(R.gain);
+        for (auto& f : R.num_factors) {
+            f.expr = to_parallel(f.expr);
+            f.text = pretty(f.expr);
+        }
+        for (auto& f : R.den_factors) {
+            f.expr = to_parallel(f.expr);
+            f.text = pretty(f.expr);
+        }
         // Rebuild the pruned polynomials from the kept factors so text_poly
         // stays consistent with the dropped (factored) text.
         ex den_poly = ex(1);
