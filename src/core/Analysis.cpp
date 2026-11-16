@@ -2972,6 +2972,12 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         }
     }
 
+    const bool output_is_current = s.output.size() > 3 &&
+                                   s.output.rfind("I(", 0) == 0;
+    const std::string out_sym = output_is_current ? "S_i" : "S_v";
+    const std::string out_unit = output_is_current ? "A" : "V";
+    const std::string out_rms_name = output_is_current ? "I_n,out" : "V_n,out";
+
     // ---- output and input noise ------------------------------------------
     // Output: each source contributes its own PSD times |H_j(jw)|^2, where H_j
     // is the transfer from that source's noise current (or the amp's en
@@ -3067,8 +3073,9 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     std::string out_ENVLP_txt, out_ENVLP_tex;
     {
         std::ostringstream t, x;
-        std::string tt = "    S_v(f) = ";
-        std::string xx = "S_{v}(f) = ";
+        std::string tt = "    " + out_sym + "(f) = ";
+        std::string xx = std::string("S_{") +
+                         (output_is_current ? "i" : "v") + "}(f) = ";
         for (size_t j = 0; j < groups.size(); ++j) {
             const Group& g = groups[j];
             std::string in_t, in_x;
@@ -3145,37 +3152,45 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         t << "\nOutput Noise\n------------\n";
         x << "Output Noise:\n";
         // density symbolic
-        t << "  Density S_v(f) [V^2/Hz]:\n" << out_ENVLP_txt;
-        x << "\\mathrm{Density}\\ S_{v}(f):\n" << out_ENVLP_tex;
+        t << "  Density " << out_sym << "(f) [" << out_unit
+          << "^2/Hz]:\n" << out_ENVLP_txt;
+        x << "\\mathrm{Density}\\ S_{"
+          << (output_is_current ? "i" : "v") << "}(f):\n" << out_ENVLP_tex;
         // density at f0 (numeric)
         {
             char b[200];
             std::snprintf(b, sizeof(b),
-                          "    S_v(%s) = %.4g V^2/Hz   (%.2f dBV^2/Hz, "
-                          "%.4g V/sqrt(Hz))\n",
+                          ("    " + out_sym + "(%s) = %.4g " + out_unit +
+                          "^2/Hz   (%.2f dB" + out_unit + "^2/Hz, %.4g " +
+                          out_unit + "/sqrt(Hz))\n").c_str(),
                           eng::format_hz(f0).c_str(), sv_at_f0,
                           sv_at_f0 > 0 ? 10.0 * std::log10(sv_at_f0) : -1e300,
                           std::sqrt(std::max(0.0, sv_at_f0)));
             t << b;
-            x << "S_{v} = \\mathrm{" << eng::format_si(sv_at_f0, 4)
-              << "\\ V^2/Hz}\n";
+            x << "S_{" << (output_is_current ? "i" : "v")
+              << "} = \\mathrm{" << eng::format_si(sv_at_f0, 4) << "\\ "
+              << out_unit << "^2/Hz}\n";
         }
         // integrated
         {
             char b[160];
             std::snprintf(b, sizeof(b),
-                          "    Integrated: V_n,out = %.4g V rms   (%.2f dBV)\n",
+                          ("    Integrated: " + out_rms_name + " = %.4g " +
+                           out_unit + " rms   (%.2f dB" + out_unit + ")\n").c_str(),
                           vout_rms, db20(vout_rms));
             t << b;
-            x << "\\mathrm{Integrated:}\\ \\mathrm{V_{n,out}} = \\mathrm{"
-              << eng::format_si(vout_rms, 4) << "\\ V_{rms}}\n";
+            x << "\\mathrm{Integrated:}\\ \\mathrm{"
+              << (output_is_current ? "I_{n,out}" : "V_{n,out}")
+              << "} = \\mathrm{" << eng::format_si(vout_rms, 4) << "\\ "
+              << out_unit << "_{rms}}\n";
         }
         t << "  Contribution:\n";
         x << "\\mathrm{Contribution:}\n";
         for (const auto& ps : per_source) {
             std::string pct = eng::format_percent(100.0 * ps.second / tot, 3);
             char sb[192];
-            std::snprintf(sb, sizeof(sb), "    %-8s %8s %%   %.3g V^2\n",
+            std::snprintf(sb, sizeof(sb), ("    %-8s %8s %%   %.3g " +
+                          out_unit + "^2\n").c_str(),
                           ps.first.c_str(), pct.c_str(), ps.second);
             t << sb;
             x << "\\mathrm{" << ps.first << "} = " << pct << "\\%\n";
@@ -3263,7 +3278,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     // One-line summary = the output density expression (for the card list).
     {
         std::ostringstream tx;
-        tx << "S_v(f) = ";
+        tx << out_sym << "(f) = ";
         for (size_t j = 0; j < groups.size(); ++j) {
             const Group& g = groups[j];
             std::string in_t, in_x;
