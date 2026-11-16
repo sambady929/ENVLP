@@ -2509,6 +2509,9 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         bool unity = false;           // amplifier en: appears at the output with
                                       // unity gain (see below), so no transfer
                                       // solve is needed
+        ex h2;                        // factored |xfer|^2 used for the sweep
+        ex h2_scale = 1.0;            // constant transfer ratio to fwd, if any
+        Pruned pruned;                // factored transfer used for the sweep
     };
     // kT is a symbolic design constant so the noise densities stay analytic
     // (e.g. 4*kT/R1) rather than collapsing to a decimal.
@@ -2611,8 +2614,50 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     }
 
     // ---- transfer of each unit source to V(out) --------------------------
+    // Current-source noise transfers share the same MNA matrix: the source
+    // only changes the right-hand side. Build and factor the determinant once
+    // instead of doing a fresh symbolic solve for every noise source.
+    MnaSystem noise_sys;
+    ex noise_det;
+    bool noise_sys_ok = false;
+    try {
+        std::set<std::string> used;
+        if (s.output.size() > 3 && s.output.front() == 'V' &&
+            s.output.back() == ')')
+            used.insert(s.output.substr(2, s.output.size() - 3));
+        noise_sys = build_mna(c, "", used);
+        noise_det = mna_determinant(noise_sys);
+        noise_sys_ok = !noise_det.is_zero();
+    } catch (const std::exception&) {
+        noise_sys_ok = false;
+    }
     auto xfer_from_current = [&](const std::string& na, const std::string& nb)
         -> ex {
+        if (noise_sys_ok) {
+            auto node_of = [&](const std::string& raw) -> int {
+                std::string key = (raw == "GND") ? "0" : raw;
+                if (key == "0") return -1;
+                auto it = noise_sys.node_idx.find(key);
+                return it == noise_sys.node_idx.end() ? -2 : it->second;
+            };
+            int ia = node_of(na), ib = node_of(nb);
+            if (ia != -2 && ib != -2) {
+                GiNaC::matrix rhs(noise_sys.n, 1);
+                if (ia >= 0) rhs(ia, 0) -= 1;
+                if (ib >= 0) rhs(ib, 0) += 1;
+                int out_idx = -1;
+                if (s.output.size() > 3 && s.output.front() == 'V' &&
+                    s.output.back() == ')') {
+                    auto it = noise_sys.node_idx.find(
+                        s.output.substr(2, s.output.size() - 3));
+                    if (it != noise_sys.node_idx.end()) out_idx = it->second;
+                }
+                if (out_idx >= 0) {
+                    ex num = mna_column(noise_sys, rhs, out_idx);
+                    return (num / noise_det).normal();
+                }
+            }
+        }
         Circuit ct = c;
         Component it;
         it.kind = Kind::I;
@@ -2650,11 +2695,11 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     }
 
     // ---- forward transfer H_fwd(s): excitation -> V(out) -----------------
-    // Everything is referred to the input by dividing by |H_fwd|^2. Its units
-    // follow the excitation (V/A transimpedance for a current input, V/V for a
-    // voltage input), so the input noise density is A^2/Hz or V^2/Hz
-    // accordingly.
+    // Use the already-pruned ordinary H(s) result. Computing the raw forward
+    // transfer and then pruning it here duplicated the expensive symbolic
+    // work; the transfer-function analysis already provides the compact form.
     ex fwd;
+    Pruned fwd_pruned;
     bool input_is_current = false;
     {
         std::vector<std::string> cands;
@@ -2666,12 +2711,21 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             const Component* sc = c.find(src);
             if (!sc) continue;
             try {
-                RawTF t = raw_tf(c, src, s.output);
-                ex H = (t.num / t.den).normal();
-                if (!H.is_zero()) {
-                    fwd = H;
-                    input_is_current = (sc->kind == Kind::I);
-                    break;
+                AnalysisSpec hs = s;
+                hs.kind = AnalysisKind::TransferFunction;
+                hs.input_ref = src;
+                CardResult hcl = analyze_tf(c, hs);
+                if (hcl.has_transfer) {
+                    fwd_pruned = hcl.transfer.pruned;
+                    const Pruned& p = hcl.transfer.pruned;
+                    ex H = p.gain;
+                    for (const auto& f : p.num_factors) H *= f.expr;
+                    for (const auto& f : p.den_factors) H /= f.expr;
+                    if (!H.is_zero()) {
+                        fwd = H;
+                        input_is_current = (sc->kind == Kind::I);
+                        break;
+                    }
                 }
             } catch (const std::exception&) {
             }
@@ -2702,12 +2756,13 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         ex re = c0 - c2 * w_expr * w_expr, im = c1 * w_expr;
         return re * re + im * im;
     };
-    auto mag2f = [&](const ex& H) -> ex {
+    auto mag2f = [&](const ex& H, Pruned* out = nullptr) -> ex {
         if (H.is_zero()) return ex(0);
         try {
             ex ratio = (H.numer() / H.denom()).normal();
             Pruned p = prune_low_entropy(ratio.numer(), ratio.denom(), pt,
                                          opts_of(s));
+            if (out) *out = p;
             ex n2 = p.gain * p.gain;
             for (const auto& fac : p.num_factors) n2 *= brick2(fac.expr);
             ex d2 = ex(1);
@@ -2722,7 +2777,66 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     // ---- symbolic magnitude-squared |H(j2*pi*f)|^2 (real coefficients) ---
     // With real component values H(-jw) = conj(H(jw)), so |H(jw)|^2 =
     // H(jw)*H(-jw). Substituting s = j*2*pi*f and using H(-jw) removes the
+
     // ---- output noise spectrum -------------------------------------------
+    // Many noise sources share the same transfer to the output (a resistor
+    // and a device current both see the same H(s), for example). Compute the
+    // factored forward transfer once; for a source whose transfer is a
+    // constant multiple of it, the PSD only needs the constant scale.
+    // The forward transfer was already pruned by the H(s) analysis. Build
+    // |H|^2 from that factored result directly instead of pruning it again.
+    ex h2_fwd = fwd_pruned.gain * fwd_pruned.gain;
+    for (const auto& fac : fwd_pruned.num_factors) h2_fwd *= brick2(fac.expr);
+    ex d2_fwd = ex(1);
+    for (const auto& fac : fwd_pruned.den_factors) d2_fwd *= brick2(fac.expr);
+    if (!d2_fwd.is_zero()) h2_fwd = h2_fwd / d2_fwd;
+    NumericEvaluator fwd_num(fwd, pt);
+    auto h2_of = [&](Src& src) {
+        src.h2_scale = ex(1);
+        src.pruned = fwd_pruned;
+        if (src.xfer.is_equal(fwd)) {
+            src.h2 = h2_fwd;
+            return;
+        }
+        std::complex<double> a0 = eval_complex(src.xfer, pt, 1.0);
+        std::complex<double> b0 = eval_complex(fwd, pt, 1.0);
+        std::complex<double> a1 = eval_complex(src.xfer, pt, 1e6);
+        std::complex<double> b1 = eval_complex(fwd, pt, 1e6);
+        if (!std::isfinite(a0.real()) || !std::isfinite(a0.imag()) ||
+            !std::isfinite(b0.real()) || !std::isfinite(b0.imag()) ||
+            !std::isfinite(a1.real()) || !std::isfinite(a1.imag()) ||
+            !std::isfinite(b1.real()) || !std::isfinite(b1.imag()) ||
+            std::abs(b0) == 0.0 || std::abs(b1) == 0.0) {
+            src.h2 = mag2f(src.xfer, &src.pruned);
+            return;
+        }
+        std::complex<double> r0 = a0 / b0, r1 = a1 / b1;
+        // The common case is that every noise source sees the same factored
+        // forward transfer. Reuse it and carry only the numeric scale.
+        // (If the transfer is not a scalar multiple of fwd, the fallback is
+        // still available below.)
+        if (std::abs(r0 - r1) <= 1e-4 * std::max(std::abs(r0), 1e-30)) {
+            ex ratio = (src.xfer / fwd).normal();
+            if (!ratio.has(s_sym)) {
+                src.h2_scale = ratio;
+                src.h2 = h2_fwd;
+                return;
+            }
+        }
+        src.h2 = mag2f(src.xfer, &src.pruned);
+    };
+    for (auto& src : srcs) {
+        if (src.unity) {
+            // The amplifier's en is already referred to the output with unity
+            // gain, so its |H|^2 is simply 1 and it needs no transfer solve.
+            src.h2 = ex(1);
+            src.h2_scale = ex(1);
+            src.pruned.gain = ex(1);
+            continue;
+        }
+        h2_of(src);
+    }
+
     auto psd_of = [](const Src& src, double f) {
         double p = src.psd_const;
         if (src.corner_hz > 0.0 && f > 0.0)
@@ -2733,23 +2847,56 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
     std::vector<double> vin(npts, 0.0);     // input-referred (A^2/Hz or V^2/Hz)
     std::vector<std::pair<std::string, double>> per_source;    // output V^2
     std::vector<std::pair<std::string, double>> per_source_in; // input A^2/V^2
+    // Evaluate each distinct |H|^2 spectrum once. Most sources share it, so
+    // the sweep is not repeated per noise source.
+    struct Spectrum {
+        ex h2;
+        std::vector<double> values;
+    };
+    std::vector<Spectrum> spectra;
+    auto spectrum_of = [&](const Src& src) -> const std::vector<double>& {
+        for (const auto& s : spectra)
+            if (s.h2.is_equal(src.h2)) return s.values;
+        // Evaluate the factored transfer directly. Building one giant |H|^2
+        // expression and evaluating it repeatedly was much slower than
+        // evaluating the gain and the individual factors.
+        const Pruned& p = src.pruned;
+        NumericEvaluator ge(p.gain, pt);
+        std::vector<NumericEvaluator> nf, df;
+        for (const auto& f : p.num_factors) nf.emplace_back(f.expr, pt);
+        for (const auto& f : p.den_factors) df.emplace_back(f.expr, pt);
+        std::vector<double> values(npts);
+        for (int i = 0; i < npts; ++i) {
+            double w = 2.0 * M_PI * freqs[i];
+            double value = std::norm(ge(w));
+            for (auto& e : nf) value *= std::norm(e(w));
+            for (auto& e : df) value /= std::norm(e(w));
+            values[i] = value;
+        }
+        spectra.push_back({src.h2, std::move(values)});
+        return spectra.back().values;
+    };
+    NumericEvaluator fwd_eval(fwd, pt);
     for (auto& src : srcs) {
         // trapezoid in log-f for the integrated power (output and input)
+        const std::vector<double>& spec = spectrum_of(src);
+        double scale_num = eval_complex(src.h2_scale, pt, 0.0).real();
         double area = 0.0, area_in = 0.0;
         for (int i = 1; i < npts; ++i) {
             double w1 = 2.0 * M_PI * freqs[i];
-            double x2 = std::norm(eval_complex(src.xfer, pt, w1));
-            double c = psd_of(src, freqs[i]) * x2;
+            double x2 = spec[i];
+            double c = psd_of(src, freqs[i]) * x2 * scale_num * scale_num;
             double w0 = 2.0 * M_PI * freqs[i - 1];
-            double x2m = std::norm(eval_complex(src.xfer, pt, w0));
-            double cm = psd_of(src, freqs[i - 1]) * x2m;
+            double x2m = spec[i - 1];
+            double cm = psd_of(src, freqs[i - 1]) * x2m * scale_num *
+                        scale_num;
             double lf = std::log(freqs[i] / freqs[i - 1]);
             area += 0.5 * (c * freqs[i] + cm * freqs[i - 1]) * lf;
             vout[i] += c;
             vout[i - 1] += cm;
             // input-referred: divide by |H_fwd(f)|^2 (the same referral)
-            double hf1 = std::norm(eval_complex(fwd, pt, w1));
-            double hf0 = std::norm(eval_complex(fwd, pt, w0));
+            double hf1 = std::norm(fwd_eval(w1));
+            double hf0 = std::norm(fwd_eval(w0));
             double ci = hf1 > 0.0 ? c / hf1 : 0.0;
             double cim = hf0 > 0.0 ? cm / hf0 : 0.0;
             area_in += 0.5 * (ci * freqs[i] + cim * freqs[i - 1]) * lf;
@@ -2790,28 +2937,17 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         bool voltage = false;
     };
     std::vector<SrcDens> dens;
-    // Many noise sources share the same transfer to the output (a resistor
-    // and a device current both see the same H(s), for example). Factoring
-    // |H|^2 is the expensive part of the analysis, so factor each distinct
-    // transfer once and reuse it.
-    struct H2Entry {
-        ex xfer;
-        ex h2;
-    };
-    std::vector<H2Entry> h2_cache;
-    auto h2_of = [&](const ex& xfer) -> ex {
-        for (const auto& entry : h2_cache)
-            if (entry.xfer.is_equal(xfer)) return entry.h2;
-        ex h2 = mag2f(xfer);
-        h2_cache.push_back({xfer, h2});
-        return h2;
-    };
     for (const auto& src : srcs) {
-        ex h2 = h2_of(src.xfer);
+        ex h2 = src.h2;
         if (h2.is_zero()) continue;
         ex th = src.psd_sym.is_zero() ? ex(GiNaC::numeric(src.psd_const))
                                       : src.psd_sym;
         ex fl = src.psd_flick_sym;
+        if (!src.h2_scale.is_equal(ex(1))) {
+            ex scale2 = src.h2_scale * src.h2_scale;
+            th = th * scale2;
+            fl = fl * scale2;
+        }
         dens.push_back({src.ref, src.mech, th, fl, src.psd_const,
                         src.corner_hz > 0.0
                             ? src.psd_const * src.corner_hz
@@ -2835,6 +2971,7 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
             groups.push_back(g);
         }
     }
+
     // ---- output and input noise ------------------------------------------
     // Output: each source contributes its own PSD times |H_j(jw)|^2, where H_j
     // is the transfer from that source's noise current (or the amp's en
