@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ENVLP — symbolic circuit analyser</title>
-<link rel="stylesheet" href="style.css?v=72">
+<link rel="stylesheet" href="style.css?v=73">
 <script>
   // Must be set *before* the MathJax bundle loads: the bundle augments this
   // object at startup, and assigning it afterwards replaces MathJax's own.
@@ -133,7 +133,7 @@
              data-kinds="TransferFunction PSRR LoopGain InputImpedance Noise">
 
       <label for="output" data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise">out</label>
-      <input id="output" value="V(out)" placeholder="V(out)"
+      <input id="output" value="V(out)" placeholder="V(out) / I(R1)"
              data-kinds="TransferFunction AC PSRR LoopGain ShortCircuitCurrent OutputImpedance Noise">
 
       <!-- the differential analysis measures an output PORT: two nodes -->
@@ -404,7 +404,8 @@
       <dt>Noise</dt>
       <dd>The output noise density and the input-referred noise, integrated
         over the sweep band, with the contribution of each source broken
-        out.</dd>
+        out. The input may be a voltage or current source; the output may
+        be a node <i>V(out)</i> or a branch current <i>I(R1)</i>.</dd>
 
       <dt>Differential (Adm / Acm / CMRR)</dt>
       <dd>The differential gain, the common-mode gain and the common-mode
@@ -440,9 +441,9 @@
   </div>
 </dialog>
 
-<script src="envlp.js?v=72"></script>
-<script src="editor.js?v=72"></script>
-<script src="app.js?v=72"></script>
+<script src="envlp.js?v=73"></script>
+<script src="editor.js?v=73"></script>
+<script src="app.js?v=73"></script>
 </body>
 </html>
 

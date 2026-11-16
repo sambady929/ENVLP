@@ -3097,13 +3097,17 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         out_ENVLP_txt = t.str();
         out_ENVLP_tex = x.str();
     }
-    // Symbolic INPUT density: S_i(f) = S_v(f)/|H|^2, so the device/resistor
-    // currents drop their H(s)^2 and the amp's en becomes en^2/H(s)^2.
+    // Symbolic INPUT density: S_in(f) = S_out(f)/|H|^2, so the device/resistor
+    // currents drop their H(s)^2 and the amp's en becomes en^2/H(s)^2. The
+    // symbol follows the input kind: a voltage source refers to V^2/Hz, a
+    // current source to A^2/Hz.
+    const std::string in_sym = input_is_current ? "S_i" : "S_v";
     std::string in_ENVLP_txt, in_ENVLP_tex;
     {
         std::ostringstream t, x;
-        std::string it = "    S_i(f) = ";
-        std::string ix = "S_{i}(f) = ";
+        std::string it = "    " + in_sym + "(f) = ";
+        std::string ix = std::string("S_{") +
+                         (input_is_current ? "i" : "v") + "}(f) = ";
         for (size_t j = 0; j < groups.size(); ++j) {
             const Group& g = groups[j];
             std::string in_t, in_x;
@@ -3200,17 +3204,21 @@ CardResult analyze_noise(const Circuit& c, const AnalysisSpec& s) {
         const char* in_unit = input_is_current ? "A" : "V";
         t << "\nInput Noise\n-----------\n";
         x << "Input Noise:\n";
-        t << "  Density S_i(f) [" << in_unit << "^2/Hz]:\n" << in_ENVLP_txt;
-        x << "\\mathrm{Density}\\ S_{i}(f):\n" << in_ENVLP_tex;
+        t << "  Density " << in_sym << "(f) [" << in_unit
+          << "^2/Hz]:\n" << in_ENVLP_txt;
+        x << "\\mathrm{Density}\\ S_{"
+          << (input_is_current ? "i" : "v") << "}(f):\n" << in_ENVLP_tex;
         {
             char b[200];
             std::snprintf(b, sizeof(b),
-                          "    S_i(%s) = %.4g %s^2/Hz   (%.2f dB%s^2/Hz)\n",
+                          ("    " + in_sym +
+                           "(%s) = %.4g %s^2/Hz   (%.2f dB%s^2/Hz)\n").c_str(),
                           eng::format_hz(f0).c_str(), sin_at_f0, in_unit,
                           sin_at_f0 > 0 ? 10.0 * std::log10(sin_at_f0) : -1e300,
                           in_unit);
             t << b;
-            x << "S_{i} = \\mathrm{" << eng::format_si(sin_at_f0, 4) << "\\ "
+            x << "S_{" << (input_is_current ? "i" : "v")
+              << "} = \\mathrm{" << eng::format_si(sin_at_f0, 4) << "\\ "
               << in_unit << "^2/Hz}\n";
         }
         if (input_is_current) {
